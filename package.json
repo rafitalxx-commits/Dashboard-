@@ -1,0 +1,38 @@
+{
+  "name": "odoo-v18-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test:amazon-parser": "node --experimental-strip-types scripts/test-amazon-email-parser.ts",
+    "test:odoo-delivery-status": "node --experimental-strip-types scripts/test-odoo-delivery-status.ts",
+    "test:v2-phase-1-1-equivalence": "node --experimental-strip-types scripts/v2-phase-1-1-equivalence.ts",
+    "test:v2-hito-b3-batch-context": "node scripts/v2-hito-b3-batch-context-validation.mjs",
+    "diagnose:v2-hito-b4-orders-payload": "node scripts/v2-hito-b4-orders-v2-payload-diagnostic.mjs",
+    "test:amazon-backend": "node --experimental-strip-types scripts/test-amazon-messages-backend.ts",
+    "test:amazon-gmail": "node --experimental-strip-types scripts/test-amazon-gmail-readonly.ts",
+    "test:amazon-outbound-security": "node --experimental-strip-types scripts/test-amazon-outbound-security.ts",
+    "test:amazon-manual-send-mock": "node --experimental-strip-types scripts/test-amazon-manual-send-mock.ts",
+    "test:amazon-final-send": "node --experimental-strip-types scripts/test-amazon-final-send.ts",
+    "test:agent-api": "node --experimental-strip-types scripts/test-agent-api.ts",
+    "validate:amazon-manual-send-mock-flow": "node --experimental-strip-types scripts/validate-amazon-manual-send-mock-flow.ts",
+    "validate:amazon-final-send-real": "node --experimental-strip-types scripts/validate-amazon-final-send-real.ts",
+    "validate:amazon-gmail-draft-real": "node --experimental-strip-types scripts/validate-amazon-gmail-draft-real.ts"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.5.2",
+    "lucide-react": "^0.513.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3"
+  }
+}

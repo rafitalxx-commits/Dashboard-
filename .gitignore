@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.dashboard-data/
+artifacts/
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.bak
+*.backup
+*.log
+.env
+.env.*
+!.env.example
