@@ -69,6 +69,8 @@ Ver detalles en [docs/github-workflow.md](docs/github-workflow.md).
 
 Hermes debe trabajar en la evolucion del modulo de tareas en paralelo, sin sustituir la version de produccion hasta validar. La guia esta en [docs/tasks-hermes-plan.md](docs/tasks-hermes-plan.md).
 
+Para darle acceso y revisar avances por GitHub, ver [docs/hermes-github-onboarding.md](docs/hermes-github-onboarding.md).
+
 ## Agent API
 
 La API para agentes externos esta documentada en [docs/agent-api-hermes-access.md](docs/agent-api-hermes-access.md). Usa Bearer token con scopes y no permite acciones finales peligrosas como envio de emails.
