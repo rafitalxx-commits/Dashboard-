@@ -8,14 +8,13 @@ import type {
 import { TasksKanbanBoard, type TaskRecord } from "./TasksKanbanBoard";
 import { TasksCalendarView, type CalendarEvent } from "./TasksCalendarView";
 
-/* ---------- tipos públicos ---------- */
+/* ---------- props públicas ---------- */
 export type TasksViewProps = {
   tasks: DashboardTask[];
   taskSection: "Tareas" | "Calendario";
   onChangeTaskSection: (value: "Tareas" | "Calendario") => void;
   onAddTask: (task: DashboardTask) => void;
   onUpdateTask: (id: string, patch: Partial<DashboardTask>) => void;
-  onDeleteTask: (id: string) => void;
   onAddCalendarEvent: (event: {
     date: string;
     title: string;
@@ -26,20 +25,29 @@ export type TasksViewProps = {
   calendarEvents: CalendarEvent[];
 };
 
-/* ---------- helpers ---------- */
+/* ---------- datos mock para inicio ---------- */
+type MailAccount = { id: string; name: string; email: string; unread: number };
+
+const mailAccounts: MailAccount[] = [
+  { id: "personal", name: "Personal", email: "rafitalxx@gmail.com", unread: 12 },
+  { id: "work", name: "Trabajo", email: "r.garcia@empresa.com", unread: 3 },
+];
+
+/* ---------- filtros ---------- */
 const filters = [
-  { key: "todos", label: "Todos" },
-  { key: "hoy", label: "Hoy" },
-  { key: "manana", label: "Mañana" },
-  { key: "semana", label: "Semana" },
-  { key: "vencidas", label: "Vencidas" },
-  { key: "urgentes", label: "Urgentes" },
-  { key: "sin_asignar", label: "Sin asignar" },
-  { key: "completadas", label: "Completadas" },
+  { key: "todos", label: "Todos", icon: "📋" },
+  { key: "hoy", label: "Hoy", icon: "📅" },
+  { key: "manana", label: "Mañana", icon: "🌤" },
+  { key: "semana", label: "Semana", icon: "📆" },
+  { key: "vencidas", label: "Vencidas", icon: "⏰" },
+  { key: "urgentes", label: "Urgentes", icon: "🔥" },
+  { key: "sin_asignar", label: "Sin asignar", icon: "👤" },
+  { key: "completadas", label: "Completadas", icon: "✅" },
 ] as const;
 
 type Filter = (typeof filters)[number]["key"];
 
+/* ---------- helpers ---------- */
 function isToday(date?: string) {
   if (!date) return false;
   return date === new Date().toISOString().slice(0, 10);
@@ -94,15 +102,6 @@ function shiftDay(days: number) {
   return d.toISOString().slice(0, 10);
 }
 
-function projectLabel(category?: DashboardTaskCategory) {
-  return category ?? "Operaciones";
-}
-
-function statusLabel(status?: DashboardTaskStatus) {
-  if (status === "Listo para responder") return "Listo para responder";
-  return status ?? "Pendiente";
-}
-
 function mapTask(t: DashboardTask): TaskRecord {
   return {
     id: t.id,
@@ -120,76 +119,76 @@ function mapTask(t: DashboardTask): TaskRecord {
   };
 }
 
-/* ---------- componentes internos ---------- */
+/* ---------- componentes ---------- */
 function TaskList({
   tasks,
   onUpdate,
   onDelete,
+  onOpen,
 }: {
   tasks: TaskRecord[];
   onUpdate: (id: string, patch: Partial<DashboardTask>) => void;
   onDelete: (id: string) => void;
+  onOpen: (id: string) => void;
 }) {
-  const [selected, setSelected] = useState<string | null>(null);
+  const today = new Date().toISOString().slice(0, 10);
 
-  if (!tasks.length) {
-    return (
-      <div className="empty-state">No hay tareas para este filtro.</div>
-    );
+  const sorted = useMemo(() => {
+    const list = [...tasks];
+    list.sort((a, b) => {
+      const aDone = isCompleted(a.status) ? 1 : 0;
+      const bDone = isCompleted(b.status) ? 1 : 0;
+      if (aDone !== bDone) return aDone - bDone;
+      const aToday = a.dueDate === today ? 0 : 1;
+      const bToday = b.dueDate === today ? 0 : 1;
+      if (aToday !== bToday) return aToday - bToday;
+      return (a.dueDate || "").localeCompare(b.dueDate || "");
+    });
+    return list;
+  }, [tasks, today]);
+
+  if (!sorted.length) {
+    return <div className="empty-state">No hay tareas para este filtro.</div>;
   }
 
   return (
     <div className="task-list">
-      {tasks.map((task) => {
-        const completed = ["Hecha", "Listo para responder", "Completada"].includes(
-          task.status
-        );
+      {sorted.map((task) => {
+        const completed = isCompleted(task.status);
         return (
-          <div
-            className={`task-card ${completed ? "done" : ""}`}
-            key={task.id}
-            onClick={() =>
-              setSelected(task.id === selected ? null : task.id)
-            }
-          >
-            <div className="task-main">
-              <div className="task-title">{task.title}</div>
-              <div className="task-sub">
-                <span className="chip small">{projectLabel(task.category)}</span>
-                <span className="task-who">
-                  {task.assignee || "Sin asignar"}
-                </span>
-                <span className={`priority-dot ${task.priority.toLowerCase()}`} />
-              </div>
-            </div>
-            <div className="task-meta">
-              <span className={`status-chip ${task.status.toLowerCase()}`}>
-                {statusLabel(task.status)}
+          <div className={`task-row ${completed ? "done" : ""}`} key={task.id}>
+            <label className="check-cell">
+              <input
+                type="checkbox"
+                checked={completed}
+                onChange={(e) => {
+                  e.stopPropagation();
+                  onUpdate(task.id, { status: "Hecha" });
+                }}
+              />
+            </label>
+            <button
+              className="task-row-main"
+              onClick={() => onOpen(task.id)}
+              type="button"
+            >
+              <span className="task-row-title">{task.title}</span>
+              <span className="task-row-meta">
+                <span className="chip small">{task.category}</span>
+                {task.dueDate && <span className="due">{task.dueDate}</span>}
               </span>
-              {task.dueDate && <span className="due-date">{task.dueDate}</span>}
-            </div>
-            {selected === task.id && (
-              <div className="task-actions">
-                <button
-                  className="button primary"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onUpdate(task.id, { status: "Hecha" });
-                  }}
-                >
-                  Completar
-                </button>
-                <button
-                  className="button ghost"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDelete(task.id);
-                  }}
-                >
-                  Eliminar
-                </button>
-              </div>
-            )}
+            </button>
+            <button
+              className="ghost icon-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete(task.id);
+              }}
+              aria-label="Eliminar"
+              type="button"
+            >
+              🗑
+            </button>
           </div>
         );
       })}
@@ -197,78 +196,166 @@ function TaskList({
   );
 }
 
-function NewTaskSheet({
+function TaskDetail({
+  task,
   onClose,
-  onSave,
+  onUpdate,
+  onDelete,
 }: {
+  task: TaskRecord;
   onClose: () => void;
-  onSave: (task: {
-    title: string;
-    category: DashboardTaskCategory;
-    assignee?: string;
-    dueDate: string;
-    priority: DashboardTaskPriority;
-    detail?: string;
-  }) => void;
+  onUpdate: (patch: Partial<DashboardTask>) => void;
+  onDelete: () => void;
 }) {
+  const [detail, setDetail] = useState(task.detail || "");
+  const [images, setImages] = useState<string[]>([]);
+
+  const addImage = () => {
+    const url = prompt("Pega URL de imagen o documento (placeholder):")?.trim();
+    if (!url) return;
+    setImages((prev) => [...prev, url]);
+  };
+
   return (
     <div className="backdrop" onClick={onClose}>
       <form
         className="sheet"
         onSubmit={(e) => {
           e.preventDefault();
-          const form = new FormData(e.currentTarget);
-          const title = String(form.get("title") ?? "");
-          if (!title.trim()) return;
-          onSave({
-            title,
-            category: String(form.get("category") ?? "Operaciones") as DashboardTaskCategory,
-            assignee: String(form.get("assignee") ?? ""),
-            dueDate: String(form.get("dueDate") ?? new Date().toISOString().slice(0, 10)),
-            priority: String(form.get("priority") ?? "Media") as DashboardTaskPriority,
-            detail: String(form.get("detail") ?? ""),
-          });
+          onUpdate({ detail, images });
+          onClose();
         }}
       >
-        <div className="sheet-header">Nueva tarea</div>
+        <div className="sheet-header">
+          <span>Detalle tarea</span>
+          <button className="ghost close" onClick={onClose} type="button">×</button>
+        </div>
         <label className="label">Título</label>
-        <input className="input" name="title" placeholder="Qué hay que hacer" autoFocus />
-        <div className="row">
-          <label className="label">
-            Proyecto
-            <select className="input" name="category" defaultValue="Operaciones">
-              {["Operaciones","Dashboard","Odoo","Compras","Gmail","Amazon","Dominio","IA"].map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
-          </label>
-          <label className="label">
-            Prioridad
-            <select className="input" name="priority" defaultValue="Media">
-              {["Crítica","Alta","Media","Baja"].map((p) => (
-                <option key={p} value={p}>{p}</option>
-              ))}
-            </select>
-          </label>
+        <input className="input" value={task.title} readOnly />
+        <label className="label">Notas</label>
+        <textarea
+          className="input"
+          value={detail}
+          onChange={(e) => setDetail(e.target.value)}
+          placeholder="Contexto, pasos, enlaces..."
+        />
+        <label className="label">Imágenes / documentos</label>
+        <div className="attachments">
+          {images.map((src, i) => (
+            <div className="att-card" key={i}>
+              <span className="att-name">{src}</span>
+              <button
+                className="ghost icon-btn"
+                onClick={() => setImages((prev) => prev.filter((_, idx) => idx !== i))}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <button className="ghost" onClick={addImage} type="button">
+            + Añadir adjunto
+          </button>
         </div>
-        <div className="row">
-          <label className="label">
-            Responsable
-            <input className="input" name="assignee" placeholder="Nombre" />
-          </label>
-          <label className="label">
-            Fecha límite
-            <input className="input" type="date" name="dueDate" defaultValue={new Date().toISOString().slice(0, 10)} />
-          </label>
-        </div>
-        <label className="label">Detalle</label>
-        <textarea className="input" name="detail" placeholder="Contexto extra" />
         <div className="actions">
-          <button type="button" className="button ghost" onClick={onClose}>Cancelar</button>
-          <button type="submit" className="button primary">Guardar</button>
+          <button className="ghost" onClick={onDelete} type="button">Eliminar</button>
+          <button className="button primary" type="submit">Guardar</button>
         </div>
       </form>
     </div>
+  );
+}
+
+function QuickCreate({ onSaveTask, onSaveEvent }: { onSaveTask: (t: { title: string; dueDate: string; priority: DashboardTaskPriority }) => void; onSaveEvent: (e: { title: string; date: string; startsAt: string; endsAt: string }) => void; }) {
+  const [mode, setMode] = useState<"task" | "event" | "telegram">("task");
+  const [title, setTitle] = useState("");
+  const [dueDate, setDueDate] = useState(new Date().toISOString().slice(0, 10));
+  const [priority, setPriority] = useState<DashboardTaskPriority>("Media");
+  const [start, setStart] = useState("09:00");
+  const [end, setEnd] = useState("10:00");
+
+  const submit = () => {
+    if (!title.trim()) return;
+    if (mode === "task") {
+      onSaveTask({ title, dueDate, priority });
+    } else {
+      const date = dueDate;
+      onSaveEvent({ title, date, startsAt: `${date}T${start}`, endsAt: `${date}T${end}` });
+    }
+    setTitle("");
+    setMode("task");
+  };
+
+  return (
+    <div className="backdrop" onClick={() => setMode("task")}>
+      <form className="sheet" onSubmit={(e) => { e.preventDefault(); submit(); }}>
+        <div className="sheet-header">Creación rápida</div>
+        <div className="segmented">
+          {(["task", "event", "telegram"] as const).map((m) => (
+            <button key={m} className={`chip ${mode === m ? "active" : ""}`} onClick={() => setMode(m)} type="button">
+              {m === "task" ? "Tarea" : m === "event" ? "Evento" : "Telegram"}
+            </button>
+          ))}
+        </div>
+        <input
+          className="input"
+          placeholder={mode === "task" ? "Tarea rápida" : "Evento"}
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          autoFocus
+        />
+        {mode === "task" && (
+          <div className="row">
+            <label className="label">
+              Fecha
+              <input className="input" type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+            </label>
+            <label className="label">
+              Prioridad
+              <select className="input" value={priority} onChange={(e) => setPriority(e.target.value as DashboardTaskPriority)}>
+                {["Crítica","Alta","Media","Baja"].map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </label>
+          </div>
+        )}
+        {mode === "event" && (
+          <div className="row">
+            <label className="label">
+              Fecha
+              <input className="input" type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+            </label>
+            <label className="label">
+              Inicio
+              <input className="input" type="time" value={start} onChange={(e) => setStart(e.target.value)} />
+            </label>
+            <label className="label">
+              Fin
+              <input className="input" type="time" value={end} onChange={(e) => setEnd(e.target.value)} />
+            </label>
+          </div>
+        )}
+        {mode === "telegram" && (
+          <div className="hint">Envía un mensaje a Hermes en Telegram con la tarea o evento y se creará automáticamente.</div>
+        )}
+        <div className="actions">
+          <button className="ghost" onClick={() => setMode("task")} type="button">Cancelar</button>
+          <button className="button primary" type="submit">Guardar</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function MailCard({ account, onClick }: { account: MailAccount; onClick: () => void }) {
+  return (
+    <button className="mail-card" onClick={onClick} type="button">
+      <div className="mail-header">
+        <span className="mail-name">{account.name}</span>
+        <span className="mail-unread">{account.unread} nuevos</span>
+      </div>
+      <div className="mail-email">{account.email}</div>
+      <div className="mail-action">Abrir correo →</div>
+    </button>
   );
 }
 
@@ -283,11 +370,12 @@ export function TasksView({
   onAddCalendarEvent,
   calendarEvents,
 }: TasksViewProps) {
-  const [tab, setTab] = useState<"inicio" | "tareas" | "calendario" | "proyectos" | "equipo">("tareas");
+  const [tab, setTab] = useState<"inicio" | "tareas" | "calendario" | "proyectos" | "equipo">("inicio");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("todos");
-  const [view, setView] = useState<"lista" | "kanban">(taskSection === "Calendario" ? "lista" : "lista");
+  const [view, setView] = useState<"lista" | "kanban">("lista");
   const [fabOpen, setFabOpen] = useState(false);
+  const [openTaskId, setOpenTaskId] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -296,7 +384,7 @@ export function TasksView({
       if (isCompleted(t.status) && filter !== "completadas") return false;
       if (!isCompleted(t.status) && filter === "completadas") return false;
       if (q) {
-        const haystack = `${t.title} ${t.detail} ${t.assignee ?? ""} ${projectLabel(t.category)} ${t.id}`.toLowerCase();
+        const haystack = `${t.title} ${t.detail} ${t.assignee ?? ""} ${t.category ?? ""} ${t.id}`.toLowerCase();
         return haystack.includes(q);
       }
       return true;
@@ -314,9 +402,76 @@ export function TasksView({
     };
   }, [tasks]);
 
+  const quick = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    return tasks
+      .filter((t) => t.dueDate === today && !isCompleted(t.status))
+      .slice(0, 8);
+  }, [tasks]);
+
+  const openTask = tasks.find((t) => t.id === openTaskId) || null;
+
   return (
     <>
       <div className="tasks-shell">
+        {tab === "inicio" && (
+          <div className="home">
+            <div className="home-header">
+              <div>
+                <div className="home-title">Inicio</div>
+                <div className="home-meta">{taskCount.todos} tareas · {taskCount.vencidas} vencidas</div>
+              </div>
+              <button className="ghost icon-btn" onClick={() => setFabOpen(true)} aria-label="Nuevo" type="button">➕</button>
+            </div>
+            <div className="section">
+              <div className="section-title">📧 Correo</div>
+              <div className="mail-list">
+                {mailAccounts.map((acc) => (
+                  <MailCard key={acc.id} account={acc} onClick={() => {}} />
+                ))}
+              </div>
+            </div>
+            <div className="section">
+              <div className="section-title">Accesos directos</div>
+              <div className="quick-actions">
+                <button className="quick-card" onClick={() => { setFilter("hoy"); setTab("tareas"); }}>
+                  <span className="quick-title">📅 Tareas de hoy</span>
+                  <span className="quick-count">{taskCount.hoy}</span>
+                </button>
+                <button className="quick-card" onClick={() => { setFilter("vencidas"); setTab("tareas"); }}>
+                  <span className="quick-title">⏰ Vencidas</span>
+                  <span className="quick-count">{taskCount.vencidas}</span>
+                </button>
+                <button className="quick-card" onClick={() => setTab("calendario")}>
+                  <span className="quick-title">🗓 Calendario</span>
+                </button>
+              </div>
+            </div>
+            <div className="section">
+              <div className="section-title">Tareas rápidas</div>
+              <div className="quick-list">
+                {quick.map((task) => (
+                  <label className="quick-row" key={task.id}>
+                    <input
+                      type="checkbox"
+                      checked={isCompleted(task.status)}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        onUpdateTask(task.id, { status: "Hecha" });
+                      }}
+                    />
+                    <button className="quick-row-text" onClick={() => setOpenTaskId(task.id)} type="button">
+                      <span>{task.title}</span>
+                      <span className={`priority-dot ${(task.priority ?? "media").toLowerCase()}`} />
+                    </button>
+                  </label>
+                ))}
+                {quick.length === 0 && <div className="empty-state">Sin tareas para hoy.</div>}
+              </div>
+            </div>
+          </div>
+        )}
+
         {tab === "tareas" && (
           <>
             <div className="tasks-topbar">
@@ -334,62 +489,24 @@ export function TasksView({
                     className={`chip ${filter === f.key ? "active" : ""}`}
                     onClick={() => setFilter(f.key)}
                   >
-                    {f.label}
+                    <span>{f.icon}</span>
+                    <span>{f.label}</span>
                   </button>
                 ))}
               </div>
               <div className="task-section-toggle">
-                <button
-                  className={view === "lista" ? "active" : ""}
-                  onClick={() => setView("lista")}
-                >
-                  Lista
-                </button>
-                <button
-                  className={view === "kanban" ? "active" : ""}
-                  onClick={() => setView("kanban")}
-                >
-                  Kanban
-                </button>
+                <button className={view === "lista" ? "active" : ""} onClick={() => setView("lista")} type="button">Lista</button>
+                <button className={view === "kanban" ? "active" : ""} onClick={() => setView("kanban")} type="button">Kanban</button>
               </div>
             </div>
-
             <div className="tasks-content">
               {view === "kanban" ? (
-                <TasksKanbanBoard
-                  tasks={kanbanTasks}
-                  onChange={(next) => {
-                    const first = next[0];
-                    if (first) onUpdateTask(first.id, {});
-                  }}
-                />
+                <TasksKanbanBoard tasks={kanbanTasks} onChange={(next) => { const first = next[0]; if (first) onUpdateTask(first.id, {}); }} />
               ) : (
-                <TaskList
-                  tasks={kanbanTasks}
-                  onUpdate={onUpdateTask}
-                  onDelete={onDeleteTask}
-                />
+                <TaskList tasks={kanbanTasks} onUpdate={onUpdateTask} onDelete={onDeleteTask} onOpen={(id) => setOpenTaskId(id)} />
               )}
             </div>
-
-            <button className="fab" onClick={() => setFabOpen(true)}>
-              +
-            </button>
-
-            {fabOpen && (
-              <NewTaskSheet
-                onClose={() => setFabOpen(false)}
-                onSave={(task) => {
-                  onAddTask({
-                    ...task,
-                    id: `task-${Date.now().toString(36)}`,
-                    createdAt: new Date().toISOString(),
-                    updatedAt: new Date().toISOString(),
-                  });
-                  setFabOpen(false);
-                }}
-              />
-            )}
+            <button className="fab" onClick={() => setFabOpen(true)} type="button">＋</button>
           </>
         )}
 
@@ -397,76 +514,69 @@ export function TasksView({
           <TasksCalendarView
             events={calendarEvents}
             onCreate={(payload) => {
-              onAddCalendarEvent(payload);
+              onAddCalendarEvent({
+                date: payload.date,
+                title: payload.title,
+                startsAt: payload.startsAt,
+                endsAt: payload.endsAt,
+                location: payload.location,
+              });
             }}
           />
         )}
-
-        {tab === "inicio" && (
-          <div className="inicio-empty">
-            <div className="inicio-title">Inicio</div>
-            <div className="inicio-meta">
-              {taskCount.todos} tareas · {taskCount.vencidas} vencidas
-            </div>
-          </div>
-        )}
-
         {tab === "proyectos" && (
           <div className="empty-state">
-            <div className="empty-title">Proyectos</div>
-            <div className="empty-text">
-              Próximamente: tarjetas de proyecto y carga por equipo.
-            </div>
+            <div className="empty-title">📂 Proyectos</div>
+            <div className="empty-text">Próximamente: tarjetas de proyecto y carga por equipo.</div>
           </div>
         )}
-
         {tab === "equipo" && (
           <div className="empty-state">
-            <div className="empty-title">Equipo</div>
-            <div className="empty-text">
-              Próximamente: empleados y tareas activas por persona.
-            </div>
+            <div className="empty-title">👥 Equipo</div>
+            <div className="empty-text">Próximamente: empleados y tareas activas por persona.</div>
           </div>
         )}
       </div>
 
       <nav className="bottom-bar">
-        <button
-          className={tab === "inicio" ? "active" : ""}
-          onClick={() => setTab("inicio")}
-        >
-          <span>🏠</span>
-          <span>Inicio</span>
-        </button>
-        <button
-          className={tab === "tareas" ? "active" : ""}
-          onClick={() => setTab("tareas")}
-        >
-          <span>✅</span>
-          <span>Tareas</span>
-        </button>
-        <button
-          className={tab === "calendario" ? "active" : ""}
-          onClick={() => setTab("calendario")}
-        >
-          <span>📅</span>
-          <span>Calendario</span>
-        </button>
-        <button
-          className={tab === "proyectos" ? "active" : ""}
-          onClick={() => setTab("proyectos")}
-        >
-          <span>📂</span>
-          <span>Proyectos</span>
-        </button>
-        <button
-          className={tab === "equipo" ? "active" : ""}
-          onClick={() => setTab("equipo")}
-        >
-          <span>👥</span>
-          <span>Equipo</span>
-        </button>
+        {([["inicio","🏠","Inicio"],["tareas","✅","Tareas"],["calendario","📅","Calendario"],["proyectos","📂","Proyectos"],["equipo","👥","Equipo"]] as const).map(([k, icon, label]) => (
+          <button key={k} className={tab === k ? "active" : ""} onClick={() => setTab(k)} type="button">
+            <span>{icon}</span><span>{label}</span>
+          </button>
+        ))}
       </nav>
+
+      {fabOpen && (
+        <QuickCreate
+          onSaveTask={(task) => {
+            onAddTask({
+              ...task,
+              id: `task-${Date.now().toString(36)}`,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            });
+            setFabOpen(false);
+          }}
+          onSaveEvent={(evt) => {
+            onAddCalendarEvent({
+              date: evt.date,
+              title: evt.title,
+              startsAt: evt.startsAt,
+              endsAt: evt.endsAt,
+            });
+            setFabOpen(false);
+          }}
+        />
+      )}
+
+      {openTask && (
+        <TaskDetail
+          task={openTask}
+          onClose={() => setOpenTaskId(null)}
+          onUpdate={(patch) => onUpdateTask(openTask.id, patch)}
+          onDelete={() => { onDeleteTask(openTask.id); setOpenTaskId(null); }}
+        />
+      )}
 
       <style>{css}</style>
     </>
@@ -482,11 +592,55 @@ const css = `
   padding: 16px;
   padding-bottom: 96px;
 }
-.tasks-topbar {
+
+/* home */
+.home { display: flex; flex-direction: column; gap: 16px; }
+.home-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.home-title { font-weight: 700; font-size: 22px; }
+.home-meta { color: #94a3b8; font-size: 14px; }
+.section { display: flex; flex-direction: column; gap: 10px; }
+.section-title { font-weight: 600; color: #e2e8f0; }
+.mail-list { display: flex; flex-direction: column; gap: 10px; }
+.mail-card {
+  text-align: left;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+  padding: 14px;
+  min-height: 56px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 6px;
+  cursor: pointer;
 }
+.mail-header { display: flex; justify-content: space-between; align-items: center; }
+.mail-name { font-weight: 600; color: #e2e8f0; }
+.mail-unread { color: #ef4444; font-size: 12px; }
+.mail-email { color: #94a3b8; font-size: 13px; }
+.mail-action { color: #60a5fa; font-size: 13px; }
+
+.quick-actions { display: grid; grid-template-columns: 1fr; gap: 10px; }
+.quick-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+  padding: 14px;
+  min-height: 56px;
+  cursor: pointer;
+  text-align: left;
+}
+.quick-title { font-weight: 600; color: #e2e8f0; }
+.quick-count { font-weight: 700; color: #facc15; font-size: 18px; }
+.quick-list { display: flex; flex-direction: column; gap: 10px; }
+.quick-row { display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); padding: 12px 14px; border-radius: 12px; min-height: 48px; cursor: pointer; }
+.quick-row-text { flex: 1; display: flex; justify-content: space-between; align-items: center; color: #e2e8f0; background: transparent; border: none; padding: 0; cursor: pointer; text-align: left; }
+
+/* tareas */
+.tasks-topbar { display: flex; flex-direction: column; gap: 12px; }
 .search input {
   width: 100%;
   background: rgba(255,255,255,0.04);
@@ -496,58 +650,30 @@ const css = `
   border-radius: 10px;
   font-size: 16px;
 }
-.filters {
-  display: flex;
-  gap: 10px;
-  overflow-x: auto;
-  padding-bottom: 6px;
-}
-.chip {
-  white-space: nowrap;
-  min-height: 40px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.14);
-  background: rgba(255,255,255,0.04);
-  color: inherit;
-}
-.chip.active {
-  background: #1d4ed8;
-  border-color: #1d4ed8;
-  color: white;
-}
-.task-section-toggle {
-  display: inline-flex;
-  gap: 8px;
-  padding: 6px;
-  border: 1px solid rgba(255,255,255,0.12);
-  background: rgba(255,255,255,0.04);
-  border-radius: 999px;
-}
-.task-section-toggle button {
-  border: none;
-  background: transparent;
-  color: inherit;
-  padding: 8px 14px;
-  border-radius: 999px;
-  cursor: pointer;
-  min-height: 40px;
-}
-.task-section-toggle button.active {
-  background: #1d4ed8;
-  color: white;
-}
+.filters { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; align-items: center; }
+.task-section-toggle { display: inline-flex; gap: 8px; padding: 6px; border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.04); border-radius: 999px; align-self: flex-start; }
+.tasks-content { display: flex; flex-direction: column; gap: 12px; }
 
-.tasks-content {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
+.task-list { display: flex; flex-direction: column; gap: 10px; }
+.task-row { display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); padding: 12px 14px; border-radius: 12px; min-height: 56px; }
+.task-row.done { opacity: 0.7; }
+.check-cell { display: inline-flex; align-items: center; }
+.check-cell input { width: 22px; height: 22px; accent-color: #1d4ed8; }
+.task-row-main { flex: 1; display: flex; flex-direction: column; gap: 6px; background: transparent; border: none; color: inherit; padding: 0; cursor: pointer; text-align: left; min-width: 0; }
+.task-row-title { font-weight: 600; color: #e2e8f0; word-break: break-word; }
+.task-row-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; color: #94a3b8; font-size: 12px; }
+.priority-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.priority-dot.crítica { background: #ef4444; }
+.priority-dot.alta { background: #f97316; }
+.priority-dot.media { background: #facc15; }
+.priority-dot.baja { background: #34d399; }
+.due { font-variant-numeric: tabular-nums; }
 
+/* FAB */
 .fab {
   position: fixed;
   right: 18px;
-  bottom: 88px;
+  bottom: 84px;
   width: 56px;
   height: 56px;
   border-radius: 999px;
@@ -562,120 +688,7 @@ const css = `
   z-index: 8;
 }
 
-.task-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.task-card {
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 14px;
-  padding: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  cursor: pointer;
-  min-height: 56px;
-}
-.task-card.done { opacity: 0.7; }
-.task-main { display: flex; flex-direction: column; gap: 4px; }
-.task-title { font-weight: 600; }
-.task-sub {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: #cbd5e1;
-  font-size: 13px;
-}
-.task-meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  font-size: 13px;
-  color: #94a3b8;
-}
-.task-actions { display: flex; gap: 10px; justify-content: flex-end; }
-.priority-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  display: inline-block;
-}
-.priority-dot.crítica { background: #ef4444; }
-.priority-dot.alta { background: #f97316; }
-.priority-dot.media { background: #facc15; }
-.priority-dot.baja { background: #34d399; }
-
-.status-chip {
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: rgba(255,255,255,0.08);
-  font-size: 12px;
-}
-.status-chip.hecha { background: rgba(52,211,153,0.18); color: #a7f3d0; }
-.status-chip.pendiente { background: rgba(255,255,255,0.08); color: #e2e8f0; }
-.status-chip.en-curso { background: rgba(56,189,248,0.18); color: #bae6fd; }
-.status-chip.bloqueada { background: rgba(248,113,113,0.18); color: #fecaca; }
-
-.due-date { font-variant-numeric: tabular-nums; }
-
-.backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(15,23,42,0.72);
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  padding-bottom: env(safe-area-inset-bottom, 12px);
-  z-index: 12;
-}
-.sheet {
-  background: #0b1120;
-  border: 1px solid rgba(255,255,255,0.06);
-  border-radius: 14px 14px 0 0;
-  width: 100vw;
-  max-width: 100vw;
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.sheet-header { font-weight: 700; font-size: 16px; }
-.row { display: flex; gap: 10px; flex-wrap: wrap; }
-.label {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 12px;
-  color: #cbd5e1;
-}
-.input, select, textarea {
-  background: rgba(255,255,255,0.04);
-  color: inherit;
-  border: 1px solid rgba(255,255,255,0.12);
-  padding: 12px 14px;
-  border-radius: 10px;
-  font-size: 16px;
-}
-.input { min-width: 0; }
-textarea { min-height: 80px; }
-.actions { display: flex; justify-content: stretch; gap: 10px; }
-.actions .button { flex: 1; text-align: center; }
-.button, .ghost {
-  border: 1px solid rgba(255,255,255,0.12);
-  background: rgba(255,255,255,0.04);
-  color: inherit;
-  padding: 12px 14px;
-  border-radius: 10px;
-  cursor: pointer;
-  min-height: 44px;
-  font-size: 15px;
-}
-.button.primary { background: #1d4ed8; border-color: #1d4ed8; color: white; }
-.button:hover, .ghost:hover { filter: brightness(1.1); }
-
+/* bottom */
 .bottom-bar {
   position: fixed;
   left: 0;
@@ -707,20 +720,92 @@ textarea { min-height: 80px; }
 .bottom-bar button.active { color: #60a5fa; }
 .bottom-bar button span:first-child { font-size: 20px; }
 
-.empty-state {
+/* generic */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(255,255,255,0.04);
+  color: inherit;
+  font-size: 14px;
+  white-space: nowrap;
+  min-height: 40px;
+}
+.chip.active { background: #1d4ed8; border-color: #1d4ed8; color: white; }
+.chip.small { padding: 4px 8px; font-size: 12px; min-height: 28px; }
+
+.input, select, textarea {
+  background: rgba(255,255,255,0.04);
+  color: inherit;
+  border: 1px solid rgba(255,255,255,0.12);
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 16px;
+  min-width: 0;
+}
+.textarea { min-height: 80px; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; }
+.label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: #cbd5e1; }
+
+.segmented { display: inline-flex; gap: 8px; flex-wrap: wrap; }
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15,23,42,0.72);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: env(safe-area-inset-bottom, 12px);
+  z-index: 12;
+}
+.sheet {
+  background: #0b1120;
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 14px 14px 0 0;
+  width: 100vw;
+  max-width: 100vw;
+  padding: 18px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  color: #94a3b8;
+  gap: 12px;
 }
-.empty-title { font-weight: 600; color: #e2e8f0; }
-.empty-text { font-size: 14px; }
+.sheet-header { font-weight: 700; font-size: 16px; display: flex; justify-content: space-between; align-items: center; }
+.actions { display: flex; justify-content: stretch; gap: 10px; }
+.actions .button { flex: 1; text-align: center; }
+.button, .ghost {
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.04);
+  color: inherit;
+  padding: 12px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  min-height: 44px;
+  font-size: 15px;
+}
+.button.primary { background: #1d4ed8; border-color: #1d4ed8; color: white; }
+.button:hover, .ghost:hover { filter: brightness(1.1); }
+.icon-btn { padding: 8px 10px; min-width: 36px; text-align: center; }
+.close { border: none; background: transparent; color: inherit; font-size: 18px; padding: 4px 8px; border-radius: 8px; }
 
-.inicio-title { font-weight: 700; font-size: 20px; }
-.inicio-meta { color: #94a3b8; font-size: 14px; }
+.empty-state { color: #94a3b8; font-size: 14px; padding: 10px 0; }
+.empty-title { font-weight: 700; font-size: 20px; color: #e2e8f0; }
+.empty-text { font-size: 14px; color: #94a3b8; }
+
+.attachments { display: flex; flex-direction: column; gap: 8px; }
+.att-card { display: flex; justify-content: space-between; align-items: center; gap: 8px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); padding: 10px; border-radius: 10px; font-size: 13px; color: #e2e8f0; }
+.att-name { word-break: break-all; }
+
+.hint { color: #94a3b8; font-size: 13px; }
+
+@media (min-width: 640px) {
+  .quick-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 
 @media (min-width: 1024px) {
   .tasks-shell { max-width: 1100px; margin: 0 auto; }
-  .bottom-bar { justify-content: center; }
 }
 `;
