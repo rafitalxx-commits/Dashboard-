@@ -57,29 +57,17 @@ export function TasksKanbanBoard({
   tasks: TaskRecord[];
   onChange: (next: TaskRecord[]) => void;
 }) {
-  const [query, setQuery] = useState("");
   const [draft, setDraft] = useState<TaskRecord | null>(null);
-  const [assigneeFilter, setAssigneeFilter] = useState("");
-
-  const filtered = useMemo(() => {
-    const q = query.toLowerCase();
-    const assignee = assigneeFilter.toLowerCase();
-    return tasks.filter((t) => {
-      if (q && !(`${t.title} ${t.detail} ${t.tags?.join(" ") ?? ""}`).toLowerCase().includes(q)) return false;
-      if (assignee && (t.assignee ?? "").toLowerCase() !== assignee) return false;
-      return true;
-    });
-  }, [tasks, query, assigneeFilter]);
 
   const byColumn = useMemo(() => {
     const map = new Map<Status, TaskRecord[]>();
     for (const col of COLUMNS) map.set(col.key, []);
-    for (const t of filtered) {
+    for (const t of tasks) {
       const list = map.get(t.status);
       if (list) list.push(t); else map.get("Pendiente")?.push(t);
     }
     return map;
-  }, [filtered]);
+  }, [tasks]);
 
   const createTask = () => {
     const next = empty();
@@ -120,18 +108,6 @@ export function TasksKanbanBoard({
         <div className="toolbar-left">
           <ListTodo size={16} /> <span>Tablero</span>
         </div>
-        <input
-          className="input"
-          placeholder="Buscar por título, detalle o etiqueta..."
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-        <input
-          className="input"
-          placeholder="Filtrar por asignado..."
-          value={assigneeFilter}
-          onChange={(e) => setAssigneeFilter(e.target.value)}
-        />
         <button className="button primary" onClick={createTask}>
           <Plus size={16} /> Nueva
         </button>
