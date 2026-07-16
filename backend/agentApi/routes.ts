@@ -88,23 +88,91 @@ export function registerAgentApiRoutes(
       }
 
       if (parts[0] === "tasks") {
-        if (request.method === "GET") {
+        if (request.method === "GET" && !parts[1]) {
           requireScope(auth.agent, "tasks:read");
-          sendJson(response, 200, options.tasks.listTasks());
+          const status = url.searchParams.get("status") ?? undefined;
+          const category = url.searchParams.get("category") ?? undefined;
+          const assignee = url.searchParams.get("assignee") ?? undefined;
+          const query = url.searchParams.get("query") ?? undefined;
+          const rows = options.tasks.listTasks?.({ status, category, assignee, query });
+          sendJson(
+            response,
+            200,
+            rows ?? options.tasks.listTasks(),
+          );
+          return;
+        }
+
+        if (request.method === "GET" && parts[1] && parts[2] === "team") {
+          requireScope(auth.agent, "tasks:read");
+          const team = options.tasks.listTeamTasks?.(auth.agent.id) ?? [];
+          sendJson(response, 200, team);
+          return;
+        }
+
+        if (request.method === "GET" && parts[1]) {
+          requireScope(auth.agent, "tasks:read");
+          const task = options.tasks.getTask(parts[1]);
+          if (!task) {
+            sendJson(response, 404, { message: "Tarea no encontrada" });
+            return;
+          }
+          sendJson(response, 200, task);
           return;
         }
 
         if (request.method === "POST" && !parts[1]) {
           requireScope(auth.agent, "tasks:write");
           const payload = await readJsonBody<Partial<DashboardTask>>(request);
-          sendJson(response, 201, options.tasks.createTask(payload, auth.agent.id));
+          const created = options.tasks.createTask(
+            { ...payload, status: payload.status ?? "Pendiente" },
+            auth.agent.id,
+          );
+          sendJson(response, 201, created);
+          return;
+        }
+
+        if (request.method === "PATCH" && parts[1] && parts[2] === "move") {
+          requireScope(auth.agent, "tasks:write");
+          const payload = await readJsonBody<{ status: string; position?: number }>(
+            request,
+          );
+          const moved = options.tasks.moveTask(
+            parts[1],
+            payload.status,
+            payload.position,
+          );
+          sendJson(response, 200, moved);
           return;
         }
 
         if (request.method === "PATCH" && parts[1]) {
           requireScope(auth.agent, "tasks:write");
           const payload = await readJsonBody<Partial<DashboardTask>>(request);
-          sendJson(response, 200, options.tasks.updateTask(parts[1], payload));
+          const patched = options.tasks.updateTask(parts[1], payload);
+          sendJson(response, 200, patched);
+          return;
+        }
+
+        if (request.method === "POST" && parts[1] && parts[2] === "calendar-event") {
+          requireScope(auth.agent, "tasks:write");
+          const event = await readJsonBody<{
+            title: string;
+            startsAt: string;
+            endsAt: string;
+            location?: string;
+            googleEventId?: string;
+          }>(request);
+          const updated = options.tasks.addCalendarEvent(parts[1], event);
+          sendJson(response, 200, updated);
+          return;
+        }
+
+        if (request.method === "POST" && parts[1] && parts[2] === "notify") {
+          requireScope(auth.agent, "tasks:write");
+          const body = await readJsonBody<{ channel: "telegram" | "email" }>(request);
+          options.tasks.sendNotification(parts[1], body.channel);
+          sendJson(response, 202, { accepted: true });
           return;
         }
       }

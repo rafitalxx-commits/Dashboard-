@@ -14,8 +14,6 @@ export type Order = {
     rawStatus?: string;
     trackingNumber?: string;
     trackingUrl?: string;
-    carrier?: string;
-    hasTracking?: boolean;
   };
   odooActions?: {
     printMark: {
@@ -70,13 +68,6 @@ export type Order = {
     lightweight?: boolean;
     updatedAt?: string;
     writeDate?: string;
-    sendcloud?: {
-      status: "not_checked" | "not_found" | "found";
-      tracking: "not_checked" | "not_found" | "present";
-      reference?: string;
-      carrier?: string;
-      checkedAt?: string;
-    };
   };
 };
 
@@ -123,53 +114,11 @@ export type OrdersSyncStats = {
   ordersNew: number;
   ordersUpdated: number;
   sendcloudLabels: number;
-  sendcloudStatuses?: number;
-  sendcloudTracking?: number;
   deliveriesValidated: number;
   incidents: number;
-  dryRunCandidates?: number;
-  dryRunValidables?: number;
-  dryRunIncidents?: number;
-  triggerOrigins?: Record<string, number>;
   odooCalls: number;
   sendcloudCalls: number;
   errors: string[];
-};
-
-export type OrdersPerformanceLastMetric = {
-  createdAt: string;
-  durationMs: number;
-  odooCalls: number;
-  sendcloudCalls: number;
-  orders: number;
-};
-
-export type OrdersPerformanceScope = {
-  count: number;
-  averageDurationMs: number;
-  last: OrdersPerformanceLastMetric | null;
-};
-
-export type OrdersV2Performance = {
-  mode: "lab";
-  cache: {
-    updatedAt?: string;
-    orders: number;
-    sync: OrdersSyncStats;
-  };
-  scopes: Record<"home" | "orders" | "sync" | "print" | "grouping", OrdersPerformanceScope>;
-  comparison: {
-    v1: {
-      source: "pending-measurement";
-      note: string;
-    };
-    v2: {
-      source: "dashboard-cache";
-      home: OrdersPerformanceLastMetric | null;
-      orders: OrdersPerformanceLastMetric | null;
-      sync: OrdersPerformanceLastMetric | null;
-    };
-  };
 };
 
 export type Invoice = {

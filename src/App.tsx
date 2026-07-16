@@ -30,7 +30,8 @@ import {
   XCircle,
 } from "lucide-react";
 import { money, orders as demoOrders, statusTone } from "./data/demoData";
-import { AmazonMessagesView } from "./modules/amazonMessages";
+// import { AmazonMessagesView } from "./modules/amazonMessages";
+import { TasksView } from "./modules/tasks/TasksView";
 import { odooClient } from "./services/odooClient";
 import type {
   InvoiceAnalytics,
@@ -41,15 +42,12 @@ import type {
   DashboardSummary,
   Order,
   OrdersSyncStats,
-  OrdersV2Performance,
 } from "./services/odooTypes";
 
 const navItems = [
   { label: "Inicio", icon: Home, view: "dashboard", permission: "dashboard" },
-  { label: "Inicio V2", icon: BarChart3, view: "dashboardV2", permission: "dashboard" },
   { label: "Tareas", icon: ListTodo, view: "tasks", permission: "tasks" },
   { label: "Pedidos", icon: ClipboardList, view: "orders", permission: "orders" },
-  { label: "Pedidos V2", icon: Truck, view: "ordersV2", permission: "orders" },
   { label: "Facturas cliente", icon: ReceiptText, view: "customerInvoices", permission: "billing" },
   { label: "Facturas proveedor", icon: FileText, view: "supplierInvoices", permission: "supplierBilling" },
   { label: "Compras", icon: ShoppingCart, view: "purchases", permission: "purchases" },
@@ -60,10 +58,8 @@ const navItems = [
 type ActiveView = (typeof navItems)[number]["view"];
 const viewRoutes: Record<ActiveView, string> = {
   dashboard: "home",
-  dashboardV2: "home-v2",
   tasks: "tareas",
   orders: "pedidos",
-  ordersV2: "pedidos-v2",
   customerInvoices: "facturacion",
   supplierInvoices: "facturas-proveedor",
   purchases: "compras",
@@ -276,8 +272,6 @@ function App() {
   );
   const [syncSummary, setSyncSummary] = useState("Esperando respuesta de Odoo");
   const [ordersSyncStats, setOrdersSyncStats] = useState<OrdersSyncStats | null>(null);
-  const [ordersV2Performance, setOrdersV2Performance] =
-    useState<OrdersV2Performance | null>(null);
   const [ordersSyncLoading, setOrdersSyncLoading] = useState(false);
   const [deliveryIncidents, setDeliveryIncidents] = useState<DeliveryIncident[]>([]);
   const [deliveryIncidentsLoading, setDeliveryIncidentsLoading] = useState(false);
@@ -302,9 +296,6 @@ function App() {
   const [page, setPage] = useState(1);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeView, setActiveView] = useState<ActiveView>(() => getViewFromHash());
-  const isV2View = activeView === "dashboardV2" || activeView === "ordersV2";
-  const isDashboardView = activeView === "dashboard" || activeView === "dashboardV2";
-  const isOrdersView = activeView === "orders" || activeView === "ordersV2";
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [orderDetailsById, setOrderDetailsById] = useState<Record<string, Order>>({});
   const [selectedPrintOrderIds, setSelectedPrintOrderIds] = useState<string[]>(
@@ -404,29 +395,21 @@ function App() {
 
     let mounted = true;
 
-    if (isDashboardView) {
+    if (activeView === "dashboard") {
       setDashboard(null);
       setDataMode("loading");
-      setConnectionMessage(isV2View ? "Leyendo cache V2" : "Conectando con Odoo");
+      setConnectionMessage("Conectando con Odoo");
       setSyncSummary(`Resumen: ${dateRange.from} a ${dateRange.to}`);
 
-      const dashboardRequest = isV2View
-        ? odooClient.getDashboardV2(dateRange)
-        : odooClient.getDashboard(dateRange);
-      dashboardRequest.then((dashboardResult) => {
+      odooClient.getDashboard(dateRange).then((dashboardResult) => {
         if (!mounted) return;
         setDashboard(dashboardResult);
         setDataMode(dashboardResult.mode);
         if (dashboardResult.cache?.sync) {
           setOrdersSyncStats(dashboardResult.cache.sync);
         }
-        if ("metrics" in dashboardResult && dashboardResult.metrics) {
-          setOrdersV2Performance(dashboardResult.metrics);
-        }
         if (dashboardResult.mode === "live") {
-          setConnectionMessage(
-            isV2View ? "Cache V2 · resumen cargado" : "Odoo real · resumen cargado",
-          );
+          setConnectionMessage("Odoo real · resumen cargado");
           setSyncSummary(
             dashboardResult.cache?.updatedAt
               ? `Cache ${formatSyncTime(dashboardResult.cache.updatedAt)} · ${dashboardResult.totalOrders} pedidos`
@@ -444,7 +427,7 @@ function App() {
       };
     }
 
-    if (!isOrdersView) {
+    if (activeView !== "orders") {
       return () => {
         mounted = false;
       };
@@ -452,24 +435,18 @@ function App() {
 
     setOrders([]);
     setDataMode("loading");
-    setConnectionMessage(isV2View ? "Leyendo cache V2" : "Conectando con Odoo");
-    setSyncSummary(`${isV2View ? "Pedidos V2" : "Pedidos"}: ${dateRange.from} a ${dateRange.to}`);
+    setConnectionMessage("Conectando con Odoo");
+    setSyncSummary(`Pedidos: ${dateRange.from} a ${dateRange.to}`);
     setSelectedOrderId(null);
 
     const offset = (serverPage - 1) * pageSize;
 
-    const ordersRequest = isV2View ? odooClient.getOrdersV2({
+    odooClient.getOrders({
       ...dateRange,
       limit: pageSize,
       offset,
       search: serverSearch,
-    }) : odooClient.getOrders({
-      ...dateRange,
-      limit: pageSize,
-      offset,
-      search: serverSearch,
-    });
-    ordersRequest.then((result) => {
+    }).then((result) => {
       if (!mounted) return;
 
       if (result.mode === "live") {
@@ -480,12 +457,9 @@ function App() {
         if (result.cache?.sync) {
           setOrdersSyncStats(result.cache.sync);
         }
-        if ("metrics" in result && result.metrics) {
-          setOrdersV2Performance(result.metrics);
-        }
         setConnectionMessage(
           result.source === "dashboard-cache"
-            ? `${isV2View ? "Cache V2" : "Cache Dashboard"} · ${result.orders.length} de ${total} pedidos`
+            ? `Cache Dashboard · ${result.orders.length} de ${total} pedidos`
             : `Odoo real · ${result.orders.length} de ${total} pedidos`,
         );
         setSyncSummary(
@@ -510,11 +484,9 @@ function App() {
       mounted = false;
     };
   }, [
+    activeView,
     authMode,
     dateRange,
-    isDashboardView,
-    isOrdersView,
-    isV2View,
     orderRefreshKey,
     pageSize,
     serverPage,
@@ -522,7 +494,7 @@ function App() {
   ]);
 
   useEffect(() => {
-    if (authMode !== "logged-in" || !isDashboardView) return;
+    if (authMode !== "logged-in" || activeView !== "dashboard") return;
 
     let mounted = true;
     const range = lastDaysRange(4);
@@ -534,17 +506,11 @@ function App() {
       const collected: Order[] = [];
 
       for (let offset = 0; offset < 5000; offset += pageLimit) {
-        const result = await (isV2View
-          ? odooClient.getOrdersV2({
-              ...range,
-              limit: pageLimit,
-              offset,
-            })
-          : odooClient.getOrders({
-              ...range,
-              limit: pageLimit,
-              offset,
-            }));
+        const result = await odooClient.getOrders({
+          ...range,
+          limit: pageLimit,
+          offset,
+        });
         if (!mounted) return;
         if (result.mode !== "live") {
           setControlOrders(result.orders);
@@ -568,7 +534,7 @@ function App() {
       mounted = false;
       setControlOrdersLoading(false);
     };
-  }, [authMode, isDashboardView, isV2View, orderRefreshKey]);
+  }, [activeView, authMode, orderRefreshKey]);
 
   useEffect(() => {
     if (
@@ -630,9 +596,9 @@ function App() {
 
   useEffect(() => {
     if (authMode !== "logged-in") return;
-    if (!isDashboardView && !isOrdersView) return;
+    if (activeView !== "dashboard" && activeView !== "orders") return;
     refreshDeliveryIncidents();
-  }, [authMode, isDashboardView, isOrdersView, orderRefreshKey]);
+  }, [activeView, authMode, orderRefreshKey]);
 
   const openOrdersFromHome = (input: {
     channel?: ControlChannel;
@@ -654,7 +620,7 @@ function App() {
     setServerPage(1);
     setPage(1);
     setSelectedPrintOrderIds([]);
-    navigateToView(isV2View ? "ordersV2" : "orders");
+    navigateToView("orders");
   };
 
   useEffect(() => {
@@ -954,7 +920,7 @@ function App() {
     markOrdersPrintedInOdoo(selectedPrintOrders);
   const validateOdooDeliveryBatch = async (
     ordersToValidate: Array<Pick<Order, "id" | "odooRef">>,
-    label = "Dry-run validacion entrega Odoo",
+    label = "Entrega Odoo validada",
   ) => {
     if (ordersToValidate.length === 0 || odooActionLoading) return;
     setOdooActionLoading(true);
@@ -971,7 +937,7 @@ function App() {
               .join(", ")}`
           : "";
       setOdooActionMessage(
-        `${label}: ${result.validables ?? result.validated ?? 0} validable(s)${incidentText}.`,
+        `${label}: ${result.validated ?? 0} pedido(s)${incidentText}.`,
       );
       setSelectedPrintOrderIds([]);
       refreshOrders();
@@ -990,12 +956,12 @@ function App() {
   const validateAutoValidatableOdooDeliveries = () => {
     if (autoValidatableOrders.length === 0 || odooActionLoading) return;
     const confirmed = window.confirm(
-      `Validar ${autoValidatableOrders.length} pedido(s) auto-validable(s) en Odoo?`,
+      `Validar ${autoValidatableOrders.length} pedido(s) auto-validable(s) con el flujo nativo de Odoo?`,
     );
     if (!confirmed) return;
     validateOdooDeliveryBatch(
       autoValidatableOrders,
-      "Validacion auto-validables Odoo",
+      "Auto-validables validados en Odoo",
     );
   };
   const confirmPendingPrintBatch = () => {
@@ -1008,36 +974,23 @@ function App() {
     ? navItems.filter((item) => can(item.permission))
     : [];
   const showOrderRange =
-    isDashboardView ||
-    isOrdersView ||
+    activeView === "dashboard" ||
+    activeView === "orders" ||
     activeView === "customerInvoices";
   const refreshOrders = async () => {
     if (!showOrderRange || ordersSyncLoading) return;
     setOrdersSyncLoading(true);
-    setConnectionMessage(
-      isV2View
-        ? "Sincronizando cache V2 con validacion automatica Odoo"
-        : "Sincronizando Odoo y Sendcloud en segundo plano",
-    );
+    setConnectionMessage("Sincronizando Odoo y Sendcloud en segundo plano");
     setSyncSummary("Actualizacion manual iniciada");
     try {
-      const result = await (isV2View
-        ? odooClient.syncOrdersV2({
-            ...dateRange,
-            search: serverSearch,
-            autoValidate: true,
-          })
-        : odooClient.syncOrders({
-            ...dateRange,
-            search: serverSearch,
-            autoValidate: true,
-          }));
+      const result = await odooClient.syncOrders({
+        ...dateRange,
+        search: serverSearch,
+        autoValidate: true,
+      });
       if (result.cache?.sync) {
         setOrdersSyncStats(result.cache.sync);
         setSyncSummary(formatOrdersSyncSummary(result.cache.sync));
-      }
-      if (isV2View) {
-        setOrdersV2Performance(await odooClient.getOrdersV2Performance());
       }
       setDeliveryIncidents(await odooClient.getDeliveryIncidents());
       setOrderRefreshKey((value) => value + 1);
@@ -1280,22 +1233,14 @@ function App() {
           <div>
             <p className="eyebrow">
               Pedidos de venta ·{" "}
-              {isV2View
-                ? "Laboratorio V2"
-                : dataMode === "live"
-                  ? "Odoo real"
-                  : "datos demo Odoo"}
+              {dataMode === "live" ? "Odoo real" : "datos demo Odoo"}
             </p>
             <h1>
               {activeView === "dashboard"
                 ? "Inicio"
-                : activeView === "dashboardV2"
-                  ? "Inicio V2"
                 : activeView === "orders"
                   ? "Pedidos"
-                : activeView === "ordersV2"
-                  ? "Pedidos V2"
-                : activeView === "amazonMessages"
+                  : activeView === "amazonMessages"
                     ? "Amazon Messages"
                   : activeView === "settings"
                     ? "Configuracion"
@@ -1382,9 +1327,7 @@ function App() {
 
             <section className={`source-strip ${dataMode}`}>
               <strong>
-                {isV2View
-                  ? "Laboratorio V2 aislado"
-                  : dataMode === "live"
+                {dataMode === "live"
                   ? "Fuente real activa"
                   : dataMode === "loading"
                     ? "Cargando fuente"
@@ -1397,32 +1340,28 @@ function App() {
           </>
         )}
 
-        {isDashboardView ? (
-          <>
-            {isV2View && (
-              <V2PerformancePanel
-                performance={ordersV2Performance}
-                syncStats={ordersSyncStats}
-              />
-            )}
-            <DashboardView
-              controlOrders={controlOrders}
-              controlOrdersLoading={controlOrdersLoading}
-              dashboard={dashboard}
-              dataMode={dataMode}
-              dateRange={dateRange}
-              invoiceAnalytics={isV2View ? null : invoiceAnalytics}
-              loadedOrders={orders.length}
-              onOpenInvoices={() => navigateToView("customerInvoices")}
-              onOpenOrders={openOrdersFromHome}
-              orders={orders}
-              syncStats={ordersSyncStats}
-            />
-          </>
+        {activeView === "dashboard" ? (
+          <DashboardView
+            controlOrders={controlOrders}
+            controlOrdersLoading={controlOrdersLoading}
+            dashboard={dashboard}
+            dataMode={dataMode}
+            dateRange={dateRange}
+            invoiceAnalytics={invoiceAnalytics}
+            loadedOrders={orders.length}
+            onOpenInvoices={() => navigateToView("customerInvoices")}
+            onOpenOrders={openOrdersFromHome}
+            orders={orders}
+            syncStats={ordersSyncStats}
+          />
         ) : activeView === "tasks" ? (
-          <TasksView
-            calendarAccounts={calendarAccounts}
+          <TasksViewInline
             calendarEvents={calendarEvents}
+            taskSection={taskSection}
+            tasks={(tasks ?? []).filter(
+              (t): t is DashboardTask => "id" in t && "title" in t && "dueDate" in t,
+            )}
+            calendarAccounts={calendarAccounts}
             calendarMessage={calendarMessage}
             calendarMonth={calendarMonth}
             filter={taskFilter}
@@ -1458,8 +1397,6 @@ function App() {
             onDeleteCalendarEvent={deleteCalendarEvent}
             onDeleteTask={deleteTask}
             onUpdateTask={updateTask}
-            taskSection={taskSection}
-            tasks={tasks}
           />
         ) : activeView === "customerInvoices" ? (
           <CustomerInvoicesView
@@ -1507,14 +1444,8 @@ function App() {
             currentUser={authUser}
             orders={orders.length > 0 ? orders : demoOrders}
           />
-        ) : isOrdersView ? (
+        ) : activeView === "customerInvoices" ? (
           <>
-            {isV2View && (
-              <V2PerformancePanel
-                performance={ordersV2Performance}
-                syncStats={ordersSyncStats}
-              />
-            )}
             <section className="kpi-grid order-kpis">
               <Kpi
                 title="Pedidos visibles"
@@ -1587,7 +1518,7 @@ function App() {
                   options={odooDeliveryOptions}
                   value={odooDelivery}
                 />
-                {!isV2View && can("odooWrite") && (
+                {can("odooWrite") && (
                   <button
                     className="auto-validate-button"
                     disabled={odooActionLoading || autoValidatableOrders.length === 0}
@@ -1595,7 +1526,7 @@ function App() {
                     type="button"
                   >
                     <Truck size={16} />
-                    Dry-run auto-validables ({autoValidatableOrders.length})
+                    Validar auto-validables ({autoValidatableOrders.length})
                   </button>
                 )}
                 <button
@@ -2035,54 +1966,7 @@ function RestrictedModuleView({ label }: { label: string }) {
   );
 }
 
-function V2PerformancePanel({
-  performance,
-  syncStats,
-}: {
-  performance: OrdersV2Performance | null;
-  syncStats: OrdersSyncStats | null;
-}) {
-  const home = performance?.scopes.home.last;
-  const orders = performance?.scopes.orders.last;
-  const sync = performance?.scopes.sync.last;
-  const cacheOrders = performance?.cache.orders ?? syncStats?.ordersScanned ?? 0;
-
-  return (
-    <section className="panel v2-performance-panel">
-      <div className="panel-header">
-        <div>
-          <h2>Comparador V1 vs V2</h2>
-          <span>V2 lee desde cache; V1 completa queda pendiente de medir sin cargar Odoo en hora de trabajo.</span>
-        </div>
-        <span className="channel-pill">Laboratorio</span>
-      </div>
-      <div className="kpi-grid order-kpis">
-        <Kpi
-          title="Home V2"
-          value={home ? `${home.durationMs} ms` : "sin dato"}
-          detail={`${home?.odooCalls ?? 0} Odoo · ${home?.sendcloudCalls ?? 0} Sendcloud`}
-        />
-        <Kpi
-          title="Pedidos V2"
-          value={orders ? `${orders.durationMs} ms` : "sin dato"}
-          detail={`${orders?.orders ?? cacheOrders} pedidos cache`}
-        />
-        <Kpi
-          title="Sync V2"
-          value={syncStats?.durationMs ? `${Math.round(syncStats.durationMs / 1000)} s` : "pendiente"}
-          detail={`${syncStats?.odooCalls ?? sync?.odooCalls ?? 0} Odoo · ${syncStats?.sendcloudCalls ?? sync?.sendcloudCalls ?? 0} Sendcloud`}
-        />
-        <Kpi
-          title="Ultima actualizacion"
-          value={formatSyncTime(performance?.cache.updatedAt ?? syncStats?.lastFinishedAt)}
-          detail={`${syncStats?.ordersNew ?? 0} nuevos · ${syncStats?.ordersUpdated ?? 0} actualizados`}
-        />
-      </div>
-    </section>
-  );
-}
-
-function TasksView({
+function TasksViewInline({
   calendarAccounts,
   calendarEvents,
   calendarMessage,
@@ -4941,7 +4825,7 @@ function formatDuration(value?: number) {
   return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)} s`;
 }
 
-function formatSyncTime(value?: string) {
+function formatSyncTime(value: string) {
   if (!value) return "Pendiente";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
@@ -4958,20 +4842,12 @@ function formatOrdersSyncSummary(sync: OrdersSyncStats) {
     `Sync ${formatDuration(sync.durationMs)}`,
     `${formatInteger(sync.ordersNew)} nuevos`,
     `${formatInteger(sync.ordersUpdated)} actualizados`,
-    `${formatInteger(sync.sendcloudStatuses ?? sync.sendcloudLabels)} estados Sendcloud`,
-    `${formatInteger(sync.sendcloudTracking ?? sync.sendcloudLabels)} tracking`,
-    sync.dryRunCandidates !== undefined
-      ? `${formatInteger(sync.dryRunCandidates)} candidatos dry-run`
-      : `${formatInteger(sync.deliveriesValidated)} validados`,
-    sync.dryRunValidables !== undefined
-      ? `${formatInteger(sync.dryRunValidables)} validables`
-      : `${formatInteger(sync.incidents)} incidencias`,
-    sync.dryRunIncidents !== undefined
-      ? `${formatInteger(sync.dryRunIncidents)} incidencias`
-      : null,
+    `${formatInteger(sync.sendcloudLabels)} etiquetas/tracking`,
+    `${formatInteger(sync.deliveriesValidated)} validados`,
+    `${formatInteger(sync.incidents)} incidencias`,
     `Odoo ${sync.odooCalls}`,
     `Sendcloud ${sync.sendcloudCalls}`,
-  ].filter(Boolean).join(" · ");
+  ].join(" · ");
 }
 
 function formatDecimal(value: number) {

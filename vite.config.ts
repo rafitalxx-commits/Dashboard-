@@ -241,14 +241,8 @@ type OrdersCacheStore = {
     ordersNew: number;
     ordersUpdated: number;
     sendcloudLabels: number;
-    sendcloudStatuses?: number;
-    sendcloudTracking?: number;
     deliveriesValidated: number;
     incidents: number;
-    dryRunCandidates?: number;
-    dryRunValidables?: number;
-    dryRunIncidents?: number;
-    triggerOrigins?: Record<string, number>;
     odooCalls: number;
     sendcloudCalls: number;
     errors: string[];
@@ -283,9 +277,6 @@ type DeliveryValidationAuditEntry = {
   pickingId?: string;
   tracking?: string;
   mode: "manual" | "automatic";
-  trigger?: "manual" | "sync-incremental" | "sync-full" | "sendcloud-webhook";
-  dryRun?: boolean;
-  idempotencyKey?: string;
   durationMs: number;
   result: "validated" | "incident" | "skipped" | "error";
   reason?: string;
@@ -300,39 +291,6 @@ type OrdersPerformanceMetric = {
   sendcloudCalls: number;
   orders: number;
   error?: string;
-};
-type LightweightOrdersSyncResult = {
-  orders: Array<ReturnType<typeof buildCachedOrder>>;
-  changedRefs: Set<string>;
-  incremental: boolean;
-};
-const ORDERS_LIGHTWEIGHT_SYNC_LIMIT = 2000;
-
-type DemandPhase =
-  | "odoo"
-  | "sendcloud"
-  | "lines"
-  | "images"
-  | "bomKits"
-  | "partners"
-  | "serialization";
-type DemandPhaseMetric = {
-  phase: DemandPhase;
-  durationMs: number;
-  calls: number;
-};
-type DemandProfiler = {
-  scope: "detail" | "print" | "grouping";
-  startedAt: number;
-  phases: Record<DemandPhase, DemandPhaseMetric>;
-};
-
-type CacheSendcloudMeta = {
-  status: "not_checked" | "not_found" | "found";
-  tracking: "not_checked" | "not_found" | "present";
-  reference?: string;
-  carrier?: string;
-  checkedAt?: string;
 };
 
 const readOnlyModels = new Set([
@@ -634,14 +592,6 @@ function odooReadOnlyApi(env: Record<string, string>) {
           }
           try {
             const url = new URL(request.url ?? "/", "http://local");
-            if (url.pathname === "/v2") {
-              const payload = await getOdooDashboardV2(env, {
-                from: url.searchParams.get("from") ?? undefined,
-                to: url.searchParams.get("to") ?? undefined,
-              });
-              sendJson(response, 200, payload);
-              return;
-            }
             const payload = await getOdooDashboard(env, {
               from: url.searchParams.get("from") ?? undefined,
               to: url.searchParams.get("to") ?? undefined,
@@ -725,47 +675,6 @@ function odooReadOnlyApi(env: Record<string, string>) {
         }
           try {
             const url = new URL(request.url ?? "/", "http://local");
-            if (url.pathname === "/v2") {
-              const payload = await getOdooOrdersV2(env, {
-                from: url.searchParams.get("from") ?? undefined,
-                to: url.searchParams.get("to") ?? undefined,
-                limit: Number(url.searchParams.get("limit") ?? 80),
-                offset: Number(url.searchParams.get("offset") ?? 0),
-                search: url.searchParams.get("search") ?? undefined,
-              });
-              sendJson(response, 200, payload);
-              return;
-            }
-
-            if (url.pathname === "/v2/sync") {
-              if (request.method !== "POST") {
-                sendJson(response, 405, { message: "Metodo no permitido" });
-                return;
-              }
-              const payload = await readJsonBody<{
-                from?: string;
-                to?: string;
-                search?: string;
-                autoValidate?: boolean;
-              }>(request);
-              sendJson(
-                response,
-                200,
-                await syncOrdersCache(env, {
-                  from: payload.from,
-                  to: payload.to,
-                  search: payload.search,
-                  autoValidate: payload.autoValidate !== false,
-                }),
-              );
-              return;
-            }
-
-            if (url.pathname === "/v2/performance") {
-              sendJson(response, 200, getOrdersV2Performance(env));
-              return;
-            }
-
             if (url.pathname === "/mark-printed") {
             if (request.method !== "POST") {
               sendJson(response, 405, { message: "Metodo no permitido" });
@@ -889,17 +798,16 @@ function odooReadOnlyApi(env: Record<string, string>) {
                 sendJson(response, 400, { message: "Falta orderRef" });
                 return;
               }
-              const profiler = createDemandProfiler("detail");
               const payload = await getOdooOrdersFull(env, {
                 search: orderRef,
                 limit: 1,
                 offset: 0,
-              }, profiler);
-              sendProfiledJson(response, 200, {
+              });
+              sendJson(response, 200, {
                 mode: payload.mode,
                 order: payload.orders[0] ?? null,
                 message: payload.message,
-              }, profiler);
+              });
               return;
             }
 
@@ -909,17 +817,12 @@ function odooReadOnlyApi(env: Record<string, string>) {
                 return;
               }
               const payload = await readJsonBody<{ orderRefs?: string[] }>(request);
-              const scope = url.pathname === "/print-context" ? "print" : "grouping";
-              const profiler = createDemandProfiler(scope);
-              const context = await getOrdersDemandContext(env, payload.orderRefs ?? [], {
-                scope,
-                profiler,
-              });
-              sendProfiledJson(
+              sendJson(
                 response,
                 200,
-                context,
-                profiler,
+                await getOrdersDemandContext(env, payload.orderRefs ?? [], {
+                  scope: url.pathname === "/print-context" ? "print" : "grouping",
+                }),
               );
               return;
             }
@@ -1894,119 +1797,6 @@ function sendJson(
   response.end(JSON.stringify(payload));
 }
 
-function sendProfiledJson(
-  response: {
-    statusCode: number;
-    setHeader: (name: string, value: string) => void;
-    end: (body: string) => void;
-  },
-  statusCode: number,
-  payload: Record<string, unknown>,
-  profiler: DemandProfiler,
-) {
-  const previewPayload = { ...payload, performance: finishDemandProfiler(profiler) };
-  measureDemandPhaseSync(profiler, "serialization", 0, () =>
-    JSON.stringify(previewPayload),
-  );
-  sendJson(response, statusCode, {
-    ...payload,
-    performance: finishDemandProfiler(profiler),
-  });
-}
-
-function createDemandProfiler(scope: DemandProfiler["scope"]): DemandProfiler {
-  const phases = {} as Record<DemandPhase, DemandPhaseMetric>;
-  ([
-    "odoo",
-    "sendcloud",
-    "lines",
-    "images",
-    "bomKits",
-    "partners",
-    "serialization",
-  ] as DemandPhase[]).forEach((phase) => {
-    phases[phase] = { phase, durationMs: 0, calls: 0 };
-  });
-  return {
-    scope,
-    startedAt: performance.now(),
-    phases,
-  };
-}
-
-async function measureDemandPhase<T>(
-  profiler: DemandProfiler | undefined,
-  phase: DemandPhase,
-  calls: number,
-  fn: () => Promise<T>,
-) {
-  const startedAt = performance.now();
-  try {
-    return await fn();
-  } finally {
-    addDemandPhase(profiler, phase, performance.now() - startedAt, calls);
-  }
-}
-
-function measureDemandPhaseSync<T>(
-  profiler: DemandProfiler | undefined,
-  phase: DemandPhase,
-  calls: number,
-  fn: () => T,
-) {
-  const startedAt = performance.now();
-  try {
-    return fn();
-  } finally {
-    addDemandPhase(profiler, phase, performance.now() - startedAt, calls);
-  }
-}
-
-function addDemandPhase(
-  profiler: DemandProfiler | undefined,
-  phase: DemandPhase,
-  durationMs: number,
-  calls: number,
-) {
-  if (!profiler) return;
-  profiler.phases[phase].durationMs += durationMs;
-  profiler.phases[phase].calls += calls;
-}
-
-async function executeKwProfiled(
-  profiler: DemandProfiler | undefined,
-  phase: DemandPhase,
-  config: ReturnType<typeof getOdooConfig>,
-  uid: number,
-  model: string,
-  method: string,
-  args: unknown[],
-  kwargs: Record<string, unknown> = {},
-) {
-  return measureDemandPhase(profiler, phase, 1, () =>
-    executeKw(config, uid, model, method, args, kwargs),
-  );
-}
-
-function finishDemandProfiler(profiler: DemandProfiler) {
-  const phases = Object.values(profiler.phases).map((phase) => ({
-    phase: phase.phase,
-    durationMs: Math.round(phase.durationMs),
-    calls: phase.calls,
-  }));
-  return {
-    scope: profiler.scope,
-    totalMs: Math.round(performance.now() - profiler.startedAt),
-    totalCalls: {
-      odoo: phases
-        .filter((phase) => phase.phase !== "sendcloud" && phase.phase !== "serialization")
-        .reduce((total, phase) => total + phase.calls, 0),
-      sendcloud: profiler.phases.sendcloud.calls,
-    },
-    phases,
-  };
-}
-
 async function getOdooOrdersFull(
   env: Record<string, string>,
   range: {
@@ -2016,7 +1806,6 @@ async function getOdooOrdersFull(
     offset?: number;
     search?: string;
   },
-  profiler?: DemandProfiler,
 ) {
   const config = getOdooConfig(env);
   if (!config.url || !config.database || !config.username || !config.apiKey) {
@@ -2028,9 +1817,7 @@ async function getOdooOrdersFull(
     };
   }
 
-  const uid = await measureDemandPhase(profiler, "odoo", 1, () =>
-    authenticate(config),
-  );
+  const uid = await authenticate(config);
   const domain = buildOrderDomain(range);
   const limit = clampNumber(range.limit ?? 80, 1, 500);
   const offset = Math.max(
@@ -2038,12 +1825,10 @@ async function getOdooOrdersFull(
     Number.isFinite(range.offset ?? 0) ? (range.offset ?? 0) : 0,
   );
 
-  const total = (await executeKwProfiled(profiler, "odoo", config, uid, "sale.order", "search_count", [
+  const total = (await executeKw(config, uid, "sale.order", "search_count", [
     domain,
   ])) as number;
-  const saleOrders = (await executeKwProfiled(
-    profiler,
-    "odoo",
+  const saleOrders = (await executeKw(
     config,
     uid,
     "sale.order",
@@ -2079,7 +1864,7 @@ async function getOdooOrdersFull(
     new Set(saleOrders.flatMap((order) => order.picking_ids ?? [])),
   );
   const pickings = pickingIds.length
-    ? ((await executeKwProfiled(profiler, "odoo", config, uid, "stock.picking", "read", [pickingIds], {
+    ? ((await executeKw(config, uid, "stock.picking", "read", [pickingIds], {
         fields: [
           "id",
           "name",
@@ -2096,9 +1881,7 @@ async function getOdooOrdersFull(
   );
   const orderIds = saleOrders.map((order) => order.id);
   const orderLines = orderIds.length
-    ? ((await executeKwProfiled(
-        profiler,
-        "lines",
+    ? ((await executeKw(
         config,
         uid,
         "sale.order.line",
@@ -2138,7 +1921,7 @@ async function getOdooOrdersFull(
     ),
   );
   const products = productIds.length
-    ? ((await executeKwProfiled(profiler, "images", config, uid, "product.product", "read", [productIds], {
+    ? ((await executeKw(config, uid, "product.product", "read", [productIds], {
         fields: ["id", "product_tmpl_id", "image_128"],
       })) as ProductRecord[])
     : [];
@@ -2152,9 +1935,7 @@ async function getOdooOrdersFull(
   );
   const templateIds = Array.from(new Set(productTemplateById.values()));
   const bomRecords = templateIds.length
-    ? ((await executeKwProfiled(
-        profiler,
-        "bomKits",
+    ? ((await executeKw(
         config,
         uid,
         "mrp.bom",
@@ -2178,9 +1959,7 @@ async function getOdooOrdersFull(
       )) as BomRecord[])
     : [];
   const bomLines = bomRecords.length
-    ? ((await executeKwProfiled(
-        profiler,
-        "bomKits",
+    ? ((await executeKw(
         config,
         uid,
         "mrp.bom.line",
@@ -2200,9 +1979,7 @@ async function getOdooOrdersFull(
     ),
   );
   const componentProducts = componentProductIds.length
-    ? ((await executeKwProfiled(
-        profiler,
-        "images",
+    ? ((await executeKw(
         config,
         uid,
         "product.product",
@@ -2237,7 +2014,7 @@ async function getOdooOrdersFull(
     ),
   );
   const partners = partnerIds.length
-    ? ((await executeKwProfiled(profiler, "partners", config, uid, "res.partner", "read", [partnerIds], {
+    ? ((await executeKw(config, uid, "res.partner", "read", [partnerIds], {
         fields: [
           "id",
           "name",
@@ -2254,28 +2031,24 @@ async function getOdooOrdersFull(
   const partnersById = new Map(
     partners.map((partner) => [partner.id, partner]),
   );
-  const sendcloudReferences = Array.from(
+  const sendcloudByReference = await getSendcloudStatuses(
+    env,
+    Array.from(
       new Set(
         saleOrders
           .map((order) => getExternalOrderRef(order))
           .map(cleanText)
           .filter(Boolean),
       ),
-    );
-  const sendcloudMetrics = { calls: 0 };
-  const sendcloudByReference = await measureDemandPhase(
-    profiler,
-    "sendcloud",
-    0,
-    () =>
-      getSendcloudStatuses(env, sendcloudReferences, {
-        metrics: sendcloudMetrics,
-      }),
+    ),
   );
-  addDemandPhase(profiler, "sendcloud", 0, sendcloudMetrics.calls);
 
-  const orders = measureDemandPhaseSync(profiler, "serialization", 0, () =>
-    saleOrders.map((order) => {
+  return {
+    mode: "live",
+    total,
+    limit,
+    offset,
+    orders: saleOrders.map((order) => {
       const relatedPickings = (order.picking_ids ?? [])
         .map((id) => pickingsById.get(id))
         .filter(Boolean);
@@ -2363,14 +2136,6 @@ async function getOdooOrdersFull(
         }),
       };
     }),
-  );
-
-  return {
-    mode: "live",
-    total,
-    limit,
-    offset,
-    orders,
   };
 }
 
@@ -2424,488 +2189,35 @@ async function getOdooOrders(
   };
 }
 
-async function getOdooOrdersV2(
-  env: Record<string, string>,
-  range: {
-    from?: string;
-    to?: string;
-    limit?: number;
-    offset?: number;
-    search?: string;
-  },
-) {
-  const startedAt = Date.now();
-  const cache = readOrdersCache(env);
-  const filtered = filterCachedOrders(cache.orders, range);
-  const limit = clampNumber(range.limit ?? 80, 1, 500);
-  const offset = Math.max(0, Number.isFinite(range.offset ?? 0) ? (range.offset ?? 0) : 0);
-
-  recordOrdersMetric(env, {
-    scope: "orders",
-    durationMs: Date.now() - startedAt,
-    odooCalls: 0,
-    sendcloudCalls: 0,
-    orders: filtered.length,
-  });
-
-  return {
-    mode: "live" as const,
-    source: "dashboard-cache" as const,
-    version: "v2" as const,
-    total: filtered.length,
-    limit,
-    offset,
-    orders: filtered.slice(offset, offset + limit).map(toOrdersV2ListOrder),
-    cache: {
-      updatedAt: cache.updatedAt,
-      sync: cache.sync,
-      incidentCount: cache.incidents.filter((incident) => !incident.resolvedAt).length,
-    },
-    metrics: getOrdersV2Performance(env),
-    message:
-      cache.sync.status === "never"
-        ? "Cache V2 vacia. Pulsa Actualizar para sincronizar sin bloquear la pantalla."
-        : undefined,
-  };
-}
-
-function toOrdersV2ListOrder(order: OrdersCacheStore["orders"][number]) {
-  return {
-    id: order.id,
-    odooRef: order.odooRef,
-    date: order.date,
-    client: order.client,
-    channel: order.channel,
-    externalRef: order.externalRef,
-    fulfillmentBy: order.fulfillmentBy,
-    sendcloud: order.sendcloud
-      ? {
-          status: order.sendcloud.status,
-          trackingNumber: order.sendcloud.trackingNumber,
-          trackingUrl: order.sendcloud.trackingUrl,
-        }
-      : undefined,
-    odooDeliveryValidation: order.odooDeliveryValidation
-      ? {
-          status: order.odooDeliveryValidation.status,
-          label: order.odooDeliveryValidation.label,
-          reason: order.odooDeliveryValidation.reason,
-          dateDone: order.odooDeliveryValidation.dateDone,
-          pickingId: order.odooDeliveryValidation.pickingId,
-        }
-      : undefined,
-    deliveryPrinted: order.deliveryPrinted,
-    deliveryPrintCount: order.deliveryPrintCount,
-    deliveryLastPrintDate: order.deliveryLastPrintDate,
-    total: order.total,
-    status: order.status,
-    invoiceStatus: order.invoiceStatus,
-    deliveryStatus: order.deliveryStatus,
-    city: order.city,
-    items: [],
-  };
-}
-
 async function getOrdersDemandContext(
   env: Record<string, string>,
   orderRefs: string[],
-  options: { scope: "print" | "grouping"; profiler?: DemandProfiler },
+  options: { scope: "print" | "grouping" },
 ) {
   const startedAt = Date.now();
   const cleanRefs = Array.from(new Set(orderRefs.map(cleanText).filter(Boolean)));
-  const context = await getOdooOrdersBatchDemandContext(
-    env,
-    cleanRefs,
-    options.profiler,
-  );
+  const orders = (
+    await Promise.all(
+      cleanRefs.map(async (orderRef) => {
+        const result = await getOdooOrdersFull(env, { search: orderRef, limit: 1, offset: 0 });
+        return result.orders[0];
+      }),
+    )
+  ).filter(Boolean);
 
   recordOrdersMetric(env, {
     scope: options.scope,
     durationMs: Date.now() - startedAt,
-    odooCalls: context.performance.totalCalls.odoo,
-    sendcloudCalls: context.performance.totalCalls.sendcloud,
-    orders: context.orders.length,
+    odooCalls: cleanRefs.length,
+    sendcloudCalls: cleanRefs.length,
+    orders: orders.length,
   });
 
   return {
     mode: "live" as const,
-    orders: context.orders,
-    total: context.orders.length,
+    orders,
+    total: orders.length,
     requested: cleanRefs.length,
-    batch: {
-      readOnly: true,
-      requestedRefs: cleanRefs.length,
-      matchedRefs: context.orders.length,
-    },
-  };
-}
-
-async function getOdooOrdersBatchDemandContext(
-  env: Record<string, string>,
-  orderRefs: string[],
-  profiler?: DemandProfiler,
-) {
-  if (orderRefs.length === 0) {
-    return { orders: [], performance: finishDemandProfiler(profiler ?? createDemandProfiler("print")) };
-  }
-
-  const config = getOdooConfig(env);
-  if (!config.url || !config.database || !config.username || !config.apiKey) {
-    return {
-      orders: [],
-      performance: finishDemandProfiler(profiler ?? createDemandProfiler("print")),
-    };
-  }
-
-  const uid = await measureDemandPhase(profiler, "odoo", 1, () =>
-    authenticate(config),
-  );
-  const numericIds = orderRefs
-    .map((ref) => ref.match(/^#?(\d+)$/)?.[1])
-    .filter((value): value is string => Boolean(value))
-    .map(Number);
-  const textualRefs = orderRefs.filter((ref) => !/^#?\d+$/.test(ref));
-  const searchTerms: unknown[] = [];
-  if (numericIds.length) searchTerms.push(["id", "in", numericIds]);
-  textualRefs.forEach((ref) => {
-    searchTerms.push(["name", "ilike", ref]);
-    searchTerms.push(["client_order_ref", "ilike", ref]);
-    searchTerms.push(["origin", "ilike", ref]);
-  });
-  const refDomain =
-    searchTerms.length > 1
-      ? [...Array(searchTerms.length - 1).fill("|"), ...searchTerms]
-      : searchTerms;
-  const domain: unknown[] = [["state", "in", ["sale", "done"]], ...refDomain];
-
-  const saleOrders = (await executeKwProfiled(
-    profiler,
-    "odoo",
-    config,
-    uid,
-    "sale.order",
-    "search_read",
-    [domain],
-    {
-      fields: [
-        "id",
-        "name",
-        "date_order",
-        "partner_id",
-        "partner_shipping_id",
-        "team_id",
-        "amount_total",
-        "amount_tax",
-        "origin",
-        "client_order_ref",
-        "amz_fulfillment_by",
-        "state",
-        "invoice_status",
-        "delivery_is_printed",
-        "delivery_print_count",
-        "delivery_last_print_date",
-        "picking_ids",
-      ],
-      order: "date_order desc",
-      limit: Math.max(orderRefs.length * 5, orderRefs.length),
-    },
-  )) as OdooRecord[];
-
-  const pickingIds = Array.from(
-    new Set(saleOrders.flatMap((order) => order.picking_ids ?? [])),
-  );
-  const pickings = pickingIds.length
-    ? ((await executeKwProfiled(profiler, "odoo", config, uid, "stock.picking", "read", [pickingIds], {
-        fields: [
-          "id",
-          "name",
-          "state",
-          "printed",
-          "scheduled_date",
-          "origin",
-          "date_done",
-        ],
-      })) as OdooPickingRecord[])
-    : [];
-  const pickingsById = new Map(pickings.map((picking) => [picking.id, picking]));
-  const orderIds = saleOrders.map((order) => order.id);
-  const orderLines = orderIds.length
-    ? ((await executeKwProfiled(
-        profiler,
-        "lines",
-        config,
-        uid,
-        "sale.order.line",
-        "search_read",
-        [
-          [
-            ["order_id", "in", orderIds],
-            ["display_type", "=", false],
-          ],
-        ],
-        {
-          fields: [
-            "order_id",
-            "product_id",
-            "name",
-            "product_uom_qty",
-            "price_unit",
-            "price_subtotal",
-          ],
-          order: "sequence asc, id asc",
-        },
-      )) as OdooOrderLine[])
-    : [];
-  const linesByOrderId = new Map<number, OdooOrderLine[]>();
-  orderLines.forEach((line) => {
-    const orderId = getRelationId(line.order_id);
-    if (!orderId) return;
-    const lines = linesByOrderId.get(orderId) ?? [];
-    lines.push(line);
-    linesByOrderId.set(orderId, lines);
-  });
-  const productIds = Array.from(
-    new Set(
-      orderLines
-        .map((line) => getRelationId(line.product_id))
-        .filter((id): id is number => typeof id === "number"),
-    ),
-  );
-  const products = productIds.length
-    ? ((await executeKwProfiled(profiler, "images", config, uid, "product.product", "read", [productIds], {
-        fields: ["id", "product_tmpl_id", "image_128"],
-      })) as ProductRecord[])
-    : [];
-  const productImagesById = new Map(
-    products.map((product) => [product.id, formatProductImage(product.image_128)]),
-  );
-  const productTemplateById = new Map(
-    products
-      .map((product) => [product.id, getRelationId(product.product_tmpl_id)])
-      .filter((entry): entry is [number, number] => typeof entry[1] === "number"),
-  );
-  const templateIds = Array.from(new Set(productTemplateById.values()));
-  const bomRecords = templateIds.length
-    ? ((await executeKwProfiled(
-        profiler,
-        "bomKits",
-        config,
-        uid,
-        "mrp.bom",
-        "search_read",
-        [
-          [
-            "|",
-            ["product_id", "in", productIds],
-            ["product_tmpl_id", "in", templateIds],
-          ],
-        ],
-        {
-          fields: [
-            "id",
-            "product_tmpl_id",
-            "product_id",
-            "product_qty",
-            "type",
-          ],
-        },
-      )) as BomRecord[])
-    : [];
-  const bomLines = bomRecords.length
-    ? ((await executeKwProfiled(
-        profiler,
-        "bomKits",
-        config,
-        uid,
-        "mrp.bom.line",
-        "search_read",
-        [[["bom_id", "in", bomRecords.map((bom) => bom.id)]]],
-        {
-          fields: ["id", "bom_id", "product_id", "product_qty", "product_uom_id"],
-          order: "sequence asc, id asc",
-        },
-      )) as BomLineRecord[])
-    : [];
-  const componentProductIds = Array.from(
-    new Set(
-      bomLines
-        .map((line) => getRelationId(line.product_id))
-        .filter((id): id is number => typeof id === "number"),
-    ),
-  );
-  const componentProducts = componentProductIds.length
-    ? ((await executeKwProfiled(
-        profiler,
-        "images",
-        config,
-        uid,
-        "product.product",
-        "read",
-        [componentProductIds],
-        { fields: ["id", "image_128"] },
-      )) as ProductRecord[])
-    : [];
-  const componentImagesById = new Map(
-    componentProducts.map((product) => [
-      product.id,
-      formatProductImage(product.image_128),
-    ]),
-  );
-  const bomLinesByBomId = new Map<number, BomLineRecord[]>();
-  bomLines.forEach((line) => {
-    const bomId = getRelationId(line.bom_id);
-    if (!bomId) return;
-    const lines = bomLinesByBomId.get(bomId) ?? [];
-    lines.push(line);
-    bomLinesByBomId.set(bomId, lines);
-  });
-  const bomByProductId = mapBomByProduct(productIds, productTemplateById, bomRecords);
-  const partnerIds = Array.from(
-    new Set(
-      saleOrders.flatMap(
-        (order) =>
-          getRelationId(order.partner_shipping_id) ??
-          getRelationId(order.partner_id) ??
-          [],
-      ),
-    ),
-  );
-  const partners = partnerIds.length
-    ? ((await executeKwProfiled(profiler, "partners", config, uid, "res.partner", "read", [partnerIds], {
-        fields: [
-          "id",
-          "name",
-          "street",
-          "street2",
-          "zip",
-          "city",
-          "country_id",
-          "phone",
-          "mobile",
-        ],
-      })) as PartnerRecord[])
-    : [];
-  const partnersById = new Map(partners.map((partner) => [partner.id, partner]));
-  const sendcloudReferences = Array.from(
-    new Set(
-      saleOrders
-        .map((order) => getExternalOrderRef(order))
-        .map(cleanText)
-        .filter(Boolean),
-    ),
-  );
-  const sendcloudMetrics = { calls: 0 };
-  const sendcloudByReference = await measureDemandPhase(
-    profiler,
-    "sendcloud",
-    0,
-    () =>
-      getSendcloudStatuses(env, sendcloudReferences, {
-        metrics: sendcloudMetrics,
-      }),
-  );
-  addDemandPhase(profiler, "sendcloud", 0, sendcloudMetrics.calls);
-
-  const ordersByRef = measureDemandPhaseSync(profiler, "serialization", 0, () => {
-    const serialized = saleOrders.map((order) => {
-      const relatedPickings = (order.picking_ids ?? [])
-        .map((id) => pickingsById.get(id))
-        .filter(Boolean);
-      const printed =
-        typeof order.delivery_is_printed === "boolean"
-          ? order.delivery_is_printed
-          : relatedPickings.some((picking) => picking?.printed);
-      const deliveryStatus = relatedPickings.length
-        ? summarizePickings(relatedPickings)
-        : "Sin albaran";
-      const partner = partnersById.get(
-        getRelationId(order.partner_shipping_id) ??
-          getRelationId(order.partner_id) ??
-          0,
-      );
-      const sendcloud = sendcloudByReference.get(getExternalOrderRef(order));
-
-      return {
-        id: order.name ?? `SO-${order.id}`,
-        odooRef: `#${order.id}`,
-        date: formatDate(order.date_order ?? order.create_date),
-        client: getRelationName(order.partner_id),
-        channel: getRelationName(order.team_id) || "Odoo",
-        externalRef: getExternalOrderRef(order),
-        fulfillmentBy: getFulfillmentBy(order),
-        sendcloud,
-        odooActions: buildOdooActionPreview(order, relatedPickings, printed, sendcloud),
-        odooDeliveryValidation: buildOdooDeliveryValidation(
-          order,
-          relatedPickings,
-          sendcloud,
-        ),
-        deliveryPrinted: printed,
-        deliveryPrintCount: order.delivery_print_count ?? 0,
-        deliveryLastPrintDate: formatDate(order.delivery_last_print_date || ""),
-        total: order.amount_total ?? 0,
-        taxTotal: order.amount_tax ?? 0,
-        status: translateSaleState(order.state),
-        invoiceStatus: translateInvoiceStatus(order.invoice_status),
-        deliveryStatus,
-        city: formatLocation(partner),
-        shippingAddress: formatShippingAddress(partner),
-        shippingPhone: formatPhone(partner),
-        items: (linesByOrderId.get(order.id) ?? []).map((line) => {
-          const productId = getRelationId(line.product_id);
-          const bom = productId ? bomByProductId.get(productId) : undefined;
-          const bomQuantity = bom?.product_qty && bom.product_qty > 0
-            ? bom.product_qty
-            : 1;
-          const orderQuantity = line.product_uom_qty ?? 0;
-
-          return {
-            sku:
-              getProductCode(getRelationName(line.product_id)) ||
-              getRelationName(line.product_id) ||
-              `Linea ${line.id}`,
-            name:
-              line.name || getRelationName(line.product_id) || "Sin producto",
-            quantity: orderQuantity,
-            price: line.price_unit ?? line.price_subtotal ?? 0,
-            subtotal: line.price_subtotal ?? 0,
-            stock: 0,
-            imageUrl: productImagesById.get(productId ?? 0),
-            components: bom
-              ? (bomLinesByBomId.get(bom.id) ?? []).map((component) => ({
-                  sku:
-                    getProductCode(getRelationName(component.product_id)) ||
-                    getRelationName(component.product_id) ||
-                    `Componente ${component.id}`,
-                  name:
-                    stripProductCode(getRelationName(component.product_id)) ||
-                    getRelationName(component.product_id) ||
-                    `Componente ${component.id}`,
-                  quantity:
-                    ((component.product_qty ?? 0) * orderQuantity) /
-                    bomQuantity,
-                  uom: formatUom(getRelationName(component.product_uom_id)),
-                  imageUrl: componentImagesById.get(
-                    getRelationId(component.product_id) ?? 0,
-                  ),
-                }))
-              : undefined,
-          };
-        }),
-      };
-    });
-    return new Map(serialized.flatMap((order) => [
-      [order.odooRef, order],
-      [order.id, order],
-      [order.externalRef, order],
-    ]));
-  });
-
-  return {
-    orders: orderRefs
-      .map((ref) => ordersByRef.get(ref))
-      .filter((order): order is NonNullable<typeof order> => Boolean(order)),
-    performance: finishDemandProfiler(profiler ?? createDemandProfiler("print")),
   };
 }
 
@@ -2936,41 +2248,17 @@ async function syncOrdersCache(
     ordersNew: 0,
     ordersUpdated: 0,
     sendcloudLabels: 0,
-    sendcloudStatuses: 0,
-    sendcloudTracking: 0,
     deliveriesValidated: 0,
     incidents: 0,
-    triggerOrigins: {} as Record<string, number>,
     odooCalls: 0,
     sendcloudCalls: 0,
     errors: [] as string[],
   };
 
   try {
-    const incrementalSince = getIncrementalSyncWatermark(previous, range);
-    const synced = await readLightweightOrdersFromOdoo(
-      env,
-      { ...range, incrementalSince },
-      stats,
-    );
+    const synced = await readLightweightOrdersFromOdoo(env, range, stats);
     const previousById = new Map(previous.orders.map((order) => [order.odooRef, order]));
-    const syncedRefs = new Set(synced.orders.map((order) => order.odooRef));
-    const nextOrders = synced.incremental
-      ? new Map(previous.orders.map((order) => [order.odooRef, order]))
-      : new Map(
-          previous.orders
-            .filter((order) => !isOrderInCacheRefreshScope(order, range) || syncedRefs.has(order.odooRef))
-            .map((order) => [order.odooRef, order]),
-        );
-
-    if (synced.incremental) {
-      synced.changedRefs.forEach((ref) => {
-        const previousOrder = previousById.get(ref);
-        if (previousOrder && isOrderInCacheRefreshScope(previousOrder, range) && !syncedRefs.has(ref)) {
-          nextOrders.delete(ref);
-        }
-      });
-    }
+    const nextOrders = new Map(previous.orders.map((order) => [order.odooRef, order]));
 
     synced.orders.forEach((order) => {
       const previousOrder = previousById.get(order.odooRef);
@@ -2981,36 +2269,29 @@ async function syncOrdersCache(
       }
       nextOrders.set(order.odooRef, order);
     });
-    stats.ordersScanned = synced.incremental ? synced.changedRefs.size : synced.orders.length;
-    stats.sendcloudStatuses = synced.orders.filter((order) => order.sendcloud?.status).length;
-    stats.sendcloudTracking = synced.orders.filter(
-      (order) => order.sendcloud?.trackingNumber || order.sendcloud?.trackingUrl,
+    stats.ordersScanned = synced.orders.length;
+    stats.sendcloudLabels = synced.orders.filter(
+      (order) => order.sendcloud?.trackingNumber,
     ).length;
-    stats.sendcloudLabels = stats.sendcloudTracking;
 
     let incidents = previous.incidents;
     let audit = previous.audit;
     if (range.autoValidate !== false) {
-      const trigger = synced.incremental ? "sync-incremental" : "sync-full";
-      const validation = await runAutomaticDeliveryValidation(env, synced.orders, trigger);
+      const validation = await runAutomaticDeliveryValidation(env, synced.orders);
       stats.deliveriesValidated = validation.validated;
       stats.incidents = validation.incidents.length;
-      stats.triggerOrigins = validation.triggerOrigins;
       incidents = mergeDeliveryIncidents(incidents, validation.incidents);
       audit = [...audit, ...validation.audit].slice(-1000);
     }
 
     const finishedAt = new Date().toISOString();
-    const sortedOrders = Array.from(nextOrders.values()).sort((left, right) =>
-      right.date.localeCompare(left.date) || right.id.localeCompare(left.id),
-    );
     const nextStore: OrdersCacheStore = {
       ...previous,
       updatedAt: finishedAt,
       range: { from: range.from, to: range.to },
-      orders: shouldTrimOrdersToSyncLimit(range)
-        ? sortedOrders.slice(0, ORDERS_LIGHTWEIGHT_SYNC_LIMIT)
-        : sortedOrders,
+      orders: Array.from(nextOrders.values()).sort((left, right) =>
+        right.date.localeCompare(left.date) || right.id.localeCompare(left.id),
+      ),
       incidents,
       audit,
       sync: {
@@ -3061,52 +2342,15 @@ async function syncOrdersCache(
   }
 }
 
-function shouldTrimOrdersToSyncLimit(range: { from?: string; to?: string; search?: string }) {
-  return !range.from && !range.to && !cleanText(range.search);
-}
-
-function isOrderInCacheRefreshScope(
-  order: OrdersCacheStore["orders"][number],
-  range: {
-    from?: string;
-    to?: string;
-    search?: string;
-  },
-) {
-  return filterCachedOrders([order], range).length > 0;
-}
-
-function getIncrementalSyncWatermark(
-  previous: OrdersCacheStore,
-  range: {
-    from?: string;
-    to?: string;
-    search?: string;
-  },
-) {
-  if (cleanText(range.search) || !previous.orders.length || previous.sync.status !== "ok") {
-    return undefined;
-  }
-  const lastWriteDate = previous.orders
-    .map((order) => order.cacheMeta?.writeDate)
-    .filter((value): value is string => Boolean(value))
-    .sort()
-    .at(-1);
-  const timestamp = lastWriteDate ? Date.parse(`${lastWriteDate.replace(" ", "T")}Z`) : NaN;
-  if (!Number.isFinite(timestamp)) return undefined;
-  return formatOdooDateTime(new Date(Math.max(0, timestamp - 2 * 60 * 1000)));
-}
-
 async function readLightweightOrdersFromOdoo(
   env: Record<string, string>,
   range: {
     from?: string;
     to?: string;
     search?: string;
-    incrementalSince?: string;
   },
   stats: { odooCalls: number; sendcloudCalls: number },
-): Promise<LightweightOrdersSyncResult> {
+) {
   const config = getOdooConfig(env);
   if (!config.url || !config.database || !config.username || !config.apiKey) {
     throw new Error(
@@ -3115,10 +2359,7 @@ async function readLightweightOrdersFromOdoo(
   }
 
   const uid = await authenticate(config);
-  const incremental = Boolean(range.incrementalSince);
-  const domain = incremental
-    ? buildIncrementalOrderDomain(range, range.incrementalSince!)
-    : buildOrderDomain(range);
+  const domain = buildOrderDomain(range);
   stats.odooCalls += 1;
   const saleOrders = (await executeKw(
     config,
@@ -3148,14 +2389,11 @@ async function readLightweightOrdersFromOdoo(
         "picking_ids",
       ],
       order: "date_order desc",
-      limit: ORDERS_LIGHTWEIGHT_SYNC_LIMIT,
+      limit: 2000,
     },
   )) as OdooRecord[];
 
-  const cacheableSaleOrders = saleOrders.filter((order) =>
-    order.state === "sale" || order.state === "done",
-  );
-  const pickingIds = Array.from(new Set(cacheableSaleOrders.flatMap((order) => order.picking_ids ?? [])));
+  const pickingIds = Array.from(new Set(saleOrders.flatMap((order) => order.picking_ids ?? [])));
   stats.odooCalls += pickingIds.length ? 1 : 0;
   const pickings = pickingIds.length
     ? ((await executeKw(config, uid, "stock.picking", "read", [pickingIds], {
@@ -3181,13 +2419,13 @@ async function readLightweightOrdersFromOdoo(
   const partnersById = new Map(partners.map((partner) => [partner.id, partner]));
 
   const sendcloudLimit = clampNumber(
-    Number(env.ORDERS_SYNC_SENDCLOUD_LIMIT ?? 500),
+    Number(env.ORDERS_SYNC_SENDCLOUD_LIMIT ?? 80),
     0,
     500,
   );
   const sendcloudReferences = Array.from(
     new Set(
-      cacheableSaleOrders
+      saleOrders
         .filter((order) => getFulfillmentBy(order) !== "FBA")
         .filter((order) => order.state !== "cancel" && order.state !== "draft")
         .map((order) => getExternalOrderRef(order))
@@ -3196,13 +2434,10 @@ async function readLightweightOrdersFromOdoo(
     ),
   ).slice(0, sendcloudLimit);
   stats.sendcloudCalls += sendcloudReferences.length ? 1 : 0;
-  const sendcloudByReference = await getSendcloudStatuses(env, sendcloudReferences, {
-    exactLookupLimit: 0,
-  });
-  const changedRefs = new Set(saleOrders.map((order) => `#${order.id}`));
+  const sendcloudByReference = await getSendcloudStatuses(env, sendcloudReferences);
 
   return {
-    orders: cacheableSaleOrders.map((order) => {
+    orders: saleOrders.map((order) => {
       const relatedPickings = (order.picking_ids ?? [])
         .map((id) => pickingsById.get(id))
         .filter((picking): picking is OdooPickingRecord => Boolean(picking));
@@ -3212,8 +2447,6 @@ async function readLightweightOrdersFromOdoo(
       const sendcloud = sendcloudByReference.get(getExternalOrderRef(order));
       return buildCachedOrder(order, relatedPickings, partner, sendcloud);
     }),
-    changedRefs,
-    incremental,
   };
 }
 
@@ -3230,11 +2463,6 @@ function buildCachedOrder(
   const deliveryStatus = relatedPickings.length
     ? summarizePickings(relatedPickings)
     : "Sin albaran";
-  const sendcloudMeta = buildCacheSendcloudMeta(
-    getExternalOrderRef(order),
-    Boolean(getFulfillmentBy(order) !== "FBA" && order.state !== "cancel" && order.state !== "draft"),
-    sendcloud,
-  );
 
   return {
     id: order.name ?? `SO-${order.id}`,
@@ -3263,37 +2491,7 @@ function buildCachedOrder(
       lightweight: true,
       updatedAt: new Date().toISOString(),
       writeDate: order.write_date,
-      sendcloud: sendcloudMeta,
     },
-  };
-}
-
-function buildCacheSendcloudMeta(
-  reference: string,
-  checked: boolean,
-  sendcloud?: SendcloudStatus,
-): CacheSendcloudMeta {
-  if (!checked || !cleanText(reference)) {
-    return {
-      status: "not_checked",
-      tracking: "not_checked",
-    };
-  }
-  if (!sendcloud) {
-    return {
-      status: "not_found",
-      tracking: "not_found",
-      reference: cleanText(reference),
-      checkedAt: new Date().toISOString(),
-    };
-  }
-  const hasTracking = Boolean(sendcloud.trackingNumber || sendcloud.trackingUrl);
-  return {
-    status: "found",
-    tracking: hasTracking ? "present" : "not_found",
-    reference: sendcloud.reference || cleanText(reference),
-    carrier: sendcloud.carrier,
-    checkedAt: new Date().toISOString(),
   };
 }
 
@@ -3321,8 +2519,6 @@ function createEmptyOrdersCache(): OrdersCacheStore {
       ordersNew: 0,
       ordersUpdated: 0,
       sendcloudLabels: 0,
-      sendcloudStatuses: 0,
-      sendcloudTracking: 0,
       deliveriesValidated: 0,
       incidents: 0,
       odooCalls: 0,
@@ -3357,53 +2553,18 @@ function writeOrdersCache(env: Record<string, string>, store: OrdersCacheStore) 
   });
 }
 
-type CachedOrderSearchIndex = {
-  key: string;
-  rows: Array<{
-    order: OrdersCacheStore["orders"][number];
-    day: string;
-    searchText: string;
-  }>;
-};
-
-let cachedOrderSearchIndex: CachedOrderSearchIndex | null = null;
-
 function filterCachedOrders(
   orders: OrdersCacheStore["orders"],
   range: { from?: string; to?: string; search?: string },
 ) {
   const text = cleanText(range.search).toLowerCase();
-  const index = getCachedOrderSearchIndex(orders);
-  const matches: OrdersCacheStore["orders"] = [];
-  for (const { order, day, searchText } of index.rows) {
+  return orders.filter((order) => {
+    const day = order.date;
     const matchesRange =
       (!range.from || day >= range.from) && (!range.to || day <= range.to);
-    if (!matchesRange) continue;
-    if (text && !searchText.includes(text)) continue;
-    matches.push(order);
-  }
-  return matches;
-}
-
-function getCachedOrderSearchIndex(
-  orders: OrdersCacheStore["orders"],
-): CachedOrderSearchIndex {
-  const first = orders[0];
-  const last = orders[orders.length - 1];
-  const key = [
-    orders.length,
-    first?.odooRef ?? "",
-    first?.cacheMeta?.updatedAt ?? "",
-    last?.odooRef ?? "",
-    last?.cacheMeta?.updatedAt ?? "",
-  ].join("|");
-  if (cachedOrderSearchIndex?.key === key) return cachedOrderSearchIndex;
-  cachedOrderSearchIndex = {
-    key,
-    rows: orders.map((order) => ({
-      order,
-      day: order.date,
-      searchText: [
+    if (!matchesRange) return false;
+    if (!text) return true;
+    return [
       order.id,
       order.odooRef,
       order.client,
@@ -3413,16 +2574,12 @@ function getCachedOrderSearchIndex(
       order.fulfillmentBy,
       order.sendcloud?.status,
       order.sendcloud?.trackingNumber,
-      order.sendcloud?.trackingUrl,
-      order.cacheMeta?.sendcloud?.status,
-      order.cacheMeta?.sendcloud?.tracking,
       order.status,
     ]
       .join(" ")
-        .toLowerCase(),
-    })),
-  };
-  return cachedOrderSearchIndex;
+      .toLowerCase()
+      .includes(text);
+  });
 }
 
 function recordOrdersMetric(
@@ -3443,67 +2600,9 @@ function recordOrdersMetric(
   });
 }
 
-function getOrdersV2Performance(env: Record<string, string>) {
-  const store = readOrdersCache(env);
-  const metrics = store.metrics.slice(-120);
-  return {
-    mode: "lab" as const,
-    cache: {
-      updatedAt: store.updatedAt,
-      orders: store.orders.length,
-      sync: store.sync,
-    },
-    scopes: {
-      home: summarizePerformanceMetrics(metrics, "home"),
-      orders: summarizePerformanceMetrics(metrics, "orders"),
-      sync: summarizePerformanceMetrics(metrics, "sync"),
-      print: summarizePerformanceMetrics(metrics, "print"),
-      grouping: summarizePerformanceMetrics(metrics, "grouping"),
-    },
-    comparison: {
-      v1: {
-        source: "pending-measurement" as const,
-        note:
-          "La medicion V1 completa queda pendiente para evitar llamadas pesadas a Odoo durante la construccion de V2.",
-      },
-      v2: {
-        source: "dashboard-cache" as const,
-        home: summarizePerformanceMetrics(metrics, "home").last,
-        orders: summarizePerformanceMetrics(metrics, "orders").last,
-        sync: summarizePerformanceMetrics(metrics, "sync").last,
-      },
-    },
-  };
-}
-
-function summarizePerformanceMetrics(
-  metrics: OrdersPerformanceMetric[],
-  scope: OrdersPerformanceMetric["scope"],
-) {
-  const scoped = metrics.filter((metric) => metric.scope === scope);
-  const last = scoped[scoped.length - 1];
-  const averageDurationMs = scoped.length
-    ? Math.round(scoped.reduce((total, metric) => total + metric.durationMs, 0) / scoped.length)
-    : 0;
-  return {
-    count: scoped.length,
-    averageDurationMs,
-    last: last
-      ? {
-          createdAt: last.createdAt,
-          durationMs: last.durationMs,
-          odooCalls: last.odooCalls,
-          sendcloudCalls: last.sendcloudCalls,
-          orders: last.orders,
-        }
-      : null,
-  };
-}
-
 async function runAutomaticDeliveryValidation(
   env: Record<string, string>,
   orders: OrdersCacheStore["orders"],
-  trigger: "sync-incremental" | "sync-full" | "sendcloud-webhook" = "sync-incremental",
 ) {
   const candidates = orders.filter(
     (order) =>
@@ -3511,14 +2610,7 @@ async function runAutomaticDeliveryValidation(
       Boolean(order.sendcloud?.trackingNumber),
   );
   if (candidates.length === 0) {
-    return {
-      candidates: 0,
-      validables: 0,
-      validated: 0,
-      incidents: [] as DeliveryValidationIncident[],
-      audit: [] as DeliveryValidationAuditEntry[],
-      triggerOrigins: { [trigger]: 0 },
-    };
+    return { validated: 0, incidents: [] as DeliveryValidationIncident[], audit: [] as DeliveryValidationAuditEntry[] };
   }
 
   const startedAt = Date.now();
@@ -3526,7 +2618,6 @@ async function runAutomaticDeliveryValidation(
     env,
     [],
     candidates.map((order) => order.odooRef),
-    { dryRun: false, mode: "automatic", trigger },
   );
   const now = new Date().toISOString();
   const validatedNames = new Set(
@@ -3562,13 +2653,6 @@ async function runAutomaticDeliveryValidation(
         pickingId: order.odooDeliveryValidation?.pickingId,
         tracking: order.sendcloud?.trackingNumber,
         mode: "automatic" as const,
-        trigger,
-        dryRun: result.dryRun ?? false,
-        idempotencyKey: createDeliveryValidationIdempotencyKey(
-          order.odooRef,
-          order.odooDeliveryValidation?.pickingId,
-          order.sendcloud?.trackingNumber,
-        ),
         durationMs: Date.now() - startedAt,
         result: "validated" as const,
       })),
@@ -3580,13 +2664,6 @@ async function runAutomaticDeliveryValidation(
       pickingId: incident.pickingId,
       tracking: incident.tracking,
       mode: "automatic" as const,
-      trigger,
-      dryRun: result.dryRun ?? false,
-      idempotencyKey: createDeliveryValidationIdempotencyKey(
-        incident.orderId ? `#${incident.orderId}` : incident.orderName,
-        incident.pickingId,
-        incident.tracking,
-      ),
       durationMs: Date.now() - startedAt,
       result: "incident" as const,
       reason: incident.reason,
@@ -3594,12 +2671,9 @@ async function runAutomaticDeliveryValidation(
   ];
 
   return {
-    candidates: result.candidates ?? candidates.length,
-    validables: result.validables ?? result.validated ?? 0,
     validated: result.validated ?? 0,
     incidents,
     audit,
-    triggerOrigins: { [trigger]: result.candidates ?? candidates.length },
   };
 }
 
@@ -3644,13 +2718,6 @@ function recordManualDeliveryValidationAudit(
       orderName: order.orderName,
       pickingId: String(order.pickingId),
       mode: "manual" as const,
-      trigger: "manual" as const,
-      dryRun: result.dryRun ?? false,
-      idempotencyKey: createDeliveryValidationIdempotencyKey(
-        order.orderId ? `#${order.orderId}` : order.orderName,
-        String(order.pickingId),
-        undefined,
-      ),
       durationMs,
       result: "validated" as const,
     })),
@@ -3660,13 +2727,6 @@ function recordManualDeliveryValidationAudit(
       orderId: incident.orderId,
       orderName: incident.orderName,
       mode: "manual" as const,
-      trigger: "manual" as const,
-      dryRun: result.dryRun ?? false,
-      idempotencyKey: createDeliveryValidationIdempotencyKey(
-        incident.orderId ? `#${incident.orderId}` : incident.orderName,
-        undefined,
-        undefined,
-      ),
       durationMs,
       result: "incident" as const,
       reason: incident.reason,
@@ -3684,21 +2744,6 @@ function createDeliveryIncidentId(orderId: number, reason: string) {
     .update(`${orderId}:${classifyDeliveryIncidentReason(reason)}`)
     .digest("hex")
     .slice(0, 16);
-}
-
-function createDeliveryValidationIdempotencyKey(
-  orderRef?: string | number,
-  pickingId?: string | number,
-  tracking?: string,
-) {
-  return createHash("sha1")
-    .update(
-      [cleanText(String(orderRef ?? "")), cleanText(String(pickingId ?? "")), cleanText(tracking)]
-        .join(":")
-        .toLowerCase(),
-    )
-    .digest("hex")
-    .slice(0, 20);
 }
 
 function classifyDeliveryIncidentReason(reason: string) {
@@ -3844,54 +2889,6 @@ async function getOdooDashboard(
     message:
       cache.sync.status === "never"
         ? "Cache vacia; sincronizacion en segundo plano iniciada."
-        : undefined,
-  };
-}
-
-async function getOdooDashboardV2(
-  env: Record<string, string>,
-  range: { from?: string; to?: string },
-) {
-  const startedAt = Date.now();
-  const cache = readOrdersCache(env);
-  const orders = filterCachedOrders(cache.orders, range);
-  const today = new Date().toISOString().slice(0, 10);
-  const activeIncidents = cache.incidents.filter((incident) => !incident.resolvedAt);
-
-  recordOrdersMetric(env, {
-    scope: "home",
-    durationMs: Date.now() - startedAt,
-    odooCalls: 0,
-    sendcloudCalls: 0,
-    orders: orders.length,
-  });
-
-  return {
-    mode: "live" as const,
-    source: "dashboard-cache" as const,
-    version: "v2" as const,
-    totalOrders: orders.length,
-    totalRevenue: sumNumbers(orders.map((order) => order.total)),
-    todayOrders: orders.filter((order) => order.date === today).length,
-    soldUnitsToday: 0,
-    soldAmountToday: 0,
-    activeCountries: 0,
-    daily: groupCachedOrders(orders, (order) => order.date.slice(0, 10)).sort((left, right) =>
-      left.label.localeCompare(right.label),
-    ),
-    channels: groupCachedOrders(orders, (order) => order.channel),
-    countries: [],
-    topProducts: [],
-    cache: {
-      updatedAt: cache.updatedAt,
-      sync: cache.sync,
-      incidentCount: activeIncidents.length,
-      lastIncidentAt: activeIncidents[0]?.lastAttemptAt,
-    },
-    metrics: getOrdersV2Performance(env),
-    message:
-      cache.sync.status === "never"
-        ? "Cache V2 vacia. Pulsa Actualizar para sincronizar sin bloquear Home."
         : undefined,
   };
 }
@@ -4626,14 +3623,7 @@ async function validateOdooDeliveries(
   env: Record<string, string>,
   orderIdsInput: Array<string | number>,
   orderRefsInput: string[],
-  options: {
-    dryRun?: boolean;
-    mode?: "manual" | "automatic";
-    trigger?: "manual" | "sync-incremental" | "sync-full" | "sendcloud-webhook";
-  } = {},
 ) {
-  const dryRun = options.dryRun ?? false;
-  const trigger = options.trigger ?? (options.mode === "automatic" ? "sync-incremental" : "manual");
   const config = getOdooConfig(env);
   if (!config.url || !config.database || !config.username || !config.apiKey) {
     throw new Error(
@@ -4708,7 +3698,6 @@ async function validateOdooDeliveries(
   const validated: Array<{ orderId: number; orderName?: string; pickingId: number }> =
     [];
   const incidents: Array<{ orderId: number; orderName?: string; reason: string }> = [];
-  const seenIdempotencyKeys = new Set<string>();
 
   for (const order of orders) {
     const relatedPickings = (order.picking_ids ?? [])
@@ -4716,28 +3705,6 @@ async function validateOdooDeliveries(
       .filter((picking): picking is OdooPickingRecord => Boolean(picking));
     const sendcloud = sendcloudByReference.get(getExternalOrderRef(order));
     const precheck = buildOdooDeliveryValidation(order, relatedPickings, sendcloud);
-    const idempotencyKey = createDeliveryValidationIdempotencyKey(
-      `#${order.id}`,
-      precheck.pickingId,
-      sendcloud?.trackingNumber,
-    );
-    if (seenIdempotencyKeys.has(idempotencyKey)) {
-      incidents.push({
-        orderId: order.id,
-        orderName: order.name,
-        reason: "Validacion duplicada ignorada por idempotencia.",
-      });
-      continue;
-    }
-    seenIdempotencyKeys.add(idempotencyKey);
-    if (precheck.status === "validated" && relatedPickings.length === 1) {
-      validated.push({
-        orderId: order.id,
-        orderName: order.name,
-        pickingId: relatedPickings[0].id,
-      });
-      continue;
-    }
     if (!precheck.canValidate || relatedPickings.length !== 1) {
       incidents.push({
         orderId: order.id,
@@ -4748,11 +3715,6 @@ async function validateOdooDeliveries(
     }
 
     const pickingId = relatedPickings[0].id;
-    if (dryRun) {
-      validated.push({ orderId: order.id, orderName: order.name, pickingId });
-      continue;
-    }
-
     await executeKwStrictWrite(config, uid, "stock.picking", "action_assign", [
       [pickingId],
     ]);
@@ -4820,11 +3782,6 @@ async function validateOdooDeliveries(
 
   return {
     ok: true,
-    mode: options.mode ?? "manual",
-    dryRun,
-    trigger,
-    candidates: orders.length,
-    validables: validated.length,
     validated: validated.length,
     incidents,
     validatedOrders: validated,
@@ -5107,16 +4064,6 @@ function buildOrderDomain(range: { from?: string; to?: string; search?: string }
     if (numericId) searchTerms.unshift(["id", "=", numericId]);
     domain.push(...Array(Math.max(0, searchTerms.length - 1)).fill("|"), ...searchTerms);
   }
-  return domain;
-}
-
-function buildIncrementalOrderDomain(
-  range: { from?: string; to?: string },
-  incrementalSince: string,
-) {
-  const domain: unknown[] = [["write_date", ">=", incrementalSince]];
-  if (range.from) domain.push(["date_order", ">=", `${range.from} 00:00:00`]);
-  if (range.to) domain.push(["date_order", "<=", `${range.to} 23:59:59`]);
   return domain;
 }
 

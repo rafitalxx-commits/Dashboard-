@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Centro de operaciones</title>
+  <script src="https://unpkg.com/@phosphor-icons/web"></script>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3f4f6;
+      --panel: #ffffff;
+      --panel-2: #f9fafb;
+      --border: rgba(0,0,0,0.06);
+      --text: #111827;
+      --muted: #6b7280;
+      --accent: #2563eb;
+      --accent-2: #eff6ff;
+      --danger: #ef4444;
+      --warn: #f59e0b;
+      --ok: #16a34a;
+      --info: #0ea5e7;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      padding: 22px 24px 8px;
+      max-width: 1200px; margin: 0 auto;
+    }
+    header h1 { margin: 0; font-size: 22px; letter-spacing: -0.2px; }
+    header p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+
+    main { padding: 18px 24px 40px; max-width: 1200px; margin: 0 auto; }
+
+    .grid { display: grid; gap: 16px; }
+    .row-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .row-1 { grid-template-columns: 1fr; }
+
+    @media (max-width: 900px) {
+      .row-2 { grid-template-columns: 1fr; }
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 1px 0 rgba(0,0,0,0.03), 0 6px 16px rgba(0,0,0,0.04);
+      cursor: pointer;
+      transition: box-shadow .15s ease, transform .04s ease;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .card:hover { box-shadow: 0 2px 0 rgba(0,0,0,0.04), 0 10px 24px rgba(0,0,0,0.06); transform: translateY(-1px); }
+    .card:active { transform: translateY(0); }
+
+    .card-head { display: flex; align-items: center; justify-content: space-between; }
+    .card-title { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); }
+    .card-title i { font-size: 16px; color: var(--text); }
+    .card-title strong { color: var(--text); font-weight: 600; }
+    .card-cta { font-size: 12px; color: var(--accent); }
+
+    .big { font-size: 13px; }
+    .small { font-size: 12px; color: var(--muted); }
+
+    .stack { display: flex; flex-direction: column; gap: 8px; }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .row.left { justify-content: flex-start; gap: 10px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+    .dot.critica { background: var(--danger); }
+    .dot.vencida { background: var(--danger); }
+    .dot.hoy { background: var(--warn); }
+    .dot.aviso { background: var(--info); }
+    .dot.equipo { background: var(--ok); }
+
+    .pill {
+      font-size: 11px; padding: 3px 8px; border-radius: 999px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .pill.critica { background: rgba(239,68,68,0.12); color: var(--danger); }
+    .pill.vencida { background: rgba(239,68,68,0.10); color: var(--danger); }
+    .pill.hoy { background: rgba(245,158,11,0.12); color: var(--warn); }
+
+    .quick { display: flex; flex-direction: column; gap: 8px; }
+    .quick-item { display: flex; align-items: center; gap: 10px; }
+    .quick-item input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
+    .quick-item .qtitle { font-size: 13px; }
+
+    .team-row { display: flex; align-items: center; gap: 10px; }
+    .avatar { width: 24px; height: 24px; border-radius: 50%; background: linear-gradient(135deg,#e5e7eb,#d1d5db); display: grid; place-items: center; font-size: 12px; color: #374151; font-weight: 600; }
+    .team-name { font-size: 13px; font-weight: 500; }
+    .team-task { font-size: 13px; color: var(--muted); }
+
+    footer.note { padding: 14px 24px 30px; max-width: 1200px; margin: 0 auto; font-size: 12px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="greeting">Buenos días, Rafa</h1>
+    <p id="dateLine"></p>
+  </header>
+
+  <main>
+    <div class="grid">
+      <!-- Fila superior -->
+      <div class="grid row-2">
+        <div class="card" onclick="go('calendario')">
+          <div class="card-head">
+            <div class="card-title"><i class="ph ph-calendar-blank"></i> <strong>Agenda</strong></div>
+            <div class="card-cta">Ver calendario</div>
+          </div>
+          <div class="stack big">
+            <div class="row"><span>Hoy</span> <span class="pill">4 tareas</span></div>
+            <div class="row"><span>Esta semana</span> <span class="pill">12 tareas</span></div>
+            <div class="row"><span>Este mes</span> <span class="pill">39 tareas</span></div>
+          </div>
+          <div class="small">Resumen de eventos próximos</div>
+        </div>
+
+        <div class="card" onclick="go('tareas')">
+          <div class="card-head">
+            <div class="card-title"><i class="ph ph-fire"></i> <strong>Tareas prioritarias</strong></div>
+            <div class="card-cta">Ver todas</div>
+          </div>
+          <div class="stack big">
+            <div class="row left"><span class="dot critica"></span>Portal devoluciones</div>
+            <div class="row left"><span class="dot critica"></span>Revisar Amazon</div>
+            <div class="row left"><span class="dot critica"></span>Actualizar Odoo</div>
+            <div class="row left"><span class="dot vencida"></span>Factura proveedor</div>
+            <div class="row left"><span class="dot hoy"></span>Envío cliente</div>
+          </div>
+          <div class="small">Críticas primero · vencidas · vencen hoy</div>
+        </div>
+      </div>
+
+      <!-- Fila central -->
+      <div class="grid row-2">
+        <div class="card" onclick="go('lista_rapida')">
+          <div class="card-head">
+            <div class="card-title"><i class="ph ph-lightning"></i> <strong>Tareas rápidas</strong></div>
+            <button class="pill" onclick="event.stopPropagation(); addQuick()">+</button>
+          </div>
+          <div class="quick" id="quickList">
+            <label class="quick-item"><input type="checkbox" onclick="event.stopPropagation();" /><span class="qtitle">Llamar proveedor</span></label>
+            <label class="quick-item"><input type="checkbox" onclick="event.stopPropagation();" /><span class="qtitle">Comprar etiquetas</span></label>
+            <label class="quick-item"><input type="checkbox" onclick="event.stopPropagation();" /><span class="qtitle">Hablar con Juanito</span></label>
+            <label class="quick-item"><input type="checkbox" onclick="event.stopPropagation();" /><span class="qtitle">Cambiar tóner</span></label>
+          </div>
+          <div class="small">Checklist ligera sin fechas ni proyectos</div>
+        </div>
+
+        <div class="card" onclick="go('correos')">
+          <div class="card-head">
+            <div class="card-title"><i class="ph ph-envelope-simple"></i> <strong>Correos importantes</strong></div>
+            <div class="card-cta">Ver todos</div>
+          </div>
+          <div class="stack big">
+            <div class="row"><span class="left" style="flex:1">Amazon</span><span class="small">Pedido no recibido · Hace 18 min</span></div>
+            <div class="row"><span class="left" style="flex:1">Proveedor LED</span><span class="small">Nueva tarifa · Hace 1 hora</span></div>
+            <div class="row"><span class="left" style="flex:1">Cliente</span><span class="small">Garantía producto · Ayer</span></div>
+          </div>
+          <div class="small">Pendientes de acción</div>
+        </div>
+      </div>
+
+      <!-- Fila inferior -->
+      <div class="grid row-1">
+        <div class="card" onclick="go('equipo')">
+          <div class="card-head">
+            <div class="card-title"><i class="ph ph-users"></i> <strong>Equipo trabajando</strong></div>
+            <div class="card-cta">Ver equipo</div>
+          </div>
+          <div class="stack big">
+            <div class="team-row"><div class="avatar">R</div><div><div class="team-name">Rafa</div><div class="team-task">Portal devoluciones Prestashop</div></div><span class="dot equipo"></span></div>
+            <div class="team-row"><div class="avatar">P</div><div><div class="team-name">Pedro</div><div class="team-task">Optimizando publicidad Amazon</div></div><span class="dot equipo"></span></div>
+            <div class="team-row"><div class="avatar">A</div><div><div class="team-name">Ana</div><div class="team-task">Respondiendo correos</div></div><span class="dot aviso"></span></div>
+            <div class="team-row"><div class="avatar">H</div><div><div class="team-name">Hermes</div><div class="team-task">Desarrollo panel de tareas</div></div><span class="dot equipo"></span></div>
+            <div class="team-row"><div class="avatar">J</div><div><div class="team-name">Juanito</div><div class="team-task">Amazon Messages</div></div><span class="dot aviso"></span></div>
+          </div>
+          <div class="small">Tarea principal por persona</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="note">Centro de operaciones · acceso rápido a módulos</footer>
+
+  <script>
+    const greetings = { morning:"Buenos días", afternoon:"Buenas tardes", evening:"Buenas noches" };
+    const d = new Date();
+    const hour = d.getHours();
+    const greeting = hour < 13 ? greetings.morning : hour < 20 ? greetings.afternoon : greetings.evening;
+    document.getElementById("greeting").textContent = greeting + ", Rafa";
+    document.getElementById("dateLine").textContent = d.toLocaleDateString("es-ES", { weekday:"long", day:"numeric", month:"long", year:"numeric" });
+
+    function go(module) {
+      const targets = {
+        calendario: "http://localhost:5174/prototipo-tareas.html",
+        tareas: "http://localhost:5174/prototipo-tareas.html",
+        lista_rapida: "http://localhost:5174/prototipo-tareas.html",
+        correos: "https://mail.google.com/mail/u/0/#inbox",
+        equipo: "http://localhost:5174/prototipo-tareas.html"
+      };
+      const url = targets[module];
+      if (!url) return;
+      if (url.startsWith("http")) { window.open(url, "_blank"); return; }
+      alert("Simulación de navegación a: " + module);
+    }
+    function addQuick() {
+      const text = prompt("Nueva tarea rápida");
+      if (!text) return;
+      const list = document.getElementById("quickList");
+      const label = document.createElement("label");
+      label.className = "quick-item";
+      label.innerHTML = `<input type="checkbox" onclick="event.stopPropagation();" /><span class="qtitle">${text.replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]))}</span>`;
+      list.appendChild(label);
+    }
+  </script>
+</body>
+</html>

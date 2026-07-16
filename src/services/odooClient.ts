@@ -12,7 +12,6 @@ import type {
   InvoiceMetricRow,
   Order,
   OrdersSyncStats,
-  OrdersV2Performance,
 } from "./odooTypes";
 
 type DashboardUserRole = "viewer" | "printer" | "admin";
@@ -268,9 +267,6 @@ export const odooClient = {
     });
     const payload = (await response.json()) as {
       ok?: boolean;
-      dryRun?: boolean;
-      candidates?: number;
-      validables?: number;
       validated?: number;
       incidents?: Array<{ orderId: number; orderName?: string; reason: string }>;
       message?: string;
@@ -302,31 +298,6 @@ export const odooClient = {
     };
     if (!response.ok) {
       throw new Error(payload.message ?? "No se pudo sincronizar pedidos");
-    }
-    return payload;
-  },
-  async syncOrdersV2(params?: {
-    from?: string;
-    to?: string;
-    search?: string;
-    autoValidate?: boolean;
-  }) {
-    const response = await fetch("/api/odoo/orders/v2/sync", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params ?? {}),
-    });
-    const payload = (await response.json()) as {
-      ok?: boolean;
-      cache?: {
-        updatedAt?: string;
-        incidentCount?: number;
-        sync?: OrdersSyncStats;
-      };
-      message?: string;
-    };
-    if (!response.ok) {
-      throw new Error(payload.message ?? "No se pudo sincronizar Pedidos V2");
     }
     return payload;
   },
@@ -413,21 +384,6 @@ export const odooClient = {
       };
     }
   },
-  async getDashboardV2(params?: { from?: string; to?: string }) {
-    const query = new URLSearchParams();
-    if (params?.from) query.set("from", params.from);
-    if (params?.to) query.set("to", params.to);
-
-    const response = await fetch(`/api/odoo/dashboard/v2?${query.toString()}`);
-    if (!response.ok) {
-      throw new Error(`Odoo V2 API returned ${response.status}`);
-    }
-
-    return (await response.json()) as DashboardSummary & {
-      version?: "v2";
-      metrics?: OrdersV2Performance;
-    };
-  },
   async getOrders(params?: {
     from?: string;
     to?: string;
@@ -472,49 +428,6 @@ export const odooClient = {
             : "No se pudo conectar con Odoo",
       };
     }
-  },
-  async getOrdersV2(params?: {
-    from?: string;
-    to?: string;
-    limit?: number;
-    offset?: number;
-    search?: string;
-  }) {
-    const query = new URLSearchParams();
-    if (params?.from) query.set("from", params.from);
-    if (params?.to) query.set("to", params.to);
-    if (params?.limit) query.set("limit", params.limit.toString());
-    if (params?.offset) query.set("offset", params.offset.toString());
-    if (params?.search) query.set("search", params.search);
-
-    const response = await fetch(`/api/odoo/orders/v2?${query.toString()}`);
-    if (!response.ok) {
-      throw new Error(`Pedidos V2 API returned ${response.status}`);
-    }
-
-    return (await response.json()) as {
-      mode: "live" | "demo";
-      source?: "dashboard-cache";
-      version?: "v2";
-      orders: Order[];
-      total?: number;
-      limit?: number;
-      offset?: number;
-      cache?: {
-        updatedAt?: string;
-        incidentCount?: number;
-        sync?: OrdersSyncStats;
-      };
-      metrics?: OrdersV2Performance;
-      message?: string;
-    };
-  },
-  async getOrdersV2Performance() {
-    const response = await fetch("/api/odoo/orders/v2/performance");
-    if (!response.ok) {
-      throw new Error(`Metricas V2 API returned ${response.status}`);
-    }
-    return (await response.json()) as OrdersV2Performance;
   },
   async getCustomerInvoices(params?: { from?: string; to?: string; limit?: number; offset?: number; sortKey?: string; sortDir?: string }) {
     try {

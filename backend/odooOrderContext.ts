@@ -25,12 +25,10 @@ export type SendcloudStatus = {
   trackingNumber?: string;
   trackingUrl?: string;
   carrier?: string;
-  hasTracking?: boolean;
 };
 
 type SendcloudApiOrder = {
   order_number?: string;
-  order_id?: string;
   order_details?: {
     status?: {
       code?: string;
@@ -41,8 +39,6 @@ type SendcloudApiOrder = {
 
 type SendcloudApiShipment = {
   order_number?: string;
-  reference?: string;
-  external_reference_id?: string;
   carrier?: {
     code?: string;
     name?: string;
@@ -56,8 +52,6 @@ type SendcloudApiShipment = {
     };
     tracking_number?: string;
     tracking_url?: string;
-    announced_at?: string;
-    updated_at?: string;
   }>;
 };
 
@@ -250,7 +244,6 @@ async function findOdooOrderByStoredOrderId(
 export async function getSendcloudStatuses(
   env: Record<string, string>,
   references: string[],
-  options: { exactLookupLimit?: number; metrics?: { calls: number } } = {},
 ) {
   const config = getSendcloudConfig(env);
   const statuses = new Map<string, SendcloudStatus>();
@@ -287,26 +280,22 @@ export async function getSendcloudStatuses(
       sendcloudGet<{ data?: SendcloudApiOrder[] }>(
         config,
         "/api/v3/orders?page_size=200",
-        options.metrics,
       ),
       sendcloudGet<{ data?: SendcloudApiShipment[] }>(
         config,
         "/api/v3/shipments?page_size=200",
-        options.metrics,
       ),
     ]);
-    const ordersByReference = new Map<string, SendcloudApiOrder>();
-    (ordersPayload.data ?? []).forEach((order) => {
-      sendcloudOrderReferences(order).forEach((reference) => {
-        ordersByReference.set(reference, order);
-      });
-    });
-    const shipmentsByReference = new Map<string, SendcloudApiShipment>();
-    (shipmentsPayload.data ?? []).forEach((shipment) => {
-      sendcloudShipmentReferences(shipment).forEach((reference) => {
-        shipmentsByReference.set(reference, shipment);
-      });
-    });
+    const ordersByReference = new Map(
+      (ordersPayload.data ?? [])
+        .filter((order) => cleanText(order.order_number))
+        .map((order) => [cleanText(order.order_number), order]),
+    );
+    const shipmentsByReference = new Map(
+      (shipmentsPayload.data ?? [])
+        .filter((shipment) => cleanText(shipment.order_number))
+        .map((shipment) => [cleanText(shipment.order_number), shipment]),
+    );
 
     missingReferences.forEach((reference) => {
       const summary = summarizeSendcloud(
@@ -323,14 +312,9 @@ export async function getSendcloudStatuses(
       }
     });
 
-    const exactLookupLimit = clampNumber(
-      options.exactLookupLimit ?? Number(env.SENDCLOUD_EXACT_LOOKUP_LIMIT ?? 8),
-      0,
-      50,
+    const exactReferences = missingReferences.filter(
+      (reference) => !statuses.has(reference),
     );
-    const exactReferences = missingReferences
-      .filter((reference) => !statuses.has(reference))
-      .slice(0, exactLookupLimit);
 
     for (const reference of exactReferences) {
       try {
@@ -338,12 +322,10 @@ export async function getSendcloudStatuses(
           sendcloudGet<{ data?: SendcloudApiOrder[] }>(
             config,
             `/api/v3/orders?order_number=${encodeURIComponent(reference)}&page_size=1`,
-            options.metrics,
           ),
           sendcloudGet<{ data?: SendcloudApiShipment[] }>(
             config,
             `/api/v3/shipments?order_number=${encodeURIComponent(reference)}&page_size=1`,
-            options.metrics,
           ),
         ]);
         debugAmazonSendcloud(env, "sendcloud_exact_query", {
@@ -437,9 +419,7 @@ function mapOdooContextOrder(
 async function sendcloudGet<T>(
   config: ReturnType<typeof getSendcloudConfig>,
   path: string,
-  metrics?: { calls: number },
 ) {
-  if (metrics) metrics.calls += 1;
   const auth = Buffer.from(
     `${config.publicKey}:${config.secretKey}`,
   ).toString("base64");
@@ -471,48 +451,19 @@ function summarizeSendcloud(
 
   if (!rawStatus && !order && !shipment) return undefined;
 
-  const trackingNumber = cleanText(parcel?.tracking_number);
-  const trackingUrl = cleanText(parcel?.tracking_url);
-
   return {
     reference,
     status: translateSendcloudStatus(rawStatus, Boolean(parcel)),
     rawStatus,
-    trackingNumber,
-    trackingUrl,
+    trackingNumber: cleanText(parcel?.tracking_number),
+    trackingUrl: cleanText(parcel?.tracking_url),
     carrier:
       cleanText(shipment?.carrier?.name) ||
       cleanText(shipment?.carrier_name) ||
       cleanText(shipment?.carrier?.code) ||
       cleanText(shipment?.carrier_code) ||
       "Sendcloud",
-    hasTracking: Boolean(trackingNumber || trackingUrl),
   };
-}
-
-function sendcloudOrderReferences(order: SendcloudApiOrder) {
-  return Array.from(
-    new Set([order.order_number, order.order_id].map(cleanText).filter(Boolean)),
-  );
-}
-
-function sendcloudShipmentReferences(shipment: SendcloudApiShipment) {
-  return Array.from(
-    new Set(
-      [
-        shipment.order_number,
-        shipment.reference,
-        shipment.external_reference_id,
-      ]
-        .map(cleanText)
-        .filter(Boolean),
-    ),
-  );
-}
-
-function clampNumber(value: number, min: number, max: number) {
-  if (!Number.isFinite(value)) return min;
-  return Math.max(min, Math.min(max, Math.trunc(value)));
 }
 
 function translateSendcloudStatus(value?: string, hasParcel = false) {

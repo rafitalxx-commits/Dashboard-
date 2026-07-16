@@ -1,0 +1,803 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Dashboard Tareas</title>
+  <script src="https://unpkg.com/@phosphor-icons/web"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1115;
+      --panel: #151921;
+      --panel-2: #1a1f2b;
+      --border: rgba(255,255,255,0.08);
+      --text: #e7e9ee;
+      --muted: #9aa0aa;
+      --accent: #2563eb;
+      --accent-2: #60a5fa;
+      --danger: #ef4444;
+      --ok: #22c55e;
+      --warn: #f59e0b;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      background: radial-gradient(1200px 800px at 10% -10%, #1d2433, transparent), var(--bg);
+      color: var(--text);
+    }
+    header {
+      position: sticky; top: 0; z-index: 10;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--border);
+      background: color-mix(in oklab, var(--panel) 70%, transparent);
+      backdrop-filter: blur(12px);
+    }
+    header h1 { font-size: 18px; margin: 0; letter-spacing: 0.2px; }
+    header p { margin: 0; color: var(--muted); font-size: 12px; }
+
+    .layout { display: grid; grid-template-columns: 220px 1fr; min-height: calc(100vh - 56px); }
+    .sidebar {
+      border-right: 1px solid var(--border);
+      background: color-mix(in oklab, var(--panel) 60%, transparent);
+      padding: 12px;
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .sidebar-title { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.25px; padding: 8px 10px; }
+    .side-btn {
+      display: flex; align-items: center; justify-content: space-between;
+      width: 100%; text-align: left; background: transparent; color: inherit;
+      border: 1px solid transparent; padding: 9px 10px; border-radius: 10px; cursor: pointer; font-weight: 500; font-size: 13px;
+    }
+    .side-btn:hover { background: rgba(255,255,255,0.06); border-color: var(--border); }
+    .side-btn.active { background: rgba(37,99,235,0.18); color: var(--accent-2); border-color: rgba(37,99,235,0.35); }
+    .side-btn .count { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: rgba(255,255,255,0.08); color: var(--muted); }
+
+    .main { padding: 16px 20px; }
+    .segmented {
+      display: inline-flex; gap: 6px; padding: 5px;
+      border: 1px solid var(--border); border-radius: 10px;
+      background: rgba(255,255,255,0.04);
+    }
+    .segmented button {
+      border: none; background: transparent; color: inherit;
+      padding: 7px 12px; border-radius: 8px; cursor: pointer; font-weight: 500; font-size: 13px;
+    }
+    .segmented button.active { background: var(--accent); color: white; }
+    .segmented button:hover:not(.active) { background: rgba(255,255,255,0.08); }
+
+    .toolbar {
+      display: flex; flex-wrap: wrap; gap: 10px; align-items: end;
+      margin: 10px 0 12px;
+    }
+    .field {
+      display: flex; flex-direction: column; gap: 4px;
+      background: var(--panel); padding: 8px 10px; border-radius: 10px;
+      border: 1px solid var(--border);
+    }
+    .field label { font-size: 11px; color: var(--muted); }
+    .field input, .field select, .field textarea {
+      min-width: 160px; padding: 7px 9px; border-radius: 8px;
+      border: 1px solid var(--border); background: #0f1218; color: inherit; font-size: 13px;
+    }
+    .field textarea { min-height: 56px; resize: vertical; }
+    button.primary {
+      padding: 8px 12px; border-radius: 10px; border: none;
+      background: var(--accent); color: white; cursor: pointer; font-weight: 500; font-size: 13px;
+      display: inline-flex; gap: 6px; align-items: center;
+    }
+    button.primary:hover { background: #1d4ed8; }
+
+    /* Quick add bar */
+    .quick-bar {
+      display: flex; gap: 8px; align-items: center;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+      padding: 8px 10px; margin-bottom: 12px;
+    }
+    .quick-bar input { flex: 1; background: transparent; border: none; color: inherit; outline: none; font-size: 13px; }
+    .quick-bar .hint { color: var(--muted); font-size: 11px; white-space: nowrap; }
+
+    /* Board */
+    .board { display: grid; grid-template-columns: repeat(5, minmax(200px, 1fr)); gap: 14px; align-items: start; }
+    .column {
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+      border: 1px solid var(--border); border-radius: 14px; padding: 10px;
+    }
+    .column-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+    .column-head h3 { margin: 0; font-size: 12px; color: var(--muted); letter-spacing: 0.3px; }
+    .count { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: rgba(255,255,255,0.08); color: var(--muted); }
+
+    .cards { display: flex; flex-direction: column; gap: 8px; min-height: 60px; }
+    .card {
+      background: #0c0f14; border: 1px solid var(--border); border-radius: 12px; padding: 10px;
+      cursor: pointer; transition: transform .08s ease, border-color .15s ease;
+    }
+    .card:hover { border-color: rgba(255,255,255,0.18); }
+    .card.dragging { opacity: 0.6; transform: scale(0.98); }
+    .card-top { display: flex; justify-content: space-between; gap: 8px; align-items: start; }
+    .card-title { font-weight: 500; font-size: 13px; line-height: 1.3; }
+    .badge { font-size: 10px; padding: 3px 7px; border-radius: 999px; background: rgba(255,255,255,0.08); color: var(--muted); white-space: nowrap; }
+    .badge.alert { background: rgba(239,68,68,0.18); color: var(--danger); }
+    .meta { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 10px; padding: 3px 7px; border-radius: 999px;
+      background: rgba(255,255,255,0.05); color: var(--muted);
+      border: 1px solid var(--border);
+    }
+    .chip .dot { width: 6px; height: 6px; border-radius: 50%; }
+    .chip .dot.alta { background: var(--danger); }
+    .chip .dot.media { background: var(--warn); }
+    .chip .dot.baja { background: var(--ok); }
+    .actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+    .ghost {
+      background: transparent; color: var(--muted); border: 1px solid var(--border);
+      padding: 5px 9px; border-radius: 7px; cursor: pointer; font-size: 11px;
+    }
+    .ghost:hover { color: var(--text); border-color: rgba(255,255,255,0.25); }
+    .ghost.danger { color: var(--danger); }
+
+    .expand {
+      margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);
+      display: none; flex-direction: column; gap: 8px;
+    }
+    .card.open .expand { display: flex; }
+    .field-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .field-row .field { flex: 1 1 140px; }
+
+    /* Compact list */
+    .list-wrap { display: flex; flex-direction: column; gap: 6px; }
+    .list-row {
+      background: #0c0f14; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px;
+      display: grid; grid-template-columns: 24px 1fr auto auto auto; gap: 10px; align-items: center; cursor: pointer;
+    }
+    .list-row:hover { border-color: rgba(255,255,255,0.18); }
+    .list-row .title { font-weight: 500; font-size: 13px; line-height: 1.25; }
+    .list-row .meta { display: none; }
+    .status-pill {
+      font-size: 11px; padding: 4px 10px; border-radius: 999px; cursor: pointer; border: 1px solid transparent;
+      background: rgba(255,255,255,0.06); color: var(--text); white-space: nowrap;
+    }
+    .status-pill:hover { border-color: rgba(255,255,255,0.25); }
+    .status-pill.activo { background: rgba(34,197,94,0.18); color: var(--ok); }
+    .status-pill.pendiente { background: rgba(245,158,11,0.18); color: var(--warn); }
+    .status-pill.revision { background: rgba(96,165,250,0.18); color: var(--accent-2); }
+    .status-pill.listo { background: rgba(148,163,184,0.18); color: #cbd5e1; }
+    .status-pill.cerrado { background: rgba(255,255,255,0.08); color: var(--muted); }
+    .expanded {
+      grid-column: 1 / -1; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);
+      display: none; flex-direction: column; gap: 8px;
+    }
+    .list-row.open .expanded { display: flex; }
+
+    /* Quick list */
+    .quick-list { display: flex; flex-direction: column; gap: 6px; }
+    .quick-item {
+      display: flex; align-items: center; gap: 8px;
+      background: #0c0f14; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; cursor: pointer;
+    }
+    .quick-item:hover { border-color: rgba(255,255,255,0.18); }
+    .quick-item input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
+    .quick-item .qtitle { flex: 1; font-size: 13px; }
+    .quick-item.done .qtitle { text-decoration: line-through; color: var(--muted); }
+
+    /* Calendar */
+    .calendar { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px; }
+    .calendar-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .calendar-head h3 { margin: 0; font-size: 14px; }
+    .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+    .dow { text-align: center; font-size: 10px; color: var(--muted); padding-bottom: 4px; }
+    .day {
+      aspect-ratio: 1; border-radius: 8px; border: 1px solid var(--border);
+      background: #0c0f14; padding: 6px; display: flex; flex-direction: column; gap: 3px; overflow: hidden;
+    }
+    .day:hover { border-color: rgba(255,255,255,0.25); }
+    .day.empty { background: transparent; border-color: transparent; }
+    .day-num { font-size: 11px; color: var(--muted); }
+    .ev {
+      font-size: 10px; padding: 2px 4px; border-radius: 4px;
+      background: rgba(37,99,235,0.25); color: #e5eaff;
+      border: 1px solid rgba(37,99,235,0.35);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+
+    .empty { padding: 14px; text-align: center; color: var(--muted); font-size: 13px; border: 1px dashed var(--border); border-radius: 12px; }
+
+    /* Integration hint */
+    .hint-bar {
+      margin-top: 10px; padding: 10px 12px; border-radius: 10px;
+      background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+      color: var(--muted); font-size: 12px; display: flex; gap: 8px; align-items: center;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Tareas</h1>
+      <p>Prototipo</p>
+    </div>
+    <div class="segmented">
+      <button id="viewList">Lista</button>
+      <button id="viewBoard">Camba</button>
+      <button id="viewCalendar">Calendario</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">General</div>
+      <button class="side-btn active" data-nav="inicio">
+        <span><i class="ph ph-house"></i> Inicio</span>
+      </button>
+      <button class="side-btn" data-nav="mi_lista">
+        <span><i class="ph ph-check-square"></i> Mis tareas</span><span class="count" id="countMiLista">0</span>
+      </button>
+      <button class="side-btn" data-nav="lista_rapida">
+        <span><i class="ph ph-list-dashes"></i> Lista rápida</span><span class="count" id="countListaRapida">0</span>
+      </button>
+      <button class="side-btn" data-nav="proyectos">
+        <span><i class="ph ph-folders"></i> Proyectos</span><span class="count" id="countProyectos">0</span>
+      </button>
+      <button class="side-btn" data-nav="calendario">
+        <span><i class="ph ph-calendar"></i> Calendario</span>
+      </button>
+      <button class="side-btn" data-nav="equipo">
+        <span><i class="ph ph-users"></i> Equipo</span><span class="count" id="countEquipo">0</span>
+      </button>
+    </aside>
+
+    <main class="main">
+      <div class="toolbar" id="toolbar">
+        <div class="field">
+          <label>Título</label>
+          <input id="title" placeholder="Ej. Revisar pedidos Odoo" />
+        </div>
+        <div class="field">
+          <label>Categoría</label>
+          <select id="category">
+            <option>Operaciones</option>
+            <option>Odoo</option>
+            <option>Compras</option>
+            <option>Amazon</option>
+            <option>Gmail</option>
+            <option>Dashboard</option>
+            <option>IA</option>
+            <option>Proyecto</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Prioridad</label>
+          <select id="priority">
+            <option>Media</option>
+            <option>Alta</option>
+            <option>Baja</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Fecha límite</label>
+          <input id="due" type="date" />
+        </div>
+        <div class="field">
+          <label>Aviso</label>
+          <input id="reminder" type="datetime-local" />
+        </div>
+        <button class="primary" id="addBtn"><i class="ph ph-plus"></i> Nueva tarea</button>
+      </div>
+
+      <section id="content"></section>
+    </main>
+  </div>
+
+  <script>
+    const STATUSES = ["Pendiente","En curso","En revisión","Listo","Cerrado"];
+    const STATUS_ICON = {
+      "Pendiente": "ph-clock",
+      "En curso": "ph-lightning",
+      "En revisión": "ph-eye",
+      "Listo": "ph-check-circle",
+      "Cerrado": "ph-x-circle"
+    };
+    const STATUS_CLASS = {
+      "Pendiente": "pendiente",
+      "En curso": "activo",
+      "En revisión": "revision",
+      "Listo": "listo",
+      "Cerrado": "cerrado"
+    };
+    const today = () => new Date().toISOString().slice(0,10);
+    const uid = () => "task-" + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+
+    let state = JSON.parse(localStorage.getItem("demo_tasks_state_v2") || "null") || {
+      tasks: [],
+      quickItems: [],
+      nav: "mi_lista",
+      view: "list",
+      project: null,
+    };
+    const content = document.getElementById("content");
+    const toolbar = document.getElementById("toolbar");
+
+    function save() { localStorage.setItem("demo_tasks_state_v2", JSON.stringify(state)); }
+
+    document.querySelectorAll(".side-btn").forEach(btn => {
+      btn.addEventListener("click", () => { state.nav = btn.dataset.nav; state.project = null; save(); render(); });
+    });
+    document.getElementById("viewList").addEventListener("click", () => changeView("list"));
+    document.getElementById("viewBoard").addEventListener("click", () => changeView("board"));
+    document.getElementById("viewCalendar").addEventListener("click", () => changeView("calendar"));
+    document.getElementById("addBtn").addEventListener("click", addTask);
+
+    function changeView(v) { state.view = v; save(); render(); }
+
+    function addTask() {
+      const title = document.getElementById("title").value.trim();
+      if (!title) return alert("Falta título");
+      const task = {
+        id: uid(), title,
+        detail: "", category: document.getElementById("category").value,
+        priority: document.getElementById("priority").value, status: "Pendiente",
+        dueDate: document.getElementById("due").value || today(),
+        reminderAt: document.getElementById("reminder").value || "",
+        project: state.nav === "proyectos" && state.project ? state.project : null,
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      };
+      state.tasks.unshift(task);
+      document.getElementById("title").value = "";
+      save(); render();
+    }
+
+    function moveTask(id, status) { const t = state.tasks.find(x => x.id === id); if (t) { t.status = status; t.updatedAt = new Date().toISOString(); save(); render(); } }
+    function updateTask(id, patch) { const t = state.tasks.find(x => x.id === id); if (!t) return; Object.assign(t, patch, { updatedAt: new Date().toISOString() }); save(); render(); }
+    function deleteTask(id) { if (!confirm("Borrar tarea?")) return; state.tasks = state.tasks.filter(x => x.id !== id); save(); render(); }
+    function toggleExpand(id) {
+      const el = document.getElementById("row-" + id); if (!el) return;
+      const already = el.classList.contains("open");
+      document.querySelectorAll(".card.open,.list-row.open").forEach(c => c.classList.remove("open"));
+      if (!already) el.classList.add("open");
+    }
+
+    function visibleTasks() {
+      if (state.nav === "mi_lista") return state.tasks;
+      if (state.nav === "proyectos") {
+        if (state.project) return state.tasks.filter(t => (t.project || t.category) === state.project);
+        return state.tasks.filter(t => t.project || t.category === "Proyecto");
+      }
+      if (state.nav === "equipo") return state.tasks.filter(t => t.assignee && t.assignee !== "yo");
+      return state.tasks;
+    }
+
+    function renderSidebar() {
+      const projects = [...new Set(state.tasks.map(t => t.project || t.category).filter(Boolean))];
+      document.getElementById("countMiLista").textContent = String(state.tasks.filter(t => !t.project).length);
+      document.getElementById("countProyectos").textContent = String(projects.length);
+      document.getElementById("countEquipo").textContent = String(state.tasks.filter(t => t.assignee && t.assignee !== "yo").length);
+      document.getElementById("countListaRapida").textContent = String(state.quickItems.length);
+    }
+
+    function quickBar() {
+      const wrap = document.createElement("div");
+      wrap.className = "quick-bar";
+      wrap.innerHTML = `<i class="ph ph-lightning" style="color:var(--warn)"></i> <input id="quickInput" placeholder="Añadir a lista rápida (Enter)..." /> <span class="hint">Captura rápida</span>`;
+      content.appendChild(wrap);
+      const input = document.getElementById("quickInput");
+      input.addEventListener("keydown", e => {
+        if (e.key === "Enter") {
+          const v = input.value.trim(); if (!v) return;
+          state.quickItems.unshift({ id: uid(), title: v, done: false, detail: "", createdAt: new Date().toISOString() });
+          input.value = ""; save(); render();
+        }
+      });
+    }
+
+    function renderQuickList() {
+      toolbar.hidden = true;
+      content.innerHTML = "";
+      quickBar();
+      const wrap = document.createElement("div");
+      wrap.className = "quick-list";
+      if (!state.quickItems.length) wrap.innerHTML = `<div class="empty">Añade items rápido con Enter</div>`;
+      state.quickItems.forEach((q, idx) => {
+        const row = document.createElement("div");
+        row.className = "quick-item" + (q.done ? " done" : "");
+        row.innerHTML = `
+          <input type="checkbox" ${q.done ? "checked" : ""} />
+          <div class="qtitle">${escapeHtml(q.title)}</div>
+          <button class="ghost"><i class="ph ph-pencil-simple"></i></button>
+          <button class="ghost danger"><i class="ph ph-trash"></i></button>
+        `;
+        row.querySelector('input[type="checkbox"]').addEventListener("change", () => { q.done = !q.done; save(); render(); });
+        row.querySelector(".ghost:not(.danger)").addEventListener("click", () => {
+          const newTitle = prompt("Editar", q.title); if (newTitle === null) return;
+          q.title = newTitle.trim() || q.title; save(); render();
+        });
+        row.querySelector(".ghost.danger").addEventListener("click", () => { if (!confirm("Borrar?")) return; state.quickItems.splice(idx, 1); save(); render(); });
+        row.addEventListener("dblclick", () => {
+          const newTitle = prompt("Expandir / convertir en tarea", q.title); if (newTitle === null) return;
+          const task = { id: uid(), title: newTitle.trim() || q.title, detail: q.detail || "", category: "Operaciones", priority: "Media", status: "Pendiente", dueDate: today(), reminderAt: "", project: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+          state.tasks.push(task); state.quickItems.splice(idx, 1); save(); render();
+        });
+        wrap.appendChild(row);
+      });
+      content.appendChild(wrap);
+      const hint = document.createElement("div");
+      hint.className = "hint-bar";
+      hint.innerHTML = `<i class="ph ph-info"></i> <div><strong>Tip:</strong> Dblclick para convertir en tarea completa y ampliar detalle. También podés pedirme crear items por Telegram.</div>`;
+      content.appendChild(hint);
+    }
+
+    function renderList() {
+      toolbar.hidden = false;
+      content.innerHTML = "";
+      const wrap = document.createElement("div");
+      wrap.className = "list-wrap";
+      const items = visibleTasks();
+      if (!items.length) wrap.innerHTML = `<div class="empty">No hay tareas</div>`;
+      items.forEach(task => {
+        const row = document.createElement("div");
+        row.className = "list-row";
+        row.id = "row-" + task.id;
+        row.innerHTML = `
+          <input type="checkbox" ${["Hecha","Listo","Cerrado"].includes(task.status) ? "checked" : ""} />
+          <div>
+            <div class="title">${escapeHtml(task.title)}</div>
+          </div>
+          <span class="status-pill ${STATUS_CLASS[task.status] || 'pendiente'}" data-status-pill="${task.id}" title="Cambiar estado">${STATUS_ICON[task.status] ? `<i class="ph ${STATUS_ICON[task.status]}"></i>` : ''} ${task.status}</span>
+          <span class="chip"><span class="dot ${task.priority.toLowerCase()}"></span>${task.priority}</span>
+          <span class="chip">${task.project || task.category}</span>
+          <div class="expanded">
+            <form data-field-root>
+              <div class="field-row">
+                <div class="field"><label>Título</label><input data-field="title" value="${escapeHtml(task.title)}" /></div>
+                <div class="field"><label>Proyecto</label><input data-field="project" value="${escapeHtml(task.project || "")}" placeholder="Nombre del proyecto" /></div>
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <label>Categoría</label>
+                  <select data-field="category">${["Operaciones","Odoo","Compras","Amazon","Gmail","Dashboard","IA","Proyecto"].map(c => `<option ${c===task.category?"selected":""}>${c}</option>`).join("")}</select>
+                </div>
+                <div class="field">
+                  <label>Prioridad</label>
+                  <select data-field="priority">${["Alta","Media","Baja"].map(p => `<option ${p===task.priority?"selected":""}>${p}</option>`).join("")}</select>
+                </div>
+                <div class="field">
+                  <label>Estado</label>
+                  <select data-field="status">${STATUSES.map(s => `<option ${s===task.status?"selected":""}>${s}</option>`).join("")}</select>
+                </div>
+              </div>
+              <div class="field-row">
+                <div class="field"><label>Fecha límite</label><input data-field="dueDate" type="date" value="${task.dueDate || ""}" /></div>
+                <div class="field"><label>Aviso</label><input data-field="reminderAt" type="datetime-local" value="${task.reminderAt || ""}" /></div>
+              </div>
+              <div class="field"><label>Detalle</label><textarea data-field="detail" placeholder="Detalles...">${escapeHtml(task.detail || "")}</textarea></div>
+              <div class="actions" style="display:flex;gap:8px;flex-wrap:wrap">
+                <button type="button" class="primary" data-save>Guardar cambios</button>
+                <button type="button" class="ghost danger" data-del>Borrar</button>
+              </div>
+            </form>
+          </div>
+        `;
+        row.querySelector(".title").addEventListener("click", () => toggleExpand(task.id));
+        row.querySelector("[data-status-pill]").addEventListener("click", (e) => {
+          e.stopPropagation();
+          const currentIdx = STATUSES.indexOf(task.status);
+          const next = STATUSES[(currentIdx + 1) % STATUSES.length];
+          moveTask(task.id, next);
+        });
+        row.querySelector("[data-del]")?.addEventListener("click", () => deleteTask(task.id));
+        const saveBtn = row.querySelector("[data-save]");
+        if (saveBtn) saveBtn.addEventListener("click", () => {
+          const form = row.querySelector("[data-field-root]");
+          const patch = {
+            title: (form.querySelector("[data-field='title']").value || task.title).trim(),
+            detail: form.querySelector("[data-field='detail']").value,
+            category: form.querySelector("[data-field='category']").value,
+            priority: form.querySelector("[data-field='priority']").value,
+            status: form.querySelector("[data-field='status']").value,
+            dueDate: form.querySelector("[data-field='dueDate']").value,
+            reminderAt: form.querySelector("[data-field='reminderAt']").value,
+            project: form.querySelector("[data-field='project']").value.trim() || null,
+          };
+          updateTask(task.id, patch);
+        });
+        wrap.appendChild(row);
+      });
+      content.appendChild(wrap);
+    }
+
+    function renderBoard() {
+      toolbar.hidden = false;
+      content.innerHTML = "";
+      const wrap = document.createElement("div");
+      wrap.className = "board";
+      STATUSES.forEach(status => {
+        const col = document.createElement("div");
+        col.className = "column";
+        const items = state.tasks.filter(t => t.status === status);
+        col.innerHTML = `<div class="column-head"><h3>${STATUS_ICON[status] ? `<i class="ph ${STATUS_ICON[status]}"></i> ` : ''}${status}</h3><span class="count">${items.length}</span></div><div class="cards" data-status="${status}"></div>`;
+        const cards = col.querySelector(".cards");
+        items.forEach(task => {
+          const el = document.createElement("div");
+          el.className = "card"; el.id = "card-" + task.id; el.draggable = true;
+          el.innerHTML = `
+            <div class="card-top" style="cursor:pointer">
+              <div class="card-title">${escapeHtml(task.title)}</div>
+              <span class="badge ${task.priority==="Alta"?"alert":""}">${task.project || task.category}</span>
+            </div>
+            <div class="meta">
+              <span class="chip"><span class="dot ${task.priority.toLowerCase()}"></span>${task.priority}</span>
+              <span class="chip">📅 ${task.dueDate || "sin fecha"}</span>
+              ${task.reminderAt ? `<span class="chip">🔔 ${new Date(task.reminderAt).toLocaleString("es-ES", {hour:"2-digit", minute:"2-digit", day:"2-digit", month:"2-digit"})}</span>` : ""}
+            </div>
+            <div class="expand">
+              <form data-field-root>
+                <div class="field-row">
+                  <div class="field"><label>Título</label><input data-field="title" value="${escapeHtml(task.title)}" /></div>
+                  <div class="field"><label>Proyecto</label><input data-field="project" value="${escapeHtml(task.project || "")}" /></div>
+                </div>
+                <div class="field-row">
+                  <div class="field">
+                    <label>Categoría</label>
+                    <select data-field="category">${["Operaciones","Odoo","Compras","Amazon","Gmail","Dashboard","IA","Proyecto"].map(c => `<option ${c===task.category?"selected":""}>${c}</option>`).join("")}</select>
+                  </div>
+                  <div class="field">
+                    <label>Prioridad</label>
+                    <select data-field="priority">${["Alta","Media","Baja"].map(p => `<option ${p===task.priority?"selected":""}>${p}</option>`).join("")}</select>
+                  </div>
+                  <div class="field">
+                    <label>Estado</label>
+                    <select data-field="status">${STATUSES.map(s => `<option ${s===task.status?"selected":""}>${s}</option>`).join("")}</select>
+                  </div>
+                </div>
+                <div class="field-row">
+                  <div class="field"><label>Fecha límite</label><input data-field="dueDate" type="date" value="${task.dueDate || ""}" /></div>
+                  <div class="field"><label>Aviso</label><input data-field="reminderAt" type="datetime-local" value="${task.reminderAt || ""}" /></div>
+                </div>
+                <div class="field"><label>Detalle</label><textarea data-field="detail">${escapeHtml(task.detail || "")}</textarea></div>
+                <div class="actions"><button type="button" class="primary" data-save>Guardar</button></div>
+              </form>
+            </div>
+          `;
+          el.addEventListener("dragstart", e => { e.dataTransfer.setData("text/plain", task.id); el.classList.add("dragging"); });
+          el.addEventListener("dragend", () => el.classList.remove("dragging"));
+          el.querySelector(".card-top").addEventListener("click", () => toggleExpand(task.id));
+          el.querySelectorAll("[data-move]").forEach(b => b.addEventListener("click", () => moveTask(task.id, b.dataset.move)));
+          const saveBtn = el.querySelector("[data-save]");
+          if (saveBtn) saveBtn.addEventListener("click", () => {
+            const form = el.querySelector("[data-field-root]");
+            const patch = {
+              title: (form.querySelector("[data-field='title']").value || task.title).trim(),
+              detail: form.querySelector("[data-field='detail']").value,
+              category: form.querySelector("[data-field='category']").value,
+              priority: form.querySelector("[data-field='priority']").value,
+              status: form.querySelector("[data-field='status']").value,
+              dueDate: form.querySelector("[data-field='dueDate']").value,
+              reminderAt: form.querySelector("[data-field='reminderAt']").value,
+              project: form.querySelector("[data-field='project']").value.trim() || null,
+            };
+            updateTask(task.id, patch);
+          });
+          cards.appendChild(el);
+        });
+        cards.addEventListener("dragover", e => { e.preventDefault(); cards.style.outline = "1px dashed rgba(255,255,255,0.25)"; });
+        cards.addEventListener("dragleave", () => { cards.style.outline = ""; });
+        cards.addEventListener("drop", e => { e.preventDefault(); cards.style.outline = ""; const id = e.dataTransfer.getData("text/plain"); if (id) moveTask(id, status); });
+        col.addEventListener("dragover", e => e.preventDefault());
+        col.addEventListener("drop", e => { e.preventDefault(); const id = e.dataTransfer.getData("text/plain"); if (id) moveTask(id, status); });
+        wrap.appendChild(col);
+      });
+      content.appendChild(wrap);
+    }
+
+    function renderCalendarView() {
+      toolbar.hidden = true;
+      content.innerHTML = "";
+      const wrap = document.createElement("div");
+      wrap.className = "calendar";
+      const now = new Date();
+      const y = now.getFullYear(), m = now.getMonth();
+      const first = new Date(y,m,1); const last = new Date(y,m+1,0);
+      const startWeekday = (first.getDay() + 6) % 7; const daysInMonth = last.getDate();
+      const head = document.createElement("div");
+      head.className = "calendar-head";
+      head.innerHTML = `<h3>${now.toLocaleString("es-ES", {month:"long", year:"numeric"})}</h3><div class="segmented"><button class="active">Mes</button></div>`;
+      wrap.appendChild(head);
+      const grid = document.createElement("div");
+      grid.className = "calendar-grid";
+      ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"].forEach(d => { const w = document.createElement("div"); w.className = "dow"; w.textContent = d; grid.appendChild(w); });
+      for (let i=0; i<startWeekday; i++) { const d=document.createElement("div"); d.className="day empty"; grid.appendChild(d); }
+      for (let d=1; d<=daysInMonth; d++) {
+        const dateStr = `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+        const dayEl = document.createElement("div");
+        dayEl.className = "day";
+        const dayTasks = visibleTasks().filter(t => t.dueDate === dateStr);
+        dayEl.innerHTML = `<div class="day-num">${d}</div>` + dayTasks.slice(0,3).map(t => `<div class="ev"><i class="ph ${STATUS_ICON[t.status] || 'ph-circle'}"></i> ${escapeHtml(t.title)}</div>`).join("") + (dayTasks.length > 3 ? `<div class="ev">+${dayTasks.length-3} más</div>` : "");
+        grid.appendChild(dayEl);
+      }
+      wrap.appendChild(grid);
+      content.appendChild(wrap);
+    }
+
+    function initDemo() {
+      if (state.tasks.length) return;
+      const t = today();
+      state.tasks = [
+        { id:uid(), title:"Validar delivery Odoo", detail:"Chequear tracking.", category:"Odoo", priority:"Alta", status:"En curso", dueDate:t, reminderAt:"", project:"Lanzamiento X", createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
+        { id:uid(), title:"Revisar stock productos", detail:"", category:"Compras", priority:"Media", status:"Pendiente", dueDate:t, reminderAt:"", project:null, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
+        { id:uid(), title:"Responder mensajes Amazon", detail:"", category:"Amazon", priority:"Alta", status:"Pendiente", dueDate:t, reminderAt:"", project:"Lanzamiento X", createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
+        { id:uid(), title:"Cerrar factura proveedor", detail:"", category:"Dashboard", priority:"Baja", status:"Listo", dueDate:t, reminderAt:"", project:null, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
+        { id:uid(), title:"Configurar recordatorio dentista", detail:"", category:"Dashboard", priority:"Media", status:"En revisión", dueDate:t, reminderAt:"", project:"Mudanza oficina", createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
+      ];
+      state.quickItems = [
+        { id:uid(), title:"Llamar a Octopus Energy", done:false, detail:"", createdAt:new Date().toISOString() },
+        { id:uid(), title:"Comprar aceite", done:false, detail:"", createdAt:new Date().toISOString() },
+      ];
+      save();
+    }
+
+    function render() {
+      renderSidebar();
+      document.querySelectorAll(".side-btn").forEach(b => b.classList.toggle("active", b.dataset.nav === state.nav));
+      ["viewList","viewBoard","viewCalendar"].forEach((id, idx) => {
+        const modes = ["list","board","calendar"];
+        document.getElementById(id).classList.toggle("active", state.view === modes[idx]);
+      });
+      if (state.nav === "inicio") { renderInicio(); return; }
+      if (state.nav === "lista_rapida") { renderQuickList(); return; }
+      if (state.view === "calendar") renderCalendarView();
+      else if (state.view === "board") renderBoard();
+      else renderList();
+    }
+
+    function renderInicio() {
+      toolbar.hidden = true;
+      content.innerHTML = "";
+      const dateObj = new Date();
+      const hour = dateObj.getHours();
+      const greeting = hour < 13 ? "Buenos días" : hour < 20 ? "Buenas tardes" : "Buenas noches";
+      const dateStr = dateObj.toLocaleDateString("es-ES", { weekday:"long", day:"numeric", month:"long", year:"numeric" });
+      const header = document.querySelector("header");
+      header.innerHTML = `<div><h1>${greeting}, Rafa</h1><p>${dateStr[0].toUpperCase()+dateStr.slice(1)}</p></div>`;
+      const wrap = document.createElement("div");
+      wrap.innerHTML = `
+        <div class="grid" style="max-width:1100px;margin:0 auto;background:#f3f4f6;color:#111827;">
+          <style>
+            :root {
+              color-scheme: light;
+              --bg:#f3f4f6; --panel:#ffffff; --panel-2:#f9fafb; --border:rgba(0,0,0,0.06); --text:#111827; --muted:#6b7280; --accent:#2563eb; --accent-2:#eff6ff; --danger:#ef4444; --warn:#f59e0b; --ok:#16a34a; --info:#0ea5e7;
+            }
+            .inicio-grid { display: grid; gap: 16px; }
+            .inicio-grid.row-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .inicio-grid.row-1 { grid-template-columns: 1fr; }
+            .card {
+              background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px;
+              box-shadow: 0 1px 0 rgba(0,0,0,0.03), 0 6px 16px rgba(0,0,0,0.04);
+              cursor: pointer; transition: box-shadow .15s ease, transform .04s ease; display:flex; flex-direction:column; gap:10px;
+            }
+            .card:hover { box-shadow: 0 2px 0 rgba(0,0,0,0.04), 0 10px 24px rgba(0,0,0,0.06); transform: translateY(-1px); }
+            .card:active { transform: translateY(0); }
+            .card-head { display: flex; align-items: center; justify-content: space-between; }
+            .card-title { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text); font-weight: 600; }
+            .card-cta { font-size: 12px; color: var(--accent); cursor: pointer; }
+            .big { font-size: 13px; } .small { font-size: 12px; color: var(--muted); }
+            .stack { display: flex; flex-direction: column; gap: 8px; }
+            .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+            .row.left { justify-content: flex-start; gap: 10px; }
+            .dot { width: 8px; height: 8px; border-radius: 50%; }
+            .dot.critica { background: var(--danger); }
+            .pill { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); white-space: nowrap; }
+            .quick { display: flex; flex-direction: column; gap: 8px; }
+            .quick-item { display: flex; align-items: center; gap: 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; }
+            .quick-item input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
+            .quick-item .qtitle { font-size: 13px; }
+            .team-row { display: flex; align-items: center; gap: 10px; }
+            .avatar { width: 24px; height: 24px; border-radius: 50%; background: linear-gradient(135deg,#e5e7eb,#d1d5db); display: grid; place-items: center; font-size: 12px; color: #374151; font-weight: 600; }
+            .team-name { font-size: 13px; font-weight: 500; } .team-task { font-size: 13px; color: var(--muted); } .empty { padding: 10px; text-align: center; color: var(--muted); font-size: 13px; border-radius: 10px; }
+          </style>
+          <div class="inicio-grid row-2">
+
+            <div class="card" onclick="go('calendario')">
+              <div class="card-head">
+                <div class="card-title"><i class="ph ph-calendar-blank" style="color:var(--accent)"></i> <span>Agenda</span></div>
+                <div class="card-cta">Ver calendario</div>
+              </div>
+              <div class="stack big">
+                <div class="row"><span>Hoy</span> <span class="pill">${state.tasks.filter(t => t.dueDate === today()).length} tareas</span></div>
+                <div class="row"><span>Esta semana</span> <span class="pill">12 tareas</span></div>
+                <div class="row"><span>Este mes</span> <span class="pill">39 tareas</span></div>
+              </div>
+              <div class="small">Resumen de eventos próximos</div>
+            </div>
+
+            <div class="card" onclick="go('tareas')">
+              <div class="card-head">
+                <div class="card-title"><i class="ph ph-fire" style="color:var(--danger)"></i> <span>Tareas prioritarias</span></div>
+                <div class="card-cta">Ver todas</div>
+              </div>
+              <div class="stack big">
+                ${state.tasks.filter(t => t.priority === "Alta").slice(0,5).map(t => `<div class="row left"><span class="dot critica"></span>${escapeHtml(t.title)}</div>`).join("")}
+                ${(!state.tasks.some(t => t.priority === "Alta")) ? `<div class="empty">Sin tareas críticas hoy</div>` : ''}
+              </div>
+              <div class="small">Críticas primero</div>
+            </div>
+          </div>
+
+          <div class="inicio-grid row-2">
+
+            <div class="card" onclick="go('lista_rapida')">
+              <div class="card-head">
+                <div class="card-title"><i class="ph ph-lightning" style="color:var(--warn)"></i> <span>Tareas rápidas</span></div>
+                <button class="pill" onclick="event.stopPropagation(); addQuick()">+</button>
+              </div>
+              <div class="quick" id="quickList">
+                ${state.quickItems.slice(0,6).map(q => `<label class="quick-item"><input type="checkbox" onclick="event.stopPropagation();" /><span class="qtitle">${escapeHtml(q.title)}</span></label>`).join("")}
+                ${(!state.quickItems.length) ? `<div class="empty">Sin tareas rápidas</div>` : ''}
+              </div>
+              <div class="small">Checklist ligera sin fechas ni proyectos</div>
+            </div>
+
+            <div class="card" onclick="go('correos')">
+              <div class="card-head">
+                <div class="card-title"><i class="ph ph-envelope-simple" style="color:var(--info)"></i> <span>Correos importantes</span></div>
+                <div class="card-cta">Ver todos</div>
+              </div>
+              <div class="stack big" id="inboxCard">
+                <div class="empty">Cargando correos...</div>
+              </div>
+              <div class="small">Pendientes de acción</div>
+            </div>
+          </div>
+
+          <div class="inicio-grid row-1">
+            <div class="card" onclick="go('equipo')">
+              <div class="card-head">
+                <div class="card-title"><i class="ph ph-users" style="color:var(--ok)"></i> <span>Equipo trabajando</span></div>
+                <div class="card-cta">Ver equipo</div>
+              </div>
+              <div class="stack big">
+                <div class="team-row"><div class="avatar">R</div><div><div class="team-name">Rafa</div><div class="team-task">Portal devoluciones Prestashop</div></div><span class="dot" style="background:var(--ok)"></span></div>
+                <div class="team-row"><div class="avatar">P</div><div><div class="team-name">Pedro</div><div class="team-task">Optimizando publicidad Amazon</div></div><span class="dot" style="background:var(--ok)"></span></div>
+                <div class="team-row"><div class="avatar">A</div><div><div class="team-name">Ana</div><div class="team-task">Respondiendo correos</div></div><span class="dot" style="background:var(--warn)"></span></div>
+                <div class="team-row"><div class="avatar">H</div><div><div class="team-name">Hermes</div><div class="team-task">Desarrollo panel de tareas</div></div><span class="dot" style="background:var(--ok)"></span></div>
+                <div class="team-row"><div class="avatar">J</div><div><div class="team-name">Juanito</div><div class="team-task">Amazon Messages</div></div><span class="dot" style="background:var(--warn)"></span></div>
+              </div>
+              <div class="small">Tarea principal por persona</div>
+            </div>
+          </div>
+        </div>
+      `;
+      content.appendChild(wrap);
+      const inboxEl = document.getElementById("inboxCard");
+      if (inboxEl) {
+        fetch("/api/inbox").then(r => r.json()).then(data => {
+          if (!Array.isArray(data) || !data.length) { inboxEl.innerHTML = `<div class="empty">Sin correos pendientes</div>`; return; }
+          inboxEl.innerHTML = data.slice(0, 5).map(m => {
+            const from = (m.from || "").replace(/<[^>]+>/g, "").trim();
+            const rel = relTime(m.date);
+            return `<div class="row"><span style="flex:1;font-size:13px">${escapeHtml(from)}</span><span class="small">${escapeHtml(rel || "")}</span></div><div class="row" style="justify-content:flex-start;gap:10px;color:var(--text);font-size:13px">${escapeHtml(m.subject || "")}</div>`;
+          }).join("");
+        }).catch(() => { inboxEl.innerHTML = `<div class="empty">No se pudieron cargar los correos</div>`; });
+      }
+    }
+
+    function relTime(raw) {
+      if (!raw) return "";
+      const diff = Math.floor((Date.now() - new Date(raw).getTime()) / 1000);
+      if (diff < 60) return "Ahora";
+      if (diff < 3600) return `Hace ${Math.floor(diff/60)} min`;
+      if (diff < 7200) return "Hace 1 hora";
+      if (diff < 86400) return `Hace ${Math.floor(diff/3600)} horas`;
+      if (diff < 172800) return "Ayer";
+      return "";
+    }
+
+    function escapeHtml(t) { return t.replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c])); }
+
+    initDemo();
+    render();
+  </script>
+</body>
+</html>
