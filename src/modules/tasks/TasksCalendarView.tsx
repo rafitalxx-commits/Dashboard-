@@ -184,8 +184,12 @@ const css = `
 .chip { background: #1d4ed8; padding: 4px 8px; border-radius: 999px; color: white; display: inline-flex; gap: 6px; align-items: center; font-size: 12px; }
 .weekdays { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; }
 .weekday { text-align: center; font-size: 12px; color: #94a3b8; font-weight: 600; }
-.calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; }
-.day { border: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.03); border-radius: 10px; padding: 8px; min-height: 90px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; }
+.calendar-grid { display: grid; grid-template-columns: 1fr; gap: 8px; }
+
+@media (min-width: 640px) {
+  .calendar-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; }
+}
+.day { border: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.03); border-radius: 10px; padding: 8px; min-height: 72px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; }
 .day.today { border-color: #1d4ed8; }
 .day.selected { outline: 1px solid #1d4ed8; }
 .day-num { font-weight: 600; color: #e2e8f0; }

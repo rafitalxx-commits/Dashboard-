@@ -127,8 +127,8 @@ const tasksStyle = `
 .task-field input, .task-field select, .task-field textarea { background: rgba(255,255,255,0.04); color: inherit; border: 1px solid rgba(255,255,255,0.12); padding: 8px 10px; border-radius: 8px; }
 .task-actions { display: flex; gap: 10px; align-items: center; }
 .task-badge { padding: 4px 8px; border-radius: 999px; background: rgba(255,255,255,0.1); font-size: 12px; }
-.segmented-control { display: inline-flex; gap: 8px; padding: 6px; border: 1px solid rgba(255,255,255,0.14); border-radius: 10px; background: rgba(255,255,255,0.04); }
-.segmented-control button { border: none; background: transparent; color: inherit; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-weight: 500; }
+.segmented-control { display: inline-flex; gap: 8px; padding: 6px; border: 1px solid rgba(255,255,255,0.14); border-radius: 10px; background: rgba(255,255,255,0.04); flex-wrap: wrap; }
+.segmented-control button { border: none; background: transparent; color: inherit; padding: 10px 14px; border-radius: 8px; cursor: pointer; font-weight: 500; min-height: 44px; }
 .segmented-control button.active { background: #1d4ed8; color: white; }
 .segmented-control button:hover:not(.active) { background: rgba(255,255,255,0.08); }
 `;
