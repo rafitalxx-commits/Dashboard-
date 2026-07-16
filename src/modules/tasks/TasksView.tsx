@@ -1,4 +1,4 @@
-import { useMemo, useState, useRef } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import type {
   DashboardTask,
   DashboardTaskCategory,
@@ -25,6 +25,28 @@ export type TasksViewProps = {
   }) => void;
   calendarEvents: CalendarEvent[];
 };
+
+/* ---------- persistencia local ---------- */
+const STORAGE_KEY = "hermes-tasks-module-v1";
+type Attachment = { kind: "image" | "document"; name: string; dataUrl: string };
+
+function loadStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as { tasks: DashboardTask[]; nextId: number };
+  } catch {
+    return null;
+  }
+}
+
+function saveStorage(state: { tasks: DashboardTask[]; nextId: number }) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // storage full or private mode
+  }
+}
 
 /* ---------- datos estructurados ---------- */
 type MailAccount = { id: string; name: string; email: string; unread: number; messages: MailMessage[] };
@@ -142,14 +164,10 @@ function mapTask(t: DashboardTask): TaskRecord {
     updatedAt: t.updatedAt,
     assignee: t.assignee,
     tags: t.tags,
-    attachments: (t as unknown as Record<string, unknown>).attachments as string[],
   };
 }
 
-type Attachment = { kind: "image" | "document"; name: string; dataUrl: string };
-type OpenTarget = { type: "task"; id?: string } | { type: "calendar"; date?: string } | { type: "filter"; filter?: Filter };
-
-/* ---------- componentes internos ---------- */
+/* ---------- componentes ---------- */
 function TaskList({
   tasks,
   onUpdate,
@@ -232,13 +250,25 @@ function TaskDetail({
   onUpdate,
   onDelete,
 }: {
-  task: TaskRecord & { attachments?: string[] };
+  task: DashboardTask;
   onClose: () => void;
   onUpdate: (patch: Partial<DashboardTask>) => void;
   onDelete: () => void;
 }) {
-  const [detail, setDetail] = useState(task.detail || "");
+  const storage = useRef(loadStorage());
+  const existing = storage.current?.tasks.find((t) => t.id === task.id);
+  const [detail, setDetail] = useState(task.detail || existing?.detail || "");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+
+  useEffect(() => {
+    if (!existing?.attachments) return;
+    setAttachments(
+      (existing.attachments as unknown as string[]).map((dataUrl, idx) => {
+        const kind: Attachment["kind"] = dataUrl.startsWith("data:image") ? "image" : "document";
+        return { kind, name: `adjunto-${idx + 1}`, dataUrl };
+      })
+    );
+  }, [existing]);
 
   const onFiles = (files: FileList | null) => {
     if (!files) return;
@@ -252,19 +282,15 @@ function TaskDetail({
     });
   };
 
+  const submit = () => {
+    const dataUrlList = attachments.map((a) => a.dataUrl);
+    onUpdate({ detail, attachments: dataUrlList as unknown as string[] });
+    onClose();
+  };
+
   return (
     <div className="backdrop" onClick={onClose}>
-      <form
-        className="sheet"
-        onSubmit={(e) => {
-          e.preventDefault();
-          onUpdate({
-            detail,
-            attachments: attachments.map((a) => a.dataUrl),
-          });
-          onClose();
-        }}
-      >
+      <form className="sheet" onSubmit={(e) => { e.preventDefault(); submit(); }}>
         <div className="sheet-header">
           <span>Detalle</span>
           <button className="ghost close" onClick={onClose} type="button">×</button>
@@ -296,7 +322,12 @@ function TaskDetail({
             </div>
           ))}
           <label className="upload-btn">
-            <input type="file" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.zip" onChange={(e) => onFiles(e.target.files)} />
+            <input
+              type="file"
+              multiple
+              accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.zip"
+              onChange={(e) => onFiles(e.target.files)}
+            />
             <span>+ Subir imágenes o documentos</span>
           </label>
         </div>
@@ -403,7 +434,7 @@ function MailCard({ account, onClick }: { account: MailAccount; onClick: () => v
         <span className="mail-unread">{account.unread} nuevos</span>
       </div>
       <div className="mail-email">{account.email}</div>
-      <div className="mail-action">Ver 10 no leídos →</div>
+      <div className="mail-action">Ver no leídos →</div>
     </button>
   );
 }
@@ -421,7 +452,14 @@ function MailPanel({ account, onClose }: { account: MailAccount; onClose: () => 
             <div className="mail-item" key={i}>
               <div className="mail-item-header">
                 <span className="mail-from">{m.from}</span>
-                <span className="mail-date">{new Date(m.date).toLocaleString("es-ES", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" })}</span>
+                <span className="mail-date">
+                  {new Date(m.date).toLocaleString("es-ES", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    day: "2-digit",
+                    month: "2-digit",
+                  })}
+                </span>
               </div>
               <div className="mail-subject">{m.subject}</div>
               <div className="mail-snippet">{m.snippet}</div>
@@ -435,7 +473,7 @@ function MailPanel({ account, onClose }: { account: MailAccount; onClose: () => 
 
 /* ---------- vista principal ---------- */
 export function TasksView({
-  tasks,
+  tasks: incomingTasks,
   taskSection,
   onChangeTaskSection,
   onAddTask,
@@ -444,6 +482,7 @@ export function TasksView({
   onAddCalendarEvent,
   calendarEvents,
 }: TasksViewProps) {
+  const stored = useRef(loadStorage());
   const [tab, setTab] = useState<"inicio" | "tareas" | "calendario" | "proyectos" | "equipo">("inicio");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("todos");
@@ -451,6 +490,39 @@ export function TasksView({
   const [fabOpen, setFabOpen] = useState(false);
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const [openMailId, setOpenMailId] = useState<string | null>(null);
+  const [localTasks, setLocalTasks] = useState<DashboardTask[]>([]);
+
+  useEffect(() => {
+    const base = stored.current?.tasks?.length ? stored.current.tasks : incomingTasks;
+    setLocalTasks(base);
+  }, [incomingTasks]);
+
+  const persist = (next: DashboardTask[]) => {
+    setLocalTasks(next);
+    const state = stored.current || { tasks: [], nextId: 1 };
+    state.tasks = next;
+    saveStorage(state);
+  };
+
+  const addLocalTask = (task: DashboardTask) => {
+    const next = [task, ...localTasks];
+    persist(next);
+    onAddTask(task);
+  };
+
+  const updateLocalTask = (id: string, patch: Partial<DashboardTask>) => {
+    const next = localTasks.map((t) => (t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t));
+    persist(next);
+    onUpdateTask(id, patch);
+  };
+
+  const deleteLocalTask = (id: string) => {
+    const next = localTasks.filter((t) => t.id !== id);
+    persist(next);
+    onDeleteTask(id);
+  };
+
+  const tasks = localTasks;
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -487,10 +559,6 @@ export function TasksView({
   const openFilter = (f: Filter) => {
     setFilter(f);
     setTab("tareas");
-  };
-
-  const openCalendarForDate = (date: string) => {
-    setTab("calendario");
   };
 
   return (
@@ -550,7 +618,7 @@ export function TasksView({
                         checked={isCompleted(task.status)}
                         onChange={(e) => {
                           e.stopPropagation();
-                          onUpdateTask(task.id, { status: "Hecha" });
+                          updateLocalTask(task.id, { status: "Hecha" });
                         }}
                       />
                       <button className="quick-row-text" onClick={() => navigateToTask(task.id)} type="button">
@@ -576,7 +644,7 @@ export function TasksView({
                         checked={isCompleted(task.status)}
                         onChange={(e) => {
                           e.stopPropagation();
-                          onUpdateTask(task.id, { status: "Hecha" });
+                          updateLocalTask(task.id, { status: "Hecha" });
                         }}
                       />
                       <button className="quick-row-text" onClick={() => navigateToTask(task.id)} type="button">
@@ -602,7 +670,7 @@ export function TasksView({
                         checked={isCompleted(task.status)}
                         onChange={(e) => {
                           e.stopPropagation();
-                          onUpdateTask(task.id, { status: "Hecha" });
+                          updateLocalTask(task.id, { status: "Hecha" });
                         }}
                       />
                       <button className="quick-row-text" onClick={() => navigateToTask(task.id)} type="button">
@@ -646,9 +714,9 @@ export function TasksView({
             </div>
             <div className="tasks-content">
               {view === "kanban" ? (
-                <TasksKanbanBoard tasks={kanbanTasks} onChange={() => {}} />
+                <TasksKanbanBoard tasks={kanbanTasks} onChange={persist} />
               ) : (
-                <TaskList tasks={kanbanTasks} onUpdate={onUpdateTask} onDelete={onDeleteTask} onOpen={(id) => setOpenTaskId(id)} />
+                <TaskList tasks={kanbanTasks} onUpdate={updateLocalTask} onDelete={deleteLocalTask} onOpen={(id) => setOpenTaskId(id)} />
               )}
             </div>
             <button className="fab" onClick={() => setFabOpen(true)} type="button">＋</button>
@@ -695,12 +763,13 @@ export function TasksView({
       {fabOpen && (
         <QuickCreate
           onSaveTask={(task) => {
-            onAddTask({
+            const newTask: DashboardTask = {
               ...task,
               id: `task-${Date.now().toString(36)}`,
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
-            });
+            };
+            addLocalTask(newTask);
             setFabOpen(false);
           }}
           onSaveEvent={(evt) => {
@@ -719,8 +788,8 @@ export function TasksView({
         <TaskDetail
           task={openTask}
           onClose={() => setOpenTaskId(null)}
-          onUpdate={(patch) => onUpdateTask(openTask.id, patch)}
-          onDelete={() => { onDeleteTask(openTask.id); setOpenTaskId(null); }}
+          onUpdate={(patch) => updateLocalTask(openTask.id, patch)}
+          onDelete={() => { deleteLocalTask(openTask.id); setOpenTaskId(null); }}
         />
       )}
 
