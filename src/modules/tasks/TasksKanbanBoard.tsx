@@ -16,9 +16,9 @@ export type TaskRecord = {
   id: string;
   title: string;
   detail: string;
-  category: Category;
-  priority: Priority;
-  status: Status;
+  category: string;
+  priority: string;
+  status: string;
   dueDate: string;
   reminderAt?: string;
   createdAt: string;

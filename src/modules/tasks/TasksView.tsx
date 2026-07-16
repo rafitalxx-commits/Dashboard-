@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useRef } from "react";
 import type {
   DashboardTask,
   DashboardTaskCategory,
@@ -15,6 +15,7 @@ export type TasksViewProps = {
   onChangeTaskSection: (value: "Tareas" | "Calendario") => void;
   onAddTask: (task: DashboardTask) => void;
   onUpdateTask: (id: string, patch: Partial<DashboardTask>) => void;
+  onDeleteTask: (id: string) => void;
   onAddCalendarEvent: (event: {
     date: string;
     title: string;
@@ -25,12 +26,37 @@ export type TasksViewProps = {
   calendarEvents: CalendarEvent[];
 };
 
-/* ---------- datos mock para inicio ---------- */
-type MailAccount = { id: string; name: string; email: string; unread: number };
+/* ---------- datos estructurados ---------- */
+type MailAccount = { id: string; name: string; email: string; unread: number; messages: MailMessage[] };
+type MailMessage = { from: string; subject: string; date: string; snippet: string; read: boolean };
 
 const mailAccounts: MailAccount[] = [
-  { id: "personal", name: "Personal", email: "rafitalxx@gmail.com", unread: 12 },
-  { id: "work", name: "Trabajo", email: "r.garcia@empresa.com", unread: 3 },
+  {
+    id: "personal",
+    name: "Personal",
+    email: "rafitalxx@gmail.com",
+    unread: 10,
+    messages: Array.from({ length: 10 }).map((_, i) => ({
+      from: `remitente-${i + 1}@gmail.com`,
+      subject: `Asunto personal #${i + 1}`,
+      date: new Date(Date.now() - i * 3600000).toISOString(),
+      snippet: `Resumen del correo personal ${i + 1}...`,
+      read: false,
+    })),
+  },
+  {
+    id: "work",
+    name: "Trabajo",
+    email: "r.garcia@empresa.com",
+    unread: 3,
+    messages: Array.from({ length: 3 }).map((_, i) => ({
+      from: `compañero-${i + 1}@empresa.com`,
+      subject: `Asunto trabajo #${i + 1}`,
+      date: new Date(Date.now() - i * 7200000).toISOString(),
+      snippet: `Resumen del correo de trabajo ${i + 1}...`,
+      read: false,
+    })),
+  },
 ];
 
 /* ---------- filtros ---------- */
@@ -116,10 +142,14 @@ function mapTask(t: DashboardTask): TaskRecord {
     updatedAt: t.updatedAt,
     assignee: t.assignee,
     tags: t.tags,
+    attachments: (t as unknown as Record<string, unknown>).attachments as string[],
   };
 }
 
-/* ---------- componentes ---------- */
+type Attachment = { kind: "image" | "document"; name: string; dataUrl: string };
+type OpenTarget = { type: "task"; id?: string } | { type: "calendar"; date?: string } | { type: "filter"; filter?: Filter };
+
+/* ---------- componentes internos ---------- */
 function TaskList({
   tasks,
   onUpdate,
@@ -202,18 +232,24 @@ function TaskDetail({
   onUpdate,
   onDelete,
 }: {
-  task: TaskRecord;
+  task: TaskRecord & { attachments?: string[] };
   onClose: () => void;
   onUpdate: (patch: Partial<DashboardTask>) => void;
   onDelete: () => void;
 }) {
   const [detail, setDetail] = useState(task.detail || "");
-  const [images, setImages] = useState<string[]>([]);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
 
-  const addImage = () => {
-    const url = prompt("Pega URL de imagen o documento (placeholder):")?.trim();
-    if (!url) return;
-    setImages((prev) => [...prev, url]);
+  const onFiles = (files: FileList | null) => {
+    if (!files) return;
+    Array.from(files).forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const kind: Attachment["kind"] = file.type.startsWith("image/") ? "image" : "document";
+        setAttachments((p) => [...p, { kind, name: file.name, dataUrl: reader.result as string }]);
+      };
+      reader.readAsDataURL(file);
+    });
   };
 
   return (
@@ -222,12 +258,15 @@ function TaskDetail({
         className="sheet"
         onSubmit={(e) => {
           e.preventDefault();
-          onUpdate({ detail, images });
+          onUpdate({
+            detail,
+            attachments: attachments.map((a) => a.dataUrl),
+          });
           onClose();
         }}
       >
         <div className="sheet-header">
-          <span>Detalle tarea</span>
+          <span>Detalle</span>
           <button className="ghost close" onClick={onClose} type="button">×</button>
         </div>
         <label className="label">Título</label>
@@ -239,23 +278,27 @@ function TaskDetail({
           onChange={(e) => setDetail(e.target.value)}
           placeholder="Contexto, pasos, enlaces..."
         />
-        <label className="label">Imágenes / documentos</label>
+        <label className="label">Adjuntos</label>
         <div className="attachments">
-          {images.map((src, i) => (
+          {attachments.map((att, i) => (
             <div className="att-card" key={i}>
-              <span className="att-name">{src}</span>
+              <span className="att-name">{att.name}</span>
+              {att.kind === "image" && (
+                <img src={att.dataUrl} alt={att.name} className="att-thumb" />
+              )}
               <button
                 className="ghost icon-btn"
-                onClick={() => setImages((prev) => prev.filter((_, idx) => idx !== i))}
+                onClick={() => setAttachments((p) => p.filter((_, idx) => idx !== i))}
                 type="button"
               >
                 ×
               </button>
             </div>
           ))}
-          <button className="ghost" onClick={addImage} type="button">
-            + Añadir adjunto
-          </button>
+          <label className="upload-btn">
+            <input type="file" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.zip" onChange={(e) => onFiles(e.target.files)} />
+            <span>+ Subir imágenes o documentos</span>
+          </label>
         </div>
         <div className="actions">
           <button className="ghost" onClick={onDelete} type="button">Eliminar</button>
@@ -266,7 +309,13 @@ function TaskDetail({
   );
 }
 
-function QuickCreate({ onSaveTask, onSaveEvent }: { onSaveTask: (t: { title: string; dueDate: string; priority: DashboardTaskPriority }) => void; onSaveEvent: (e: { title: string; date: string; startsAt: string; endsAt: string }) => void; }) {
+function QuickCreate({
+  onSaveTask,
+  onSaveEvent,
+}: {
+  onSaveTask: (t: { title: string; dueDate: string; priority: DashboardTaskPriority }) => void;
+  onSaveEvent: (e: { title: string; date: string; startsAt: string; endsAt: string }) => void;
+}) {
   const [mode, setMode] = useState<"task" | "event" | "telegram">("task");
   const [title, setTitle] = useState("");
   const [dueDate, setDueDate] = useState(new Date().toISOString().slice(0, 10));
@@ -354,8 +403,33 @@ function MailCard({ account, onClick }: { account: MailAccount; onClick: () => v
         <span className="mail-unread">{account.unread} nuevos</span>
       </div>
       <div className="mail-email">{account.email}</div>
-      <div className="mail-action">Abrir correo →</div>
+      <div className="mail-action">Ver 10 no leídos →</div>
     </button>
+  );
+}
+
+function MailPanel({ account, onClose }: { account: MailAccount; onClose: () => void }) {
+  return (
+    <div className="backdrop" onClick={onClose}>
+      <div className="sheet mail-sheet">
+        <div className="sheet-header">
+          <span>Correo · {account.name}</span>
+          <button className="ghost close" onClick={onClose} type="button">×</button>
+        </div>
+        <div className="mail-list-panel">
+          {account.messages.map((m, i) => (
+            <div className="mail-item" key={i}>
+              <div className="mail-item-header">
+                <span className="mail-from">{m.from}</span>
+                <span className="mail-date">{new Date(m.date).toLocaleString("es-ES", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" })}</span>
+              </div>
+              <div className="mail-subject">{m.subject}</div>
+              <div className="mail-snippet">{m.snippet}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -376,6 +450,7 @@ export function TasksView({
   const [view, setView] = useState<"lista" | "kanban">("lista");
   const [fabOpen, setFabOpen] = useState(false);
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  const [openMailId, setOpenMailId] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -402,14 +477,21 @@ export function TasksView({
     };
   }, [tasks]);
 
-  const quick = useMemo(() => {
-    const today = new Date().toISOString().slice(0, 10);
-    return tasks
-      .filter((t) => t.dueDate === today && !isCompleted(t.status))
-      .slice(0, 8);
-  }, [tasks]);
-
   const openTask = tasks.find((t) => t.id === openTaskId) || null;
+  const openMail = mailAccounts.find((m) => m.id === openMailId) || null;
+
+  const navigateToTask = (id: string) => {
+    setOpenTaskId(id);
+  };
+
+  const openFilter = (f: Filter) => {
+    setFilter(f);
+    setTab("tareas");
+  };
+
+  const openCalendarForDate = (date: string) => {
+    setTab("calendario");
+  };
 
   return (
     <>
@@ -423,22 +505,28 @@ export function TasksView({
               </div>
               <button className="ghost icon-btn" onClick={() => setFabOpen(true)} aria-label="Nuevo" type="button">➕</button>
             </div>
+
             <div className="section">
               <div className="section-title">📧 Correo</div>
               <div className="mail-list">
                 {mailAccounts.map((acc) => (
-                  <MailCard key={acc.id} account={acc} onClick={() => {}} />
+                  <MailCard
+                    key={acc.id}
+                    account={acc}
+                    onClick={() => setOpenMailId(acc.id)}
+                  />
                 ))}
               </div>
             </div>
+
             <div className="section">
               <div className="section-title">Accesos directos</div>
               <div className="quick-actions">
-                <button className="quick-card" onClick={() => { setFilter("hoy"); setTab("tareas"); }}>
+                <button className="quick-card" onClick={() => openFilter("hoy")}>
                   <span className="quick-title">📅 Tareas de hoy</span>
                   <span className="quick-count">{taskCount.hoy}</span>
                 </button>
-                <button className="quick-card" onClick={() => { setFilter("vencidas"); setTab("tareas"); }}>
+                <button className="quick-card" onClick={() => openFilter("vencidas")}>
                   <span className="quick-title">⏰ Vencidas</span>
                   <span className="quick-count">{taskCount.vencidas}</span>
                 </button>
@@ -447,26 +535,83 @@ export function TasksView({
                 </button>
               </div>
             </div>
+
             <div className="section">
-              <div className="section-title">Tareas rápidas</div>
+              <div className="section-title">Tareas de hoy</div>
               <div className="quick-list">
-                {quick.map((task) => (
-                  <label className="quick-row" key={task.id}>
-                    <input
-                      type="checkbox"
-                      checked={isCompleted(task.status)}
-                      onChange={(e) => {
-                        e.stopPropagation();
-                        onUpdateTask(task.id, { status: "Hecha" });
-                      }}
-                    />
-                    <button className="quick-row-text" onClick={() => setOpenTaskId(task.id)} type="button">
-                      <span>{task.title}</span>
-                      <span className={`priority-dot ${(task.priority ?? "media").toLowerCase()}`} />
-                    </button>
-                  </label>
-                ))}
-                {quick.length === 0 && <div className="empty-state">Sin tareas para hoy.</div>}
+                {(() => {
+                  const today = new Date().toISOString().slice(0, 10);
+                  const todayTasks = tasks.filter((t) => t.dueDate === today && !isCompleted(t.status)).slice(0, 8);
+                  if (!todayTasks.length) return <div className="empty-state">Sin tareas para hoy.</div>;
+                  return todayTasks.map((task) => (
+                    <label className="quick-row" key={task.id}>
+                      <input
+                        type="checkbox"
+                        checked={isCompleted(task.status)}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          onUpdateTask(task.id, { status: "Hecha" });
+                        }}
+                      />
+                      <button className="quick-row-text" onClick={() => navigateToTask(task.id)} type="button">
+                        <span>{task.title}</span>
+                        <span className={`priority-dot ${(task.priority ?? "media").toLowerCase()}`} />
+                      </button>
+                    </label>
+                  ));
+                })()}
+              </div>
+            </div>
+
+            <div className="section">
+              <div className="section-title">Vencidas</div>
+              <div className="quick-list">
+                {(() => {
+                  const overdue = tasks.filter((t) => isOverdue(t.dueDate) && !isCompleted(t.status)).slice(0, 8);
+                  if (!overdue.length) return <div className="empty-state">No tienes tareas vencidas.</div>;
+                  return overdue.map((task) => (
+                    <label className="quick-row" key={task.id}>
+                      <input
+                        type="checkbox"
+                        checked={isCompleted(task.status)}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          onUpdateTask(task.id, { status: "Hecha" });
+                        }}
+                      />
+                      <button className="quick-row-text" onClick={() => navigateToTask(task.id)} type="button">
+                        <span>{task.title}</span>
+                        <span className={`priority-dot ${(task.priority ?? "media").toLowerCase()}`} />
+                      </button>
+                    </label>
+                  ));
+                })()}
+              </div>
+            </div>
+
+            <div className="section">
+              <div className="section-title">Urgentes</div>
+              <div className="quick-list">
+                {(() => {
+                  const urgent = tasks.filter((t) => isUrgent(t.priority) && !isCompleted(t.status)).slice(0, 8);
+                  if (!urgent.length) return <div className="empty-state">No tienes tareas urgentes.</div>;
+                  return urgent.map((task) => (
+                    <label className="quick-row" key={task.id}>
+                      <input
+                        type="checkbox"
+                        checked={isCompleted(task.status)}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          onUpdateTask(task.id, { status: "Hecha" });
+                        }}
+                      />
+                      <button className="quick-row-text" onClick={() => navigateToTask(task.id)} type="button">
+                        <span>{task.title}</span>
+                        <span className={`priority-dot ${(task.priority ?? "media").toLowerCase()}`} />
+                      </button>
+                    </label>
+                  ));
+                })()}
               </div>
             </div>
           </div>
@@ -501,7 +646,7 @@ export function TasksView({
             </div>
             <div className="tasks-content">
               {view === "kanban" ? (
-                <TasksKanbanBoard tasks={kanbanTasks} onChange={(next) => { const first = next[0]; if (first) onUpdateTask(first.id, {}); }} />
+                <TasksKanbanBoard tasks={kanbanTasks} onChange={() => {}} />
               ) : (
                 <TaskList tasks={kanbanTasks} onUpdate={onUpdateTask} onDelete={onDeleteTask} onOpen={(id) => setOpenTaskId(id)} />
               )}
@@ -524,6 +669,7 @@ export function TasksView({
             }}
           />
         )}
+
         {tab === "proyectos" && (
           <div className="empty-state">
             <div className="empty-title">📂 Proyectos</div>
@@ -578,6 +724,10 @@ export function TasksView({
         />
       )}
 
+      {openMail && (
+        <MailPanel account={openMail} onClose={() => setOpenMailId(null)} />
+      )}
+
       <style>{css}</style>
     </>
   );
@@ -593,13 +743,15 @@ const css = `
   padding-bottom: 96px;
 }
 
-/* home */
 .home { display: flex; flex-direction: column; gap: 16px; }
 .home-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .home-title { font-weight: 700; font-size: 22px; }
 .home-meta { color: #94a3b8; font-size: 14px; }
+
 .section { display: flex; flex-direction: column; gap: 10px; }
 .section-title { font-weight: 600; color: #e2e8f0; }
+
+/* tarjetas Gmail */
 .mail-list { display: flex; flex-direction: column; gap: 10px; }
 .mail-card {
   text-align: left;
@@ -619,6 +771,15 @@ const css = `
 .mail-email { color: #94a3b8; font-size: 13px; }
 .mail-action { color: #60a5fa; font-size: 13px; }
 
+.mail-sheet { max-height: 92vh; overflow: hidden; display: flex; flex-direction: column; }
+.mail-list-panel { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; max-height: 60vh; }
+.mail-item { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); padding: 12px; border-radius: 10px; }
+.mail-item-header { display: flex; justify-content: space-between; font-size: 12px; color: #94a3b8; }
+.mail-from { color: #e2e8f0; font-weight: 600; }
+.mail-subject { font-weight: 600; color: #e2e8f0; margin-top: 6px; }
+.mail-snippet { color: #94a3b8; font-size: 13px; margin-top: 4px; }
+
+/* accesos directos */
 .quick-actions { display: grid; grid-template-columns: 1fr; gap: 10px; }
 .quick-card {
   display: flex;
@@ -635,9 +796,12 @@ const css = `
 }
 .quick-title { font-weight: 600; color: #e2e8f0; }
 .quick-count { font-weight: 700; color: #facc15; font-size: 18px; }
+
+/* tareas rápidas con checkbox */
 .quick-list { display: flex; flex-direction: column; gap: 10px; }
-.quick-row { display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); padding: 12px 14px; border-radius: 12px; min-height: 48px; cursor: pointer; }
-.quick-row-text { flex: 1; display: flex; justify-content: space-between; align-items: center; color: #e2e8f0; background: transparent; border: none; padding: 0; cursor: pointer; text-align: left; }
+.quick-row { display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); padding: 12px 14px; border-radius: 12px; min-height: 48px; }
+.quick-row input[type="checkbox"] { width: 20px; height: 20px; accent-color: #1d4ed8; }
+.quick-row-text { flex: 1; display: flex; justify-content: space-between; align-items: center; color: #e2e8f0; background: transparent; border: none; padding: 0; cursor: pointer; text-align: left; min-width: 0; }
 
 /* tareas */
 .tasks-topbar { display: flex; flex-direction: column; gap: 12px; }
@@ -772,6 +936,8 @@ const css = `
   display: flex;
   flex-direction: column;
   gap: 12px;
+  max-height: 92vh;
+  overflow-y: auto;
 }
 .sheet-header { font-weight: 700; font-size: 16px; display: flex; justify-content: space-between; align-items: center; }
 .actions { display: flex; justify-content: stretch; gap: 10px; }
@@ -797,7 +963,18 @@ const css = `
 
 .attachments { display: flex; flex-direction: column; gap: 8px; }
 .att-card { display: flex; justify-content: space-between; align-items: center; gap: 8px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); padding: 10px; border-radius: 10px; font-size: 13px; color: #e2e8f0; }
-.att-name { word-break: break-all; }
+.att-thumb { width: 48px; height: 48px; object-fit: cover; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); }
+.upload-btn input[type="file"] { display: none; }
+.upload-btn {
+  border: 1px dashed rgba(255,255,255,0.22);
+  padding: 12px;
+  border-radius: 10px;
+  text-align: center;
+  color: #cbd5e1;
+  font-size: 13px;
+  cursor: pointer;
+  background: rgba(255,255,255,0.02);
+}
 
 .hint { color: #94a3b8; font-size: 13px; }
 
