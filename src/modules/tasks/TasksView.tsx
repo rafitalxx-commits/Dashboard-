@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState, useRef, useEffect } from "react";
 import { TasksKanbanBoard, type TaskRecord } from "./TasksKanbanBoard";
 import { TasksCalendarView, type CalendarEvent } from "./TasksCalendarView";
 
@@ -40,8 +40,36 @@ export type TasksViewProps = {
 };
 
 /* ---------- datos estructurados ---------- */
-type MailAccount = { id: string; name: string; email: string; unread: number; messages: MailMessage[] };
-type MailMessage = { from: string; subject: string; date: string; snippet: string; read: boolean };
+type MailAccount = {
+  id: string;
+  name: string;
+  email: string;
+  unread: number;
+  messages: MailMessage[];
+};
+type MailMessage = {
+  from: string;
+  subject: string;
+  date: string;
+  snippet: string;
+  read: boolean;
+  body?: string;
+  threadId?: string;
+};
+
+type ChatMessage = {
+  id: string;
+  from: "user" | "hermes";
+  text: string;
+  at: string;
+};
+
+type Reminder = {
+  id: string;
+  title: string;
+  dueAt: string;
+  postponed: number;
+};
 
 const DEFAULT_ACCOUNTS: MailAccount[] = [
   {
@@ -62,14 +90,14 @@ const DEFAULT_ACCOUNTS: MailAccount[] = [
 
 /* ---------- filtros ---------- */
 const filters = [
-  { key: "todos", label: "Todos", icon: "📋" },
-  { key: "hoy", label: "Hoy", icon: "📅" },
-  { key: "manana", label: "Mañana", icon: "🌤" },
-  { key: "semana", label: "Semana", icon: "📆" },
-  { key: "vencidas", label: "Vencidas", icon: "⏰" },
-  { key: "urgentes", label: "Urgentes", icon: "🔥" },
-  { key: "sin_asignar", label: "Sin asignar", icon: "👤" },
-  { key: "completadas", label: "Completadas", icon: "✅" },
+  { key: "todos", label: "Todos" },
+  { key: "hoy", label: "Hoy" },
+  { key: "manana", label: "Mañana" },
+  { key: "semana", label: "Semana" },
+  { key: "vencidas", label: "Vencidas" },
+  { key: "urgentes", label: "Urgentes" },
+  { key: "sin_asignar", label: "Sin asignar" },
+  { key: "completadas", label: "Completadas" },
 ] as const;
 
 type Filter = (typeof filters)[number]["key"];
@@ -256,8 +284,13 @@ function TaskDetail({
     Array.from(files).forEach((file) => {
       const reader = new FileReader();
       reader.onload = () => {
-        const kind: Attachment["kind"] = file.type.startsWith("image/") ? "image" : "document";
-        setAttachments((p) => [...p, { kind, name: file.name, dataUrl: reader.result as string }]);
+        const kind: Attachment["kind"] = file.type.startsWith("image/")
+          ? "image"
+          : "document";
+        setAttachments((p) => [
+          ...p,
+          { kind, name: file.name, dataUrl: reader.result as string },
+        ]);
       };
       reader.readAsDataURL(file);
     });
@@ -278,7 +311,9 @@ function TaskDetail({
       >
         <div className="sheet-header">
           <span>Detalle</span>
-          <button className="ghost close" onClick={onClose} type="button">×</button>
+          <button className="ghost close" onClick={onClose} type="button">
+            ×
+          </button>
         </div>
         <label className="label">Título</label>
         <input className="input" value={task.title} readOnly />
@@ -299,7 +334,9 @@ function TaskDetail({
               )}
               <button
                 className="ghost icon-btn"
-                onClick={() => setAttachments((p) => p.filter((_, idx) => idx !== i))}
+                onClick={() =>
+                  setAttachments((p) => p.filter((_, idx) => idx !== i))
+                }
                 type="button"
               >
                 ×
@@ -307,13 +344,22 @@ function TaskDetail({
             </div>
           ))}
           <label className="upload-btn">
-            <input type="file" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.zip" onChange={(e) => onFiles(e.target.files)} />
+            <input
+              type="file"
+              multiple
+              accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.zip"
+              onChange={(e) => onFiles(e.target.files)}
+            />
             <span>+ Subir imágenes o documentos</span>
           </label>
         </div>
         <div className="actions">
-          <button className="ghost" onClick={onDelete} type="button">Eliminar</button>
-          <button className="button primary" type="submit">Guardar</button>
+          <button className="ghost" onClick={onDelete} type="button">
+            Eliminar
+          </button>
+          <button className="button primary" type="submit">
+            Guardar
+          </button>
         </div>
       </form>
     </div>
@@ -324,12 +370,23 @@ function QuickCreate({
   onSaveTask,
   onSaveEvent,
 }: {
-  onSaveTask: (t: { title: string; dueDate: string; priority: DashboardTaskPriority }) => void;
-  onSaveEvent: (e: { title: string; date: string; startsAt: string; endsAt: string }) => void;
+  onSaveTask: (t: {
+    title: string;
+    dueDate: string;
+    priority: DashboardTaskPriority;
+  }) => void;
+  onSaveEvent: (e: {
+    title: string;
+    date: string;
+    startsAt: string;
+    endsAt: string;
+  }) => void;
 }) {
   const [mode, setMode] = useState<"task" | "event" | "telegram">("task");
   const [title, setTitle] = useState("");
-  const [dueDate, setDueDate] = useState(new Date().toISOString().slice(0, 10));
+  const [dueDate, setDueDate] = useState(
+    new Date().toISOString().slice(0, 10)
+  );
   const [priority, setPriority] = useState<DashboardTaskPriority>("Media");
   const [start, setStart] = useState("09:00");
   const [end, setEnd] = useState("10:00");
@@ -352,7 +409,12 @@ function QuickCreate({
         <div className="sheet-header">Creación rápida</div>
         <div className="segmented">
           {(["task", "event", "telegram"] as const).map((m) => (
-            <button key={m} className={`chip ${mode === m ? "active" : ""}`} onClick={() => setMode(m)} type="button">
+            <button
+              key={m}
+              className={`chip ${mode === m ? "active" : ""}`}
+              onClick={() => setMode(m)}
+              type="button"
+            >
               {m === "task" ? "Tarea" : m === "event" ? "Evento" : "Telegram"}
             </button>
           ))}
@@ -368,12 +430,27 @@ function QuickCreate({
           <div className="row">
             <label className="label">
               Fecha
-              <input className="input" type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+              <input
+                className="input"
+                type="date"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+              />
             </label>
             <label className="label">
               Prioridad
-              <select className="input" value={priority} onChange={(e) => setPriority(e.target.value as DashboardTaskPriority)}>
-                {["Crítica","Alta","Media","Baja"].map((p) => <option key={p} value={p}>{p}</option>)}
+              <select
+                className="input"
+                value={priority}
+                onChange={(e) =>
+                  setPriority(e.target.value as DashboardTaskPriority)
+                }
+              >
+                {["Crítica", "Alta", "Media", "Baja"].map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
               </select>
             </label>
           </div>
@@ -382,24 +459,46 @@ function QuickCreate({
           <div className="row">
             <label className="label">
               Fecha
-              <input className="input" type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+              <input
+                className="input"
+                type="date"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+              />
             </label>
             <label className="label">
               Inicio
-              <input className="input" type="time" value={start} onChange={(e) => setStart(e.target.value)} />
+              <input
+                className="input"
+                type="time"
+                value={start}
+                onChange={(e) => setStart(e.target.value)}
+              />
             </label>
             <label className="label">
               Fin
-              <input className="input" type="time" value={end} onChange={(e) => setEnd(e.target.value)} />
+              <input
+                className="input"
+                type="time"
+                value={end}
+                onChange={(e) => setEnd(e.target.value)}
+              />
             </label>
           </div>
         )}
         {mode === "telegram" && (
-          <div className="hint">Envía un mensaje a Hermes en Telegram con la tarea o evento y se creará automáticamente.</div>
+          <div className="hint">
+            Envía un mensaje a Hermes en Telegram con la tarea o evento y se creará
+            automáticamente.
+          </div>
         )}
         <div className="actions">
-          <button className="ghost" onClick={() => setMode("task")} type="button">Cancelar</button>
-          <button className="button primary" type="submit">Guardar</button>
+          <button className="ghost" onClick={() => setMode("task")} type="button">
+            Cancelar
+          </button>
+          <button className="button primary" type="submit">
+            Guardar
+          </button>
         </div>
       </form>
     </div>
@@ -407,10 +506,6 @@ function QuickCreate({
 }
 
 function MailCard({ account, onClick }: { account: MailAccount; onClick: () => void }) {
-  const href =
-    account.id === "personal"
-      ? "https://mail.google.com/mail/u/0/#inbox"
-      : "https://mail.google.com/mail/u/1/#inbox";
   return (
     <button className="mail-card" onClick={onClick} type="button">
       <div className="mail-header">
@@ -418,39 +513,379 @@ function MailCard({ account, onClick }: { account: MailAccount; onClick: () => v
         <span className="mail-unread">{account.unread} nuevos</span>
       </div>
       <div className="mail-email">{account.email}</div>
+      <div className="mail-preview" style={{ marginTop: 6 }}>
+        {account.messages.slice(0, 3).map((m, i) => (
+          <div
+            key={i}
+            style={{
+              fontSize: 13,
+              color: "#e2e8f0",
+              padding: "6px 0",
+              borderBottom: "1px solid rgba(255,255,255,0.06)",
+            }}
+          >
+            <div style={{ color: "#94a3b8", fontSize: 12 }}>{m.from}</div>
+            <div style={{ fontWeight: 600 }}>{m.subject}</div>
+          </div>
+        ))}
+      </div>
       <a
         className="mail-action"
-        href={href}
+        href={
+          account.id === "personal"
+            ? "https://mail.google.com/mail/u/0/#inbox"
+            : "https://mail.google.com/mail/u/1/#inbox"
+        }
         target="_blank"
         rel="noreferrer"
         onClick={(e) => e.stopPropagation()}
       >
-        Abrir en Gmail ↗
+        Abrir Gmail ↗
       </a>
     </button>
   );
 }
 
 function MailPanel({ account, onClose }: { account: MailAccount; onClose: () => void }) {
+  const [repr, setRepr] = useState<"list" | "compose" | "view">("list");
+  const [to, setTo] = useState("");
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [draftNote, setDraftNote] = useState("");
+
+  const compose = (mode: "new" | "reply" | "replyAll", message?: MailMessage) => {
+    if (mode === "new") {
+      setTo("");
+      setSubject("");
+      setBody("");
+    } else if (message) {
+      setTo(message.from);
+      setSubject(message.subject.startsWith("Re:") ? message.subject : `Re: ${message.subject}`);
+      setBody("");
+    }
+    setRepr("compose");
+  };
+
+  const viewMessage = (index: number) => {
+    const m = account.messages[index];
+    setSubject(m.subject);
+    setBody(m.snippet);
+    setRepr("view");
+  };
+
   return (
     <div className="backdrop" onClick={onClose}>
       <div className="sheet mail-sheet">
         <div className="sheet-header">
           <span>Correo · {account.name}</span>
-          <button className="ghost close" onClick={onClose} type="button">×</button>
+          <button className="ghost close" onClick={onClose} type="button">
+            ×
+          </button>
         </div>
-        <div className="mail-list-panel">
-          {account.messages.map((m, i) => (
-            <div className="mail-item" key={i}>
-              <div className="mail-item-header">
-                <span className="mail-from">{m.from}</span>
-                <span className="mail-date">{new Date(m.date).toLocaleString("es-ES", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" })}</span>
+
+        {repr === "list" && (
+          <div className="mail-list-panel">
+            {account.messages.map((m, i) => (
+              <div className="mail-item" key={i}>
+                <div className="mail-item-header">
+                  <span className="mail-from">{m.from}</span>
+                  <span className="mail-date">
+                    {new Date(m.date).toLocaleString("es-ES", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      day: "2-digit",
+                      month: "2-digit",
+                    })}
+                  </span>
+                </div>
+                <div className="mail-subject">{m.subject}</div>
+                <div className="mail-snippet">{m.snippet}</div>
+                <div className="mail-actions">
+                  <button
+                    className="chip small"
+                    onClick={() => viewMessage(i)}
+                    type="button"
+                  >
+                    📖 Leer
+                  </button>
+                  <button
+                    className="chip small"
+                    onClick={() => compose("reply", m)}
+                    type="button"
+                  >
+                    ↩ Responder
+                  </button>
+                  <button
+                    className="chip small"
+                    onClick={() => compose("replyAll", m)}
+                    type="button"
+                  >
+                    ↩ Responder a todos
+                  </button>
+                  <button
+                    className="chip small"
+                    onClick={() => compose("new")}
+                    type="button"
+                  >
+                    ✏️ Nuevo
+                  </button>
+                </div>
               </div>
-              <div className="mail-subject">{m.subject}</div>
-              <div className="mail-snippet">{m.snippet}</div>
+            ))}
+            {!account.messages.length && (
+              <div className="empty-state">Sin mensajes.</div>
+            )}
+          </div>
+        )}
+
+        {repr === "view" && (
+          <div className="mail-composer">
+            <div className="mail-view">
+              <div className="mail-view-meta">
+                <strong>Para:</strong> {to || "—"}
+                <br />
+                <strong>Asunto:</strong> {subject}
+              </div>
+              <div className="mail-view-body">{body}</div>
+            </div>
+            <div className="actions">
+              <button
+                className="ghost"
+                onClick={() => setRepr("list")}
+                type="button"
+              >
+                Volver
+              </button>
+              <button
+                className="button primary"
+                onClick={() => {
+                  alert(
+                    "Borrador guardado localmente. El backend puede enviarlo por Gmail API."
+                  );
+                  setRepr("list");
+                }}
+                type="button"
+              >
+                Guardar borrador
+              </button>
+            </div>
+          </div>
+        )}
+
+        {repr === "compose" && (
+          <form
+            className="mail-composer"
+            onSubmit={(e) => {
+              e.preventDefault();
+              alert(
+                "Borrador creado. Adjuntos pendientes de backend con /api/mail/send."
+              );
+              setRepr("list");
+            }}
+          >
+            <label className="label">Para</label>
+            <input
+              className="input"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+            />
+            <label className="label">Asunto</label>
+            <input
+              className="input"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+            />
+            <label className="label">Mensaje</label>
+            <textarea
+              className="input textarea"
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+            />
+            <label className="label">Adjuntos (local)</label>
+            <input
+              className="input"
+              type="file"
+              multiple
+              accept="image/*,.pdf,.doc,.docx,.zip"
+            />
+            <div className="hint" style={{ marginTop: 8 }}>
+              {draftNote || "Pulsa Guardar para crear el borrador."}
+            </div>
+            <div className="actions">
+              <button
+                className="ghost"
+                onClick={() => setRepr("list")}
+                type="button"
+              >
+                Cancelar
+              </button>
+              <button className="button primary" type="submit">
+                Guardar borrador
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ChatPanel({
+  onClose,
+  onSendTelegram,
+}: {
+  onClose: () => void;
+  onSendTelegram: (text: string) => Promise<string>;
+}) {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const send = async () => {
+    if (!input.trim()) return;
+    const text = input.trim();
+    setMessages((p) => [
+      ...p,
+      { id: `u-${Date.now()}`, from: "user", text, at: new Date().toISOString() },
+    ]);
+    setInput("");
+    try {
+      const reply = await onSendTelegram(text);
+      setMessages((p) => [
+        ...p,
+        {
+          id: `h-${Date.now()}`,
+          from: "hermes",
+          text: reply,
+          at: new Date().toISOString(),
+        },
+      ]);
+    } catch (e) {
+      setMessages((p) => [
+        ...p,
+        {
+          id: `h-${Date.now()}`,
+          from: "hermes",
+          text: "No pude ejecutar esa acción en este prototipo.",
+          at: new Date().toISOString(),
+        },
+      ]);
+    }
+  };
+
+  return (
+    <div className="backdrop" onClick={onClose}>
+      <div className="sheet chat-sheet">
+        <div className="sheet-header">
+          <span>Chat Hermes</span>
+          <button className="ghost close" onClick={onClose} type="button">
+            ×
+          </button>
+        </div>
+        <div className="chat-messages">
+          {messages.length === 0 && (
+            <div className="empty-state">
+              Pídeme cualquiercosa: crea tareas, consulta correos, agenda eventos,
+              resume hilos, adjunta archivos...
+            </div>
+          )}
+          {messages.map((m) => (
+            <div
+              key={m.id}
+              className={`chat-bubble ${m.from === "user" ? "right" : "left"}`}
+            >
+              <div className="chat-text">{m.text}</div>
+              <div className="chat-at">
+                {new Date(m.at).toLocaleTimeString("es-ES", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </div>
             </div>
           ))}
+          <div ref={bottomRef} />
         </div>
+        <form
+          className="chat-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            send();
+          }}
+        >
+          <input
+            className="input"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Escribe a Hermes..."
+            autoFocus
+          />
+          <button className="button primary" type="submit">
+            Enviar
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function ReminderCard({
+  reminder,
+  onClose,
+  onSnooze,
+}: {
+  reminder: Reminder;
+  onClose: () => void;
+  onSnooze: (minutes: number) => void;
+}) {
+  const due = new Date(reminder.dueAt);
+  const overdue = due < new Date();
+
+  return (
+    <div className="reminder-card">
+      <div className="reminder-title">{reminder.title}</div>
+      <div className="reminder-meta">
+        {due.toLocaleString("es-ES", {
+          day: "2-digit",
+          month: "short",
+          hour: "2-digit",
+          minute: "2-digit",
+        })}
+        {overdue && (
+          <span className="reminder-badge" style={{ color: "#ef4444" }}>
+            {" "}
+            · Atrasado
+          </span>
+        )}
+      </div>
+      <div className="reminder-actions">
+        <button className="chip small" onClick={onClose} type="button">
+          Cerrar
+        </button>
+        <button
+          className="chip small"
+          onClick={() => onSnooze(10)}
+          type="button"
+        >
+          +10 min
+        </button>
+        <button
+          className="chip small"
+          onClick={() => onSnooze(30)}
+          type="button"
+        >
+          +30 min
+        </button>
+        <button
+          className="chip small"
+          onClick={() => onSnooze(60)}
+          type="button"
+        >
+          +1 h
+        </button>
       </div>
     </div>
   );
@@ -467,13 +902,17 @@ export function TasksView({
   onAddCalendarEvent,
   calendarEvents,
 }: TasksViewProps) {
-  const [tab, setTab] = useState<"inicio" | "tareas" | "calendario" | "proyectos" | "equipo">("inicio");
+  const [tab, setTab] = useState<"inicio" | "tareas" | "calendario" | "proyectos" | "equipo">(
+    "inicio"
+  );
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("todos");
   const [view, setView] = useState<"lista" | "kanban">("lista");
   const [fabOpen, setFabOpen] = useState(false);
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const [openMailId, setOpenMailId] = useState<string | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [reminders, setReminders] = useState<Reminder[]>([]);
   const [mailAccounts, setMailAccounts] = useState<MailAccount[]>(DEFAULT_ACCOUNTS);
 
   useEffect(() => {
@@ -482,13 +921,14 @@ export function TasksView({
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then((inbox) => {
         if (cancelled) return;
-        const personal = inbox.find((m: any) => (m.account || m.to || "").includes("rafitalxx@gmail.com")) || inbox[0];
         const messages = (inbox || []).slice(0, 10).map((m: any) => ({
           from: m.from || m.sender || "",
           subject: m.subject || "",
           date: m.date || m.internalDate || new Date().toISOString(),
           snippet: m.snippet || m.body || "",
           read: !!m.read,
+          body: m.body || m.snippet,
+          threadId: m.threadId || m.id,
         }));
         setMailAccounts([
           {
@@ -522,7 +962,9 @@ export function TasksView({
       if (isCompleted(t.status) && filter !== "completadas") return false;
       if (!isCompleted(t.status) && filter === "completadas") return false;
       if (q) {
-        const haystack = `${t.title} ${t.detail} ${t.assignee ?? ""} ${t.category ?? ""} ${t.id}`.toLowerCase();
+        const haystack = `${t.title} ${t.detail} ${t.assignee ?? ""} ${
+          t.category ?? ""
+        } ${t.id}`.toLowerCase();
         return haystack.includes(q);
       }
       return true;
@@ -556,6 +998,83 @@ export function TasksView({
     setTab("calendario");
   };
 
+  const onSendTelegram = async (text: string): Promise<string> => {
+    const scriptsDir =
+      process.env?.NEXT_PUBLIC_SCRIPTS_DIR ??
+      "/c/Users/Administrador/AppData/Local/hermes/scripts";
+    try {
+      const res = await fetch("/api/telegram/send-hermes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) throw new Error("not_ok");
+      const data = await res.json().catch(() => ({}));
+      return data.reply || "Mensaje enviado a Hermes.";
+    } catch (e) {
+      return (
+        "Prototipo: esta acción se ejecutará desde el backend en producción."
+      );
+    }
+  };
+
+  /* ---------- reminders desde texto natural ---------- */
+  const addReminderFromText = (text: string) => {
+    const normalized = text
+      .toLowerCase()
+      .replace(/,/g, " ")
+      .replace(/\s+/g, " ");
+    const dateMatch = normalized.match(
+      /(?:el\s+|dia\s+|a\s+)?(\d{1,2})[\/\-\.](\d{1,2})(?:[\/\-\.](\d{2,4}))?/
+    );
+    const timeMatch = normalized.match(/(\d{1,2})(?::|\.)(\d{2})/);
+    let dueAt = new Date();
+    if (dateMatch) {
+      const day = Number(dateMatch[1]);
+      const month = Number(dateMatch[2]);
+      const year = Number(dateMatch[3] ?? new Date().getFullYear());
+      const currentYear = new Date().getFullYear();
+      const fullYear = year < 100 ? currentYear + year : year;
+      dueAt = new Date(fullYear, month - 1, day);
+      if (timeMatch) {
+        dueAt.setHours(Number(timeMatch[1]), Number(timeMatch[2]), 0, 0);
+      } else {
+        dueAt.setHours(9, 0, 0, 0);
+      }
+    } else if (timeMatch) {
+      const now = new Date();
+      now.setHours(Number(timeMatch[1]), Number(timeMatch[2]), 0, 0);
+      dueAt = now;
+    } else {
+      dueAt = new Date();
+      dueAt.setHours(dueAt.getHours() + 1);
+    }
+    const title = text
+      .replace(
+        /(?:el\s+|dia\s+|a\s+)?\d{1,2}[\/\-\.]\d{1,2}(?:[\/\-\.]\d{2,4})?/,
+        ""
+      )
+      .replace(/\d{1,2}(?::|\.)\d{2}/, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    setReminders((p) => [
+      ...p,
+      { id: `rem-${Date.now()}`, title: title || "Recordatorio", dueAt: dueAt.toISOString(), postponed: 0 },
+    ]);
+  };
+
+  useEffect(() => {
+    if (!reminders.length) return;
+    const ids = reminders.map((r) => {
+      const due = new Date(r.dueAt).getTime();
+      return setTimeout(() => {
+        alert(`🔔 ${r.title}\n${new Date(r.dueAt).toLocaleString("es-ES")}`);
+      }, due - Date.now());
+    });
+    return () => ids.forEach(clearTimeout);
+  }, [reminders]);
+
+  /* ---------- render ---------- */
   return (
     <>
       <div className="tasks-shell">
@@ -564,9 +1083,18 @@ export function TasksView({
             <div className="home-header">
               <div>
                 <div className="home-title">Inicio</div>
-                <div className="home-meta">{taskCount.todos} tareas · {taskCount.vencidas} vencidas</div>
+                <div className="home-meta">
+                  {taskCount.todos} tareas · {taskCount.vencidas} vencidas
+                </div>
               </div>
-              <button className="ghost icon-btn" onClick={() => setFabOpen(true)} aria-label="Nuevo" type="button">➕</button>
+              <button
+                className="ghost icon-btn"
+                onClick={() => setFabOpen(true)}
+                aria-label="Nuevo"
+                type="button"
+              >
+                ＋
+              </button>
             </div>
 
             <div className="section">
@@ -583,18 +1111,68 @@ export function TasksView({
             </div>
 
             <div className="section">
+              <div className="section-title">🔔 Avisos</div>
+              <div className="reminders">
+                {reminders.map((r) => (
+                  <ReminderCard
+                    key={r.id}
+                    reminder={r}
+                    onClose={() =>
+                      setReminders((p) => p.filter((x) => x.id !== r.id))
+                    }
+                    onSnooze={(minutes) => {
+                      const next = new Date(r.dueAt);
+                      next.setMinutes(next.getMinutes() + minutes);
+                      setReminders((p) =>
+                        p.map((x) =>
+                          x.id === r.id
+                            ? { ...x, dueAt: next.toISOString(), postponed: x.postponed + 1 }
+                            : x
+                        )
+                      );
+                      alert(
+                        `Recordatorio pospuesto a ${next.toLocaleString("es-ES")}`
+                      );
+                    }}
+                  />
+                ))}
+                {!reminders.length && (
+                  <div className="empty-state">
+                    Sin avisos. Crea una tarea con fecha y hora o pídele a Hermes
+                    que te recuerde algo.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="section">
               <div className="section-title">Accesos directos</div>
               <div className="quick-actions">
-                <button className="quick-card" onClick={() => openFilter("hoy")}>
-                  <span className="quick-title">📅 Tareas de hoy</span>
+                <button
+                  className="quick-card"
+                  onClick={() => openFilter("hoy")}
+                >
+                  <span className="quick-title">📋 Tareas de hoy</span>
                   <span className="quick-count">{taskCount.hoy}</span>
                 </button>
-                <button className="quick-card" onClick={() => openFilter("vencidas")}>
+                <button
+                  className="quick-card"
+                  onClick={() => openFilter("vencidas")}
+                >
                   <span className="quick-title">⏰ Vencidas</span>
                   <span className="quick-count">{taskCount.vencidas}</span>
                 </button>
-                <button className="quick-card" onClick={() => setTab("calendario")}>
+                <button
+                  className="quick-card"
+                  onClick={() => setTab("calendario")}
+                >
                   <span className="quick-title">🗓 Calendario</span>
+                </button>
+                <button
+                  className="quick-card"
+                  onClick={() => setChatOpen(true)}
+                >
+                  <span className="quick-title">💬 Chat Hermes</span>
                 </button>
               </div>
             </div>
@@ -604,8 +1182,13 @@ export function TasksView({
               <div className="quick-list">
                 {(() => {
                   const today = new Date().toISOString().slice(0, 10);
-                  const todayTasks = tasks.filter((t) => t.dueDate === today && !isCompleted(t.status)).slice(0, 8);
-                  if (!todayTasks.length) return <div className="empty-state">Sin tareas para hoy.</div>;
+                  const todayTasks = tasks
+                    .filter((t) => t.dueDate === today && !isCompleted(t.status))
+                    .slice(0, 8);
+                  if (!todayTasks.length)
+                    return (
+                      <div className="empty-state">Sin tareas para hoy.</div>
+                    );
                   return todayTasks.map((task) => (
                     <label className="quick-row" key={task.id}>
                       <input
@@ -616,9 +1199,15 @@ export function TasksView({
                           onUpdateTask(task.id, { status: "Hecha" });
                         }}
                       />
-                      <button className="quick-row-text" onClick={() => navigateToTask(task.id)} type="button">
+                      <button
+                        className="quick-row-text"
+                        onClick={() => navigateToTask(task.id)}
+                        type="button"
+                      >
                         <span>{task.title}</span>
-                        <span className={`priority-dot ${(task.priority ?? "media").toLowerCase()}`} />
+                        <span
+                          className={`priority-dot ${(task.priority ?? "media").toLowerCase()}`}
+                        />
                       </button>
                     </label>
                   ));
@@ -630,8 +1219,17 @@ export function TasksView({
               <div className="section-title">Vencidas</div>
               <div className="quick-list">
                 {(() => {
-                  const overdue = tasks.filter((t) => isOverdue(t.dueDate) && !isCompleted(t.status)).slice(0, 8);
-                  if (!overdue.length) return <div className="empty-state">No tienes tareas vencidas.</div>;
+                  const overdue = tasks
+                    .filter(
+                      (t) => isOverdue(t.dueDate) && !isCompleted(t.status)
+                    )
+                    .slice(0, 8);
+                  if (!overdue.length)
+                    return (
+                      <div className="empty-state">
+                        No tienes tareas vencidas.
+                      </div>
+                    );
                   return overdue.map((task) => (
                     <label className="quick-row" key={task.id}>
                       <input
@@ -642,9 +1240,15 @@ export function TasksView({
                           onUpdateTask(task.id, { status: "Hecha" });
                         }}
                       />
-                      <button className="quick-row-text" onClick={() => navigateToTask(task.id)} type="button">
+                      <button
+                        className="quick-row-text"
+                        onClick={() => navigateToTask(task.id)}
+                        type="button"
+                      >
                         <span>{task.title}</span>
-                        <span className={`priority-dot ${(task.priority ?? "media").toLowerCase()}`} />
+                        <span
+                          className={`priority-dot ${(task.priority ?? "media").toLowerCase()}`}
+                        />
                       </button>
                     </label>
                   ));
@@ -656,8 +1260,17 @@ export function TasksView({
               <div className="section-title">Urgentes</div>
               <div className="quick-list">
                 {(() => {
-                  const urgent = tasks.filter((t) => isUrgent(t.priority) && !isCompleted(t.status)).slice(0, 8);
-                  if (!urgent.length) return <div className="empty-state">No tienes tareas urgentes.</div>;
+                  const urgent = tasks
+                    .filter(
+                      (t) => isUrgent(t.priority) && !isCompleted(t.status)
+                    )
+                    .slice(0, 8);
+                  if (!urgent.length)
+                    return (
+                      <div className="empty-state">
+                        No tienes tareas urgentes.
+                      </div>
+                    );
                   return urgent.map((task) => (
                     <label className="quick-row" key={task.id}>
                       <input
@@ -668,9 +1281,15 @@ export function TasksView({
                           onUpdateTask(task.id, { status: "Hecha" });
                         }}
                       />
-                      <button className="quick-row-text" onClick={() => navigateToTask(task.id)} type="button">
+                      <button
+                        className="quick-row-text"
+                        onClick={() => navigateToTask(task.id)}
+                        type="button"
+                      >
                         <span>{task.title}</span>
-                        <span className={`priority-dot ${(task.priority ?? "media").toLowerCase()}`} />
+                        <span
+                          className={`priority-dot ${(task.priority ?? "media").toLowerCase()}`}
+                        />
                       </button>
                     </label>
                   ));
@@ -697,24 +1316,46 @@ export function TasksView({
                     className={`chip ${filter === f.key ? "active" : ""}`}
                     onClick={() => setFilter(f.key)}
                   >
-                    <span>{f.icon}</span>
                     <span>{f.label}</span>
                   </button>
                 ))}
               </div>
               <div className="task-section-toggle">
-                <button className={view === "lista" ? "active" : ""} onClick={() => setView("lista")} type="button">Lista</button>
-                <button className={view === "kanban" ? "active" : ""} onClick={() => setView("kanban")} type="button">Kanban</button>
+                <button
+                  className={view === "lista" ? "active" : ""}
+                  onClick={() => setView("lista")}
+                  type="button"
+                >
+                  Lista
+                </button>
+                <button
+                  className={view === "kanban" ? "active" : ""}
+                  onClick={() => setView("kanban")}
+                  type="button"
+                >
+                  Kanban
+                </button>
               </div>
             </div>
             <div className="tasks-content">
               {view === "kanban" ? (
                 <TasksKanbanBoard tasks={kanbanTasks} onChange={() => {}} />
               ) : (
-                <TaskList tasks={kanbanTasks} onUpdate={onUpdateTask} onDelete={onDeleteTask} onOpen={(id) => setOpenTaskId(id)} />
+                <TaskList
+                  tasks={kanbanTasks}
+                  onUpdate={onUpdateTask}
+                  onDelete={onDeleteTask}
+                  onOpen={(id) => setOpenTaskId(id)}
+                />
               )}
             </div>
-            <button className="fab" onClick={() => setFabOpen(true)} type="button">＋</button>
+            <button
+              className="fab"
+              onClick={() => setFabOpen(true)}
+              type="button"
+            >
+              ＋
+            </button>
           </>
         )}
 
@@ -736,21 +1377,37 @@ export function TasksView({
         {tab === "proyectos" && (
           <div className="empty-state">
             <div className="empty-title">📂 Proyectos</div>
-            <div className="empty-text">Próximamente: tarjetas de proyecto y carga por equipo.</div>
+            <div className="empty-text">
+              Próximamente: tarjetas de proyecto y carga por equipo.
+            </div>
           </div>
         )}
         {tab === "equipo" && (
           <div className="empty-state">
             <div className="empty-title">👥 Equipo</div>
-            <div className="empty-text">Próximamente: empleados y tareas activas por persona.</div>
+            <div className="empty-text">
+              Próximamente: empleados y tareas activas por persona.
+            </div>
           </div>
         )}
       </div>
 
       <nav className="bottom-bar">
-        {([["inicio","🏠","Inicio"],["tareas","✅","Tareas"],["calendario","📅","Calendario"],["proyectos","📂","Proyectos"],["equipo","👥","Equipo"]] as const).map(([k, icon, label]) => (
-          <button key={k} className={tab === k ? "active" : ""} onClick={() => setTab(k)} type="button">
-            <span>{icon}</span><span>{label}</span>
+        {[
+          ["inicio", "🏠", "Inicio"],
+          ["tareas", "📝", "Tareas"],
+          ["calendario", "📅", "Calendario"],
+          ["proyectos", "📁", "Proyectos"],
+          ["equipo", "👥", "Equipo"],
+        ].map(([k, label]) => (
+          <button
+            key={k}
+            className={tab === k ? "active" : ""}
+            onClick={() => setTab(k as any)}
+            type="button"
+          >
+            <span style={{ fontSize: 16 }}>{label.split(" ")[0]}</span>
+            <span>{label.split(" ")[1]}</span>
           </button>
         ))}
       </nav>
@@ -758,11 +1415,58 @@ export function TasksView({
       {fabOpen && (
         <QuickCreate
           onSaveTask={(task) => {
+            const parsed = /(\d{1,2})[\/\-\.](\d{1,2})(?:[\/\-\.](\d{2,4}))?/.exec(
+              task.title
+            );
+            let dueDate = task.dueDate;
+            if (parsed) {
+              const day = Number(parsed[1]);
+              const month = Number(parsed[2]);
+              const year = Number(parsed[3] ?? new Date().getFullYear());
+              const currentYear = new Date().getFullYear();
+              const fullYear = year < 100 ? currentYear + year : year;
+              const d = new Date(fullYear, month - 1, day);
+              dueDate = d.toISOString().slice(0, 10);
+              const titleWithoutDate = task.title
+                .replace(parsed[0], "")
+                .replace(/^\s*,?\s*/, "")
+                .trim();
+              onAddTask({
+                id: `task-${Date.now().toString(36)}`,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+                title: titleWithoutDate || task.title,
+                detail: "",
+                category: "Operaciones",
+                priority: task.priority,
+                status: "Pendiente",
+                dueDate,
+                assignee: "",
+              });
+              return;
+            }
+            const timeMatch = /(\d{1,2})(?::|\.)(\d{2})/.exec(task.title);
+            if (timeMatch) {
+              const now = new Date();
+              now.setHours(
+                Number(timeMatch[1]),
+                Number(timeMatch[2]),
+                0,
+                0
+              );
+              dueDate = now.toISOString().slice(0, 10);
+              addReminderFromText(task.title);
+            }
             onAddTask({
               ...task,
               id: `task-${Date.now().toString(36)}`,
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
+              detail: "",
+              category: "Operaciones",
+              status: "Pendiente",
+              assignee: "",
+              dueDate,
             });
             setFabOpen(false);
           }}
@@ -783,12 +1487,22 @@ export function TasksView({
           task={openTask}
           onClose={() => setOpenTaskId(null)}
           onUpdate={(patch) => onUpdateTask(openTask.id, patch)}
-          onDelete={() => { onDeleteTask(openTask.id); setOpenTaskId(null); }}
+          onDelete={() => {
+            onDeleteTask(openTask.id);
+            setOpenTaskId(null);
+          }}
         />
       )}
 
       {openMail && (
         <MailPanel account={openMail} onClose={() => setOpenMailId(null)} />
+      )}
+
+      {chatOpen && (
+        <ChatPanel
+          onClose={() => setChatOpen(false)}
+          onSendTelegram={onSendTelegram}
+        />
       )}
 
       <style>{css}</style>
@@ -832,15 +1546,45 @@ const css = `
 .mail-name { font-weight: 600; color: #e2e8f0; }
 .mail-unread { color: #ef4444; font-size: 12px; }
 .mail-email { color: #94a3b8; font-size: 13px; }
-.mail-action { color: #60a5fa; font-size: 13px; }
+.mail-preview { display: flex; flex-direction: column; gap: 6px; }
+.mail-action {
+  color: #60a5fa;
+  font-size: 13px;
+  text-decoration: none;
+  margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 
 .mail-sheet { max-height: 92vh; overflow: hidden; display: flex; flex-direction: column; }
 .mail-list-panel { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; max-height: 60vh; }
-.mail-item { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); padding: 12px; border-radius: 10px; }
+.mail-item {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  padding: 12px;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .mail-item-header { display: flex; justify-content: space-between; font-size: 12px; color: #94a3b8; }
 .mail-from { color: #e2e8f0; font-weight: 600; }
 .mail-subject { font-weight: 600; color: #e2e8f0; margin-top: 6px; }
 .mail-snippet { color: #94a3b8; font-size: 13px; margin-top: 4px; }
+.mail-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.mail-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+}
+.mail-composer { display: flex; flex-direction: column; gap: 12px; }
+.mail-view-body { color: #e2e8f0; line-height: 1.6; }
+.mail-view-meta { font-size: 13px; color: #94a3b8; line-height: 1.7; }
 
 /* accesos directos */
 .quick-actions { display: grid; grid-template-columns: 1fr; gap: 10px; }
@@ -859,6 +1603,59 @@ const css = `
 }
 .quick-title { font-weight: 600; color: #e2e8f0; }
 .quick-count { font-weight: 700; color: #facc15; font-size: 18px; }
+
+/* reminders */
+.reminders { display: flex; flex-direction: column; gap: 10px; }
+.reminder-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(29,78,216,0.15);
+  border-radius: 12px;
+}
+.reminder-title { font-weight: 700; color: #e2e8f0; }
+.reminder-meta { color: #94a3b8; font-size: 12px; }
+.reminder-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.reminder-badge { font-weight: 700; }
+
+/* chat */
+.chat-sheet { max-height: 92vh; overflow: hidden; display: flex; flex-direction: column; }
+.chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  max-height: 60vh;
+  padding: 8px;
+}
+.chat-bubble {
+  max-width: 80%;
+  padding: 10px 11px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.chat-bubble.left {
+  align-self: flex-start;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.1);
+}
+.chat-bubble.right {
+  align-self: flex-end;
+  background: #1d4ed8;
+  color: white;
+}
+.chat-text { white-space: pre-wrap; word-break: break-word; }
+.chat-at { font-size: 10px; opacity: 0.8; margin-top: 4px; }
+.chat-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 0;
+}
+.chat-form input { flex: 1; }
 
 /* tareas rápidas con checkbox */
 .quick-list { display: flex; flex-direction: column; gap: 10px; }
@@ -922,30 +1719,36 @@ const css = `
   right: 0;
   bottom: 0;
   padding: env(safe-area-inset-bottom, 10px) 8px 10px;
-  display: flex;
-  justify-content: space-between;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
   border-top: 1px solid rgba(255,255,255,0.08);
-  background: rgba(15,23,42,0.85);
+  background: rgba(15,23,42,0.92);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   z-index: 20;
 }
 .bottom-bar button {
-  flex: 1;
   display: inline-flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  gap: 3px;
   border: none;
   background: transparent;
-  color: inherit;
-  padding: 8px 6px;
-  min-height: 48px;
+  color: rgba(226,232,240,0.7);
+  padding: 8px 4px;
+  min-height: 52px;
   font-size: 11px;
+  transition: color 0.15s ease, transform 0.05s ease;
 }
-.bottom-bar button.active { color: #60a5fa; }
-.bottom-bar button span:first-child { font-size: 20px; }
+.bottom-bar button.active {
+  color: #60a5fa;
+}
+.bottom-bar button span:first-child {
+  font-size: 18px;
+  line-height: 1;
+}
 
 /* generic */
 .chip {
@@ -960,6 +1763,8 @@ const css = `
   font-size: 14px;
   white-space: nowrap;
   min-height: 40px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 .chip.active { background: #1d4ed8; border-color: #1d4ed8; color: white; }
 .chip.small { padding: 4px 8px; font-size: 12px; min-height: 28px; }
@@ -1025,7 +1830,18 @@ const css = `
 .empty-text { font-size: 14px; color: #94a3b8; }
 
 .attachments { display: flex; flex-direction: column; gap: 8px; }
-.att-card { display: flex; justify-content: space-between; align-items: center; gap: 8px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); padding: 10px; border-radius: 10px; font-size: 13px; color: #e2e8f0; }
+.att-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  padding: 10px;
+  border-radius: 10px;
+  font-size: 13px;
+  color: #e2e8f0;
+}
 .att-thumb { width: 48px; height: 48px; object-fit: cover; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); }
 .upload-btn input[type="file"] { display: none; }
 .upload-btn {

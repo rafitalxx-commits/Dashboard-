@@ -168,7 +168,7 @@ export function TasksCalendarView({
   const selectedEvents = selectedDate ? (byDate.get(selectedDate) ?? []) : [];
 
   return (
-    <div className="calendar">
+    <div className="calendar" style={{background:'#0b1120', color:'#e2e8f0', padding:12, borderRadius:14, border:'1px solid rgba(255,255,255,0.08)'}}>
       <div className="cal-header">
         <div className="cal-title">
           <button className="ghost" onClick={() => changeFocus(-1)} type="button">‹</button>
