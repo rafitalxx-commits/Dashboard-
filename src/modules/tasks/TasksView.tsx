@@ -407,18 +407,18 @@ function QuickCreate({
     <div className="backdrop" onClick={() => setMode("task")}>
       <form className="sheet" onSubmit={(e) => { e.preventDefault(); submit(); }}>
         <div className="sheet-header">Creación rápida</div>
-        <div className="segmented">
-          {(["task", "event", "telegram"] as const).map((m) => (
-            <button
-              key={m}
-              className={`chip ${mode === m ? "active" : ""}`}
-              onClick={() => setMode(m)}
-              type="button"
-            >
-              {m === "task" ? "Tarea" : m === "event" ? "Evento" : "Telegram"}
-            </button>
-          ))}
-        </div>
+        <label className="label">
+          Tipo
+          <select
+            className="input"
+            value={mode}
+            onChange={(e) => setMode(e.target.value as "task" | "event" | "telegram")}
+          >
+            <option value="task">Tarea</option>
+            <option value="event">Evento</option>
+            <option value="telegram">Telegram</option>
+          </select>
+        </label>
         <input
           className="input"
           placeholder={mode === "task" ? "Tarea rápida" : "Evento"}
