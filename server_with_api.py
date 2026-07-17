@@ -2,6 +2,7 @@
 import http.server, socketserver, json, subprocess, os, urllib.parse, pathlib, sys, time, re
 
 ROOT = pathlib.Path(r"C:\Users\Administrador\AppData\Local\hermes\cache\documents\dashboard-handoff")
+DIST = ROOT / "dist"
 DB = pathlib.Path(os.path.expanduser("~/.hermes/state/dashboard-tasks.local.json"))
 DB.parent.mkdir(parents=True, exist_ok=True)
 GAPI = [
@@ -47,7 +48,7 @@ def _iso():
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=str(ROOT), **kwargs)
+        super().__init__(*args, directory=str(DIST), **kwargs)
 
     def _send_json(self, code, obj):
         payload = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -128,6 +129,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 {"id":"evt-2","title":"Dentista","start":"2026-07-23T15:00:00Z","end":"2026-07-23T16:00:00Z","location":"Clínica"},
                 {"id":"evt-3","title":"Strava challenge","start":"2026-07-20T08:00:00Z","end":"2026-07-20T09:00:00Z","location":""},
             ])
+            return
+
+        if route == "/api/mail/send":
+            body = self._read_body()
+            self._send_json(200, {"ok": True, "draft_id": f"draft-{int(time.time())}", "to": body.get("to"), "subject": body.get("subject")})
+            return
+
+        if route == "/api/telegram/send-hermes":
+            body = self._read_body()
+            self._send_json(200, {"reply": f"Prototipo: recibí “{body.get('text','')[:80]}”"})
             return
 
         if route.startswith("/api/tasks/"):
