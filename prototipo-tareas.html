@@ -4,187 +4,131 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Dashboard Tareas</title>
-  <script src="https://unpkg.com/@phosphor-icons/web"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
     :root {
       color-scheme: dark;
-      --bg: #0f1115;
-      --panel: #151921;
-      --panel-2: #1a1f2b;
+      --bg: #0b1120;
+      --panel: #0f172a;
+      --panel-2: #111827;
       --border: rgba(255,255,255,0.08);
-      --text: #e7e9ee;
-      --muted: #9aa0aa;
-      --accent: #2563eb;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #1d4ed8;
       --accent-2: #60a5fa;
       --danger: #ef4444;
       --ok: #22c55e;
       --warn: #f59e0b;
     }
-    * { box-sizing: border-box; }
+
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     html, body { height: 100%; }
     body {
       margin: 0;
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
-      background: radial-gradient(1200px 800px at 10% -10%, #1d2433, transparent), var(--bg);
+      font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial;
+      background: var(--bg);
       color: var(--text);
+      overscroll-behavior: none;
     }
-    header {
-      position: sticky; top: 0; z-index: 10;
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 14px 24px;
-      border-bottom: 1px solid var(--border);
-      background: color-mix(in oklab, var(--panel) 70%, transparent);
-      backdrop-filter: blur(12px);
-    }
-    header h1 { font-size: 18px; margin: 0; letter-spacing: 0.2px; }
-    header p { margin: 0; color: var(--muted); font-size: 12px; }
 
-    .layout { display: grid; grid-template-columns: 220px 1fr; min-height: calc(100vh - 56px); }
-    .sidebar {
-      border-right: 1px solid var(--border);
-      background: color-mix(in oklab, var(--panel) 60%, transparent);
-      padding: 12px;
-      display: flex; flex-direction: column; gap: 4px;
-    }
-    .sidebar-title { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.25px; padding: 8px 10px; }
-    .side-btn {
-      display: flex; align-items: center; justify-content: space-between;
-      width: 100%; text-align: left; background: transparent; color: inherit;
-      border: 1px solid transparent; padding: 9px 10px; border-radius: 10px; cursor: pointer; font-weight: 500; font-size: 13px;
-    }
-    .side-btn:hover { background: rgba(255,255,255,0.06); border-color: var(--border); }
-    .side-btn.active { background: rgba(37,99,235,0.18); color: var(--accent-2); border-color: rgba(37,99,235,0.35); }
-    .side-btn .count { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: rgba(255,255,255,0.08); color: var(--muted); }
+    .app-shell { display: flex; flex-direction: column; min-height: 100vh; padding-bottom: 96px; }
 
-    .main { padding: 16px 20px; }
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 16px; border-bottom: 1px solid var(--border); background: rgba(15,23,42,0.6);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); position: sticky; top: 0; z-index: 10;
+    }
+    .brand { font-weight: 700; font-size: 18px; letter-spacing: 0.2px; }
+    .top-actions { display: inline-flex; gap: 8px; }
+
     .segmented {
-      display: inline-flex; gap: 6px; padding: 5px;
-      border: 1px solid var(--border); border-radius: 10px;
-      background: rgba(255,255,255,0.04);
+      display: inline-flex; gap: 8px; padding: 6px; border: 1px solid var(--border); border-radius: 999px; background: rgba(255,255,255,0.04);
     }
     .segmented button {
-      border: none; background: transparent; color: inherit;
-      padding: 7px 12px; border-radius: 8px; cursor: pointer; font-weight: 500; font-size: 13px;
+      border: none; background: transparent; color: inherit; padding: 8px 12px; border-radius: 999px; cursor: pointer; font-weight: 500; font-size: 14px; color: var(--muted);
     }
     .segmented button.active { background: var(--accent); color: white; }
-    .segmented button:hover:not(.active) { background: rgba(255,255,255,0.08); }
 
-    .toolbar {
-      display: flex; flex-wrap: wrap; gap: 10px; align-items: end;
-      margin: 10px 0 12px;
-    }
-    .field {
-      display: flex; flex-direction: column; gap: 4px;
-      background: var(--panel); padding: 8px 10px; border-radius: 10px;
-      border: 1px solid var(--border);
-    }
-    .field label { font-size: 11px; color: var(--muted); }
-    .field input, .field select, .field textarea {
-      min-width: 160px; padding: 7px 9px; border-radius: 8px;
-      border: 1px solid var(--border); background: #0f1218; color: inherit; font-size: 13px;
-    }
-    .field textarea { min-height: 56px; resize: vertical; }
-    button.primary {
-      padding: 8px 12px; border-radius: 10px; border: none;
-      background: var(--accent); color: white; cursor: pointer; font-weight: 500; font-size: 13px;
-      display: inline-flex; gap: 6px; align-items: center;
-    }
-    button.primary:hover { background: #1d4ed8; }
+    .page { padding: 16px; display: none; flex-direction: column; gap: 16px; }
+    .page.active { display: flex; }
 
-    /* Quick add bar */
-    .quick-bar {
-      display: flex; gap: 8px; align-items: center;
-      background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-      padding: 8px 10px; margin-bottom: 12px;
-    }
-    .quick-bar input { flex: 1; background: transparent; border: none; color: inherit; outline: none; font-size: 13px; }
-    .quick-bar .hint { color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .section { display: flex; flex-direction: column; gap: 10px; }
+    .section-title { font-weight: 600; color: #e2e8f0; font-size: 15px; }
 
-    /* Board */
-    .board { display: grid; grid-template-columns: repeat(5, minmax(200px, 1fr)); gap: 14px; align-items: start; }
-    .column {
-      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
-      border: 1px solid var(--border); border-radius: 14px; padding: 10px;
-    }
-    .column-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-    .column-head h3 { margin: 0; font-size: 12px; color: var(--muted); letter-spacing: 0.3px; }
-    .count { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: rgba(255,255,255,0.08); color: var(--muted); }
-
-    .cards { display: flex; flex-direction: column; gap: 8px; min-height: 60px; }
     .card {
-      background: #0c0f14; border: 1px solid var(--border); border-radius: 12px; padding: 10px;
-      cursor: pointer; transition: transform .08s ease, border-color .15s ease;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px; cursor: pointer;
+      display: flex; flex-direction: column; gap: 6px;
     }
-    .card:hover { border-color: rgba(255,255,255,0.18); }
-    .card.dragging { opacity: 0.6; transform: scale(0.98); }
-    .card-top { display: flex; justify-content: space-between; gap: 8px; align-items: start; }
-    .card-title { font-weight: 500; font-size: 13px; line-height: 1.3; }
-    .badge { font-size: 10px; padding: 3px 7px; border-radius: 999px; background: rgba(255,255,255,0.08); color: var(--muted); white-space: nowrap; }
-    .badge.alert { background: rgba(239,68,68,0.18); color: var(--danger); }
-    .meta { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+    .card:active { transform: scale(0.995); }
+
+    .rows { display: flex; flex-direction: column; gap: 10px; }
+    .row {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
+      display: grid; grid-template-columns: 24px 1fr auto; gap: 10px; align-items: center; cursor: pointer;
+    }
+    .row input { width: 22px; height: 22px; accent-color: var(--accent); }
+    .row-title { font-weight: 500; font-size: 14px; }
+    .row-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: 12px; }
+
+    .search {
+      display: flex; gap: 10px; flex-wrap: wrap;
+    }
+    .search input, .input {
+      width: 100%; background: var(--panel); color: inherit; border: 1px solid var(--border); padding: 12px 14px; border-radius: 10px; font-size: 16px;
+    }
+
+    .chips { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; align-items: center; }
     .chip {
-      display: inline-flex; align-items: center; gap: 5px;
-      font-size: 10px; padding: 3px 7px; border-radius: 999px;
-      background: rgba(255,255,255,0.05); color: var(--muted);
-      border: 1px solid var(--border);
+      display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,0.04); white-space: nowrap; min-height: 40px; font-size: 14px; color: var(--muted);
     }
-    .chip .dot { width: 6px; height: 6px; border-radius: 50%; }
-    .chip .dot.alta { background: var(--danger); }
-    .chip .dot.media { background: var(--warn); }
-    .chip .dot.baja { background: var(--ok); }
-    .actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
-    .ghost {
-      background: transparent; color: var(--muted); border: 1px solid var(--border);
-      padding: 5px 9px; border-radius: 7px; cursor: pointer; font-size: 11px;
-    }
-    .ghost:hover { color: var(--text); border-color: rgba(255,255,255,0.25); }
-    .ghost.danger { color: var(--danger); }
+    .chip.active { background: var(--accent); border-color: var(--accent); color: white; }
 
-    .expand {
-      margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);
-      display: none; flex-direction: column; gap: 8px;
+    .fab {
+      position: fixed; right: 18px; bottom: 84px; width: 56px; height: 56px; border-radius: 999px; border: none; background: var(--accent); color: white; font-size: 28px; line-height: 56px; text-align: center; box-shadow: 0 8px 24px rgba(29,78,216,0.35); cursor: pointer; z-index: 8;
     }
-    .card.open .expand { display: flex; }
-    .field-row { display: flex; gap: 8px; flex-wrap: wrap; }
-    .field-row .field { flex: 1 1 140px; }
 
-    /* Compact list */
-    .list-wrap { display: flex; flex-direction: column; gap: 6px; }
-    .list-row {
-      background: #0c0f14; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px;
-      display: grid; grid-template-columns: 24px 1fr auto auto auto; gap: 10px; align-items: center; cursor: pointer;
+    .bottom-nav {
+      position: fixed; left: 0; right: 0; bottom: 0; padding: env(safe-area-inset-bottom, 10px) 8px 10px; display: flex; justify-content: space-between; gap: 6px; border-top: 1px solid var(--border); background: rgba(15,23,42,0.85); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); z-index: 20;
     }
-    .list-row:hover { border-color: rgba(255,255,255,0.18); }
-    .list-row .title { font-weight: 500; font-size: 13px; line-height: 1.25; }
-    .list-row .meta { display: none; }
-    .status-pill {
-      font-size: 11px; padding: 4px 10px; border-radius: 999px; cursor: pointer; border: 1px solid transparent;
-      background: rgba(255,255,255,0.06); color: var(--text); white-space: nowrap;
+    .bottom-nav button {
+      flex: 1; display: inline-flex; flex-direction: column; align-items: center; gap: 4px; border: none; background: transparent; color: var(--muted); padding: 8px 6px; min-height: 48px; font-size: 11px;
     }
-    .status-pill:hover { border-color: rgba(255,255,255,0.25); }
-    .status-pill.activo { background: rgba(34,197,94,0.18); color: var(--ok); }
-    .status-pill.pendiente { background: rgba(245,158,11,0.18); color: var(--warn); }
-    .status-pill.revision { background: rgba(96,165,250,0.18); color: var(--accent-2); }
-    .status-pill.listo { background: rgba(148,163,184,0.18); color: #cbd5e1; }
-    .status-pill.cerrado { background: rgba(255,255,255,0.08); color: var(--muted); }
-    .expanded {
-      grid-column: 1 / -1; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);
-      display: none; flex-direction: column; gap: 8px;
-    }
-    .list-row.open .expanded { display: flex; }
+    .bottom-nav button.active { color: var(--accent-2); }
+    .bottom-nav button span { font-size: 20px; }
 
-    /* Quick list */
-    .quick-list { display: flex; flex-direction: column; gap: 6px; }
-    .quick-item {
-      display: flex; align-items: center; gap: 8px;
-      background: #0c0f14; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; cursor: pointer;
-    }
-    .quick-item:hover { border-color: rgba(255,255,255,0.18); }
-    .quick-item input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
-    .quick-item .qtitle { flex: 1; font-size: 13px; }
-    .quick-item.done .qtitle { text-decoration: line-through; color: var(--muted); }
+    .empty-state { color: var(--muted); font-size: 14px; padding: 10px 0; }
 
-    /* Calendar */
+    .mail-item { background: var(--panel); border: 1px solid var(--border); padding: 12px; border-radius: 10px; }
+    .mail-item-header { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+    .mail-from { color: var(--text); font-weight: 600; }
+    .mail-subject { font-weight: 600; color: var(--text); margin-top: 6px; }
+    .mail-snippet { color: var(--muted); font-size: 13px; margin-top: 4px; }
+
+    .quick-actions { display: grid; grid-template-columns: 1fr; gap: 10px; }
+    .quick-card {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px; cursor: pointer; text-align: left;
+      display: flex; justify-content: space-between; align-items: center; gap: 12px;
+    }
+    .quick-title { font-weight: 600; color: var(--text); }
+    .quick-count { font-weight: 700; color: var(--warn); font-size: 18px; }
+
+    .attach-card { display: flex; justify-content: space-between; align-items: center; gap: 8px; background: rgba(255,255,255,0.04); border: 1px solid var(--border); padding: 10px; border-radius: 10px; font-size: 13px; color: var(--text); }
+    .upload-btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 10px; border: 1px dashed var(--border); color: var(--muted); font-size: 13px; cursor: pointer; background: rgba(255,255,255,0.02); }
+
+    .sheet-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,0.72); display: none; align-items: flex-end; justify-content: center; padding-bottom: env(safe-area-inset-bottom, 12px); z-index: 12; }
+    .sheet-backdrop.open { display: flex; }
+    .sheet { background: #0b1120; border: 1px solid var(--border); border-radius: 14px 14px 0 0; width: 100vw; max-width: 100vw; padding: 18px; display: flex; flex-direction: column; gap: 12px; max-height: 92vh; overflow-y: auto; }
+    .sheet-header { font-weight: 700; font-size: 16px; display: flex; justify-content: space-between; align-items: center; }
+    .actions { display: flex; justify-content: stretch; gap: 10px; }
+    .actions .button { flex: 1; text-align: center; }
+    .button, .ghost {
+      border: 1px solid var(--border); background: rgba(255,255,255,0.04); color: inherit; padding: 12px 14px; border-radius: 10px; cursor: pointer; min-height: 44px; font-size: 15px;
+    }
+    .button.primary { background: var(--accent); border-color: var(--accent); color: white; }
+    .close { border: none; background: transparent; color: inherit; font-size: 18px; padding: 4px 8px; border-radius: 8px; }
+
     .calendar { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px; }
     .calendar-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
     .calendar-head h3 { margin: 0; font-size: 14px; }
@@ -204,600 +148,370 @@
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
 
-    .empty { padding: 14px; text-align: center; color: var(--muted); font-size: 13px; border: 1px dashed var(--border); border-radius: 12px; }
+    .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
 
-    /* Integration hint */
-    .hint-bar {
-      margin-top: 10px; padding: 10px 12px; border-radius: 10px;
-      background: rgba(255,255,255,0.04); border: 1px solid var(--border);
-      color: var(--muted); font-size: 12px; display: flex; gap: 8px; align-items: center;
+    @media (min-width: 640px) {
+      .quick-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     }
   </style>
 </head>
 <body>
-  <header>
-    <div>
-      <h1>Tareas</h1>
-      <p>Prototipo</p>
-    </div>
-    <div class="segmented">
-      <button id="viewList">Lista</button>
-      <button id="viewBoard">Camba</button>
-      <button id="viewCalendar">Calendario</button>
-    </div>
-  </header>
-
-  <div class="layout">
-    <aside class="sidebar">
-      <div class="sidebar-title">General</div>
-      <button class="side-btn active" data-nav="inicio">
-        <span><i class="ph ph-house"></i> Inicio</span>
-      </button>
-      <button class="side-btn" data-nav="mi_lista">
-        <span><i class="ph ph-check-square"></i> Mis tareas</span><span class="count" id="countMiLista">0</span>
-      </button>
-      <button class="side-btn" data-nav="lista_rapida">
-        <span><i class="ph ph-list-dashes"></i> Lista rápida</span><span class="count" id="countListaRapida">0</span>
-      </button>
-      <button class="side-btn" data-nav="proyectos">
-        <span><i class="ph ph-folders"></i> Proyectos</span><span class="count" id="countProyectos">0</span>
-      </button>
-      <button class="side-btn" data-nav="calendario">
-        <span><i class="ph ph-calendar"></i> Calendario</span>
-      </button>
-      <button class="side-btn" data-nav="equipo">
-        <span><i class="ph ph-users"></i> Equipo</span><span class="count" id="countEquipo">0</span>
-      </button>
-    </aside>
-
-    <main class="main">
-      <div class="toolbar" id="toolbar">
-        <div class="field">
-          <label>Título</label>
-          <input id="title" placeholder="Ej. Revisar pedidos Odoo" />
-        </div>
-        <div class="field">
-          <label>Categoría</label>
-          <select id="category">
-            <option>Operaciones</option>
-            <option>Odoo</option>
-            <option>Compras</option>
-            <option>Amazon</option>
-            <option>Gmail</option>
-            <option>Dashboard</option>
-            <option>IA</option>
-            <option>Proyecto</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>Prioridad</label>
-          <select id="priority">
-            <option>Media</option>
-            <option>Alta</option>
-            <option>Baja</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>Fecha límite</label>
-          <input id="due" type="date" />
-        </div>
-        <div class="field">
-          <label>Aviso</label>
-          <input id="reminder" type="datetime-local" />
-        </div>
-        <button class="primary" id="addBtn"><i class="ph ph-plus"></i> Nueva tarea</button>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <div class="brand">Tareas</div>
+        <div style="color:var(--muted);font-size:12px">Prototipo · Dark</div>
       </div>
+      <div class="top-actions">
+        <div class="segmented">
+          <button class="active" data-view="lista">Lista</button>
+          <button data-view="calendario">Calendario</button>
+        </div>
+      </div>
+    </header>
 
-      <section id="content"></section>
+    <main>
+      <!-- Inicio -->
+      <section id="inicio" class="page active">
+        <div class="section">
+          <div class="section-title">📧 Correo · INBOX no leídos</div>
+          <div id="inbox-list" class="rows">Cargando correo...</div>
+        </div>
+        <div class="section">
+          <div class="section-title">Accesos directos</div>
+          <div class="quick-actions">
+            <button class="quick-card" onclick="switchTab('tareas'); setTimeout(applyFilter('hoy'),0)">
+              <span class="quick-title">📅 Tareas de hoy</span>
+              <span class="quick-count" id="count-hoy">0</span>
+            </button>
+            <button class="quick-card" onclick="switchTab('tareas'); setTimeout(applyFilter('vencidas'),0)">
+              <span class="quick-title">⏰ Vencidas</span>
+              <span class="quick-count" id="count-vencidas">0</span>
+            </button>
+            <button class="quick-card" onclick="switchTab('calendario')">
+              <span class="quick-title">🗓 Calendario</span>
+            </button>
+          </div>
+        </div>
+        <div class="section">
+          <div class="section-title">Tareas de hoy</div>
+          <div id="today-list" class="rows">Cargando...</div>
+        </div>
+        <div class="section">
+          <div class="section-title">Vencidas</div>
+          <div id="overdue-list" class="rows">Cargando...</div>
+        </div>
+        <div class="section">
+          <div class="section-title">Urgentes</div>
+          <div id="urgent-list" class="rows">Cargando...</div>
+        </div>
+      </section>
+
+      <!-- Tareas -->
+      <section id="tareas" class="page">
+        <div class="section">
+          <div class="search">
+            <input id="search-input" placeholder="Buscar tarea, proyecto o responsable..." />
+          </div>
+          <div class="chips">
+            <button class="chip active" data-filter="todos">Todos</button>
+            <button class="chip" data-filter="hoy">Hoy</button>
+            <button class="chip" data-filter="vencidas">Vencidas</button>
+            <button class="chip" data-filter="urgentes">Urgentes</button>
+            <button class="chip" data-filter="completadas">Completadas</button>
+          </div>
+        </div>
+        <div id="tasks-list" class="rows">Cargando tareas...</div>
+      </section>
+
+      <!-- Calendario -->
+      <section id="calendario" class="page">
+        <div class="calendar">
+          <div class="calendar-head">
+            <button class="ghost" id="cal-prev">←</button>
+            <h3 id="cal-title">Julio 2026</h3>
+            <button class="ghost" id="cal-next">→</button>
+          </div>
+          <div class="calendar-grid" id="calendar-grid"></div>
+          <div id="calendar-events" class="rows" style="margin-top:12px"></div>
+          <div class="hint">Calendario sincronizado con tu cuenta de Google Calendar</div>
+        </div>
+      </section>
     </main>
+
+    <button class="fab" id="fab" type="button">＋</button>
+    <nav class="bottom-nav" id="bottom-nav">
+      <button class="active" data-tab="inicio"><span>🏠</span><span>Inicio</span></button>
+      <button data-tab="tareas"><span>✅</span><span>Tareas</span></button>
+      <button data-tab="calendario"><span>📅</span><span>Calendario</span></button>
+      <button data-tab="proyectos"><span>📂</span><span>Proyectos</span></button>
+      <button data-tab="equipo"><span>👥</span><span>Equipo</span></button>
+    </nav>
+  </div>
+
+  <div id="sheet" class="sheet-backdrop">
+    <form class="sheet" id="quick-form">
+      <div class="sheet-header">
+        <span>Creación rápida</span>
+        <button class="ghost close" id="sheet-close" type="button">×</button>
+      </div>
+      <input class="input" id="q-title" placeholder="Tarea rápida" />
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <label style="flex:1;min-width:140px;display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--muted)">
+          Fecha
+          <input class="input" id="q-date" type="date" />
+        </label>
+        <label style="flex:1;min-width:140px;display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--muted)">
+          Prioridad
+          <select class="input" id="q-priority">
+            <option>Crítica</option><option selected>Alta</option><option>Media</option><option>Baja</option>
+          </select>
+        </label>
+      </div>
+      <div class="actions">
+        <button class="ghost" id="sheet-cancel" type="button">Cancelar</button>
+        <button class="button primary" type="submit">Guardar</button>
+      </div>
+    </form>
   </div>
 
   <script>
-    const STATUSES = ["Pendiente","En curso","En revisión","Listo","Cerrado"];
-    const STATUS_ICON = {
-      "Pendiente": "ph-clock",
-      "En curso": "ph-lightning",
-      "En revisión": "ph-eye",
-      "Listo": "ph-check-circle",
-      "Cerrado": "ph-x-circle"
-    };
-    const STATUS_CLASS = {
-      "Pendiente": "pendiente",
-      "En curso": "activo",
-      "En revisión": "revision",
-      "Listo": "listo",
-      "Cerrado": "cerrado"
-    };
-    const today = () => new Date().toISOString().slice(0,10);
-    const uid = () => "task-" + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
-
-    let state = JSON.parse(localStorage.getItem("demo_tasks_state_v2") || "null") || {
+    const state = {
+      tab: 'inicio',
+      filter: 'todos',
+      query: '',
       tasks: [],
-      quickItems: [],
-      nav: "mi_lista",
-      view: "list",
-      project: null,
+      inbox: [],
+      calYear: 2026,
+      calMonth: 6,
+      calEvents: []
     };
-    const content = document.getElementById("content");
-    const toolbar = document.getElementById("toolbar");
 
-    function save() { localStorage.setItem("demo_tasks_state_v2", JSON.stringify(state)); }
+    function $(id) { return document.getElementById(id); }
 
-    document.querySelectorAll(".side-btn").forEach(btn => {
-      btn.addEventListener("click", () => { state.nav = btn.dataset.nav; state.project = null; save(); render(); });
+    function switchTab(tab) {
+      state.tab = tab;
+      document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === tab));
+      document.querySelectorAll('#bottom-nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+      if (tab === 'calendario') renderCalendar();
+      if (tab === 'tareas') renderTasks();
+    }
+
+    document.getElementById('bottom-nav').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-tab]');
+      if (!btn) return;
+      switchTab(btn.dataset.tab);
     });
-    document.getElementById("viewList").addEventListener("click", () => changeView("list"));
-    document.getElementById("viewBoard").addEventListener("click", () => changeView("board"));
-    document.getElementById("viewCalendar").addEventListener("click", () => changeView("calendar"));
-    document.getElementById("addBtn").addEventListener("click", addTask);
 
-    function changeView(v) { state.view = v; save(); render(); }
+    document.querySelector('.segmented').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-view]');
+      if (!btn) return;
+      document.querySelectorAll('.segmented button').forEach(b => b.classList.toggle('active', b === btn));
+      if (btn.dataset.view === 'calendario') switchTab('calendario');
+      else switchTab('tareas');
+    });
 
-    function addTask() {
-      const title = document.getElementById("title").value.trim();
-      if (!title) return alert("Falta título");
-      const task = {
-        id: uid(), title,
-        detail: "", category: document.getElementById("category").value,
-        priority: document.getElementById("priority").value, status: "Pendiente",
-        dueDate: document.getElementById("due").value || today(),
-        reminderAt: document.getElementById("reminder").value || "",
-        project: state.nav === "proyectos" && state.project ? state.project : null,
-        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-      };
-      state.tasks.unshift(task);
-      document.getElementById("title").value = "";
-      save(); render();
-    }
+    function today() { return new Date().toISOString().slice(0, 10); }
+    function shift(days) { const d = new Date(); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); }
 
-    function moveTask(id, status) { const t = state.tasks.find(x => x.id === id); if (t) { t.status = status; t.updatedAt = new Date().toISOString(); save(); render(); } }
-    function updateTask(id, patch) { const t = state.tasks.find(x => x.id === id); if (!t) return; Object.assign(t, patch, { updatedAt: new Date().toISOString() }); save(); render(); }
-    function deleteTask(id) { if (!confirm("Borrar tarea?")) return; state.tasks = state.tasks.filter(x => x.id !== id); save(); render(); }
-    function toggleExpand(id) {
-      const el = document.getElementById("row-" + id); if (!el) return;
-      const already = el.classList.contains("open");
-      document.querySelectorAll(".card.open,.list-row.open").forEach(c => c.classList.remove("open"));
-      if (!already) el.classList.add("open");
-    }
+    const priorityWeight = p => ({ 'Crítica': 0, 'Alta': 1, 'Media': 2, 'Baja': 3 }[p] ?? 4);
+    const pillFor = s => ({ 'En curso': 'activo', 'Pendiente': 'pendiente', 'En revisión': 'revision', 'Listo': 'listo', 'Cerrado': 'cerrado' }[s] || 'pendiente');
 
-    function visibleTasks() {
-      if (state.nav === "mi_lista") return state.tasks;
-      if (state.nav === "proyectos") {
-        if (state.project) return state.tasks.filter(t => (t.project || t.category) === state.project);
-        return state.tasks.filter(t => t.project || t.category === "Proyecto");
-      }
-      if (state.nav === "equipo") return state.tasks.filter(t => t.assignee && t.assignee !== "yo");
-      return state.tasks;
-    }
-
-    function renderSidebar() {
-      const projects = [...new Set(state.tasks.map(t => t.project || t.category).filter(Boolean))];
-      document.getElementById("countMiLista").textContent = String(state.tasks.filter(t => !t.project).length);
-      document.getElementById("countProyectos").textContent = String(projects.length);
-      document.getElementById("countEquipo").textContent = String(state.tasks.filter(t => t.assignee && t.assignee !== "yo").length);
-      document.getElementById("countListaRapida").textContent = String(state.quickItems.length);
-    }
-
-    function quickBar() {
-      const wrap = document.createElement("div");
-      wrap.className = "quick-bar";
-      wrap.innerHTML = `<i class="ph ph-lightning" style="color:var(--warn)"></i> <input id="quickInput" placeholder="Añadir a lista rápida (Enter)..." /> <span class="hint">Captura rápida</span>`;
-      content.appendChild(wrap);
-      const input = document.getElementById("quickInput");
-      input.addEventListener("keydown", e => {
-        if (e.key === "Enter") {
-          const v = input.value.trim(); if (!v) return;
-          state.quickItems.unshift({ id: uid(), title: v, done: false, detail: "", createdAt: new Date().toISOString() });
-          input.value = ""; save(); render();
-        }
-      });
-    }
-
-    function renderQuickList() {
-      toolbar.hidden = true;
-      content.innerHTML = "";
-      quickBar();
-      const wrap = document.createElement("div");
-      wrap.className = "quick-list";
-      if (!state.quickItems.length) wrap.innerHTML = `<div class="empty">Añade items rápido con Enter</div>`;
-      state.quickItems.forEach((q, idx) => {
-        const row = document.createElement("div");
-        row.className = "quick-item" + (q.done ? " done" : "");
-        row.innerHTML = `
-          <input type="checkbox" ${q.done ? "checked" : ""} />
-          <div class="qtitle">${escapeHtml(q.title)}</div>
-          <button class="ghost"><i class="ph ph-pencil-simple"></i></button>
-          <button class="ghost danger"><i class="ph ph-trash"></i></button>
-        `;
-        row.querySelector('input[type="checkbox"]').addEventListener("change", () => { q.done = !q.done; save(); render(); });
-        row.querySelector(".ghost:not(.danger)").addEventListener("click", () => {
-          const newTitle = prompt("Editar", q.title); if (newTitle === null) return;
-          q.title = newTitle.trim() || q.title; save(); render();
-        });
-        row.querySelector(".ghost.danger").addEventListener("click", () => { if (!confirm("Borrar?")) return; state.quickItems.splice(idx, 1); save(); render(); });
-        row.addEventListener("dblclick", () => {
-          const newTitle = prompt("Expandir / convertir en tarea", q.title); if (newTitle === null) return;
-          const task = { id: uid(), title: newTitle.trim() || q.title, detail: q.detail || "", category: "Operaciones", priority: "Media", status: "Pendiente", dueDate: today(), reminderAt: "", project: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-          state.tasks.push(task); state.quickItems.splice(idx, 1); save(); render();
-        });
-        wrap.appendChild(row);
-      });
-      content.appendChild(wrap);
-      const hint = document.createElement("div");
-      hint.className = "hint-bar";
-      hint.innerHTML = `<i class="ph ph-info"></i> <div><strong>Tip:</strong> Dblclick para convertir en tarea completa y ampliar detalle. También podés pedirme crear items por Telegram.</div>`;
-      content.appendChild(hint);
-    }
-
-    function renderList() {
-      toolbar.hidden = false;
-      content.innerHTML = "";
-      const wrap = document.createElement("div");
-      wrap.className = "list-wrap";
-      const items = visibleTasks();
-      if (!items.length) wrap.innerHTML = `<div class="empty">No hay tareas</div>`;
-      items.forEach(task => {
-        const row = document.createElement("div");
-        row.className = "list-row";
-        row.id = "row-" + task.id;
-        row.innerHTML = `
-          <input type="checkbox" ${["Hecha","Listo","Cerrado"].includes(task.status) ? "checked" : ""} />
-          <div>
-            <div class="title">${escapeHtml(task.title)}</div>
-          </div>
-          <span class="status-pill ${STATUS_CLASS[task.status] || 'pendiente'}" data-status-pill="${task.id}" title="Cambiar estado">${STATUS_ICON[task.status] ? `<i class="ph ${STATUS_ICON[task.status]}"></i>` : ''} ${task.status}</span>
-          <span class="chip"><span class="dot ${task.priority.toLowerCase()}"></span>${task.priority}</span>
-          <span class="chip">${task.project || task.category}</span>
-          <div class="expanded">
-            <form data-field-root>
-              <div class="field-row">
-                <div class="field"><label>Título</label><input data-field="title" value="${escapeHtml(task.title)}" /></div>
-                <div class="field"><label>Proyecto</label><input data-field="project" value="${escapeHtml(task.project || "")}" placeholder="Nombre del proyecto" /></div>
-              </div>
-              <div class="field-row">
-                <div class="field">
-                  <label>Categoría</label>
-                  <select data-field="category">${["Operaciones","Odoo","Compras","Amazon","Gmail","Dashboard","IA","Proyecto"].map(c => `<option ${c===task.category?"selected":""}>${c}</option>`).join("")}</select>
-                </div>
-                <div class="field">
-                  <label>Prioridad</label>
-                  <select data-field="priority">${["Alta","Media","Baja"].map(p => `<option ${p===task.priority?"selected":""}>${p}</option>`).join("")}</select>
-                </div>
-                <div class="field">
-                  <label>Estado</label>
-                  <select data-field="status">${STATUSES.map(s => `<option ${s===task.status?"selected":""}>${s}</option>`).join("")}</select>
-                </div>
-              </div>
-              <div class="field-row">
-                <div class="field"><label>Fecha límite</label><input data-field="dueDate" type="date" value="${task.dueDate || ""}" /></div>
-                <div class="field"><label>Aviso</label><input data-field="reminderAt" type="datetime-local" value="${task.reminderAt || ""}" /></div>
-              </div>
-              <div class="field"><label>Detalle</label><textarea data-field="detail" placeholder="Detalles...">${escapeHtml(task.detail || "")}</textarea></div>
-              <div class="actions" style="display:flex;gap:8px;flex-wrap:wrap">
-                <button type="button" class="primary" data-save>Guardar cambios</button>
-                <button type="button" class="ghost danger" data-del>Borrar</button>
-              </div>
-            </form>
-          </div>
-        `;
-        row.querySelector(".title").addEventListener("click", () => toggleExpand(task.id));
-        row.querySelector("[data-status-pill]").addEventListener("click", (e) => {
-          e.stopPropagation();
-          const currentIdx = STATUSES.indexOf(task.status);
-          const next = STATUSES[(currentIdx + 1) % STATUSES.length];
-          moveTask(task.id, next);
-        });
-        row.querySelector("[data-del]")?.addEventListener("click", () => deleteTask(task.id));
-        const saveBtn = row.querySelector("[data-save]");
-        if (saveBtn) saveBtn.addEventListener("click", () => {
-          const form = row.querySelector("[data-field-root]");
-          const patch = {
-            title: (form.querySelector("[data-field='title']").value || task.title).trim(),
-            detail: form.querySelector("[data-field='detail']").value,
-            category: form.querySelector("[data-field='category']").value,
-            priority: form.querySelector("[data-field='priority']").value,
-            status: form.querySelector("[data-field='status']").value,
-            dueDate: form.querySelector("[data-field='dueDate']").value,
-            reminderAt: form.querySelector("[data-field='reminderAt']").value,
-            project: form.querySelector("[data-field='project']").value.trim() || null,
-          };
-          updateTask(task.id, patch);
-        });
-        wrap.appendChild(row);
-      });
-      content.appendChild(wrap);
-    }
-
-    function renderBoard() {
-      toolbar.hidden = false;
-      content.innerHTML = "";
-      const wrap = document.createElement("div");
-      wrap.className = "board";
-      STATUSES.forEach(status => {
-        const col = document.createElement("div");
-        col.className = "column";
-        const items = state.tasks.filter(t => t.status === status);
-        col.innerHTML = `<div class="column-head"><h3>${STATUS_ICON[status] ? `<i class="ph ${STATUS_ICON[status]}"></i> ` : ''}${status}</h3><span class="count">${items.length}</span></div><div class="cards" data-status="${status}"></div>`;
-        const cards = col.querySelector(".cards");
-        items.forEach(task => {
-          const el = document.createElement("div");
-          el.className = "card"; el.id = "card-" + task.id; el.draggable = true;
-          el.innerHTML = `
-            <div class="card-top" style="cursor:pointer">
-              <div class="card-title">${escapeHtml(task.title)}</div>
-              <span class="badge ${task.priority==="Alta"?"alert":""}">${task.project || task.category}</span>
-            </div>
-            <div class="meta">
-              <span class="chip"><span class="dot ${task.priority.toLowerCase()}"></span>${task.priority}</span>
-              <span class="chip">📅 ${task.dueDate || "sin fecha"}</span>
-              ${task.reminderAt ? `<span class="chip">🔔 ${new Date(task.reminderAt).toLocaleString("es-ES", {hour:"2-digit", minute:"2-digit", day:"2-digit", month:"2-digit"})}</span>` : ""}
-            </div>
-            <div class="expand">
-              <form data-field-root>
-                <div class="field-row">
-                  <div class="field"><label>Título</label><input data-field="title" value="${escapeHtml(task.title)}" /></div>
-                  <div class="field"><label>Proyecto</label><input data-field="project" value="${escapeHtml(task.project || "")}" /></div>
-                </div>
-                <div class="field-row">
-                  <div class="field">
-                    <label>Categoría</label>
-                    <select data-field="category">${["Operaciones","Odoo","Compras","Amazon","Gmail","Dashboard","IA","Proyecto"].map(c => `<option ${c===task.category?"selected":""}>${c}</option>`).join("")}</select>
-                  </div>
-                  <div class="field">
-                    <label>Prioridad</label>
-                    <select data-field="priority">${["Alta","Media","Baja"].map(p => `<option ${p===task.priority?"selected":""}>${p}</option>`).join("")}</select>
-                  </div>
-                  <div class="field">
-                    <label>Estado</label>
-                    <select data-field="status">${STATUSES.map(s => `<option ${s===task.status?"selected":""}>${s}</option>`).join("")}</select>
-                  </div>
-                </div>
-                <div class="field-row">
-                  <div class="field"><label>Fecha límite</label><input data-field="dueDate" type="date" value="${task.dueDate || ""}" /></div>
-                  <div class="field"><label>Aviso</label><input data-field="reminderAt" type="datetime-local" value="${task.reminderAt || ""}" /></div>
-                </div>
-                <div class="field"><label>Detalle</label><textarea data-field="detail">${escapeHtml(task.detail || "")}</textarea></div>
-                <div class="actions"><button type="button" class="primary" data-save>Guardar</button></div>
-              </form>
-            </div>
-          `;
-          el.addEventListener("dragstart", e => { e.dataTransfer.setData("text/plain", task.id); el.classList.add("dragging"); });
-          el.addEventListener("dragend", () => el.classList.remove("dragging"));
-          el.querySelector(".card-top").addEventListener("click", () => toggleExpand(task.id));
-          el.querySelectorAll("[data-move]").forEach(b => b.addEventListener("click", () => moveTask(task.id, b.dataset.move)));
-          const saveBtn = el.querySelector("[data-save]");
-          if (saveBtn) saveBtn.addEventListener("click", () => {
-            const form = el.querySelector("[data-field-root]");
-            const patch = {
-              title: (form.querySelector("[data-field='title']").value || task.title).trim(),
-              detail: form.querySelector("[data-field='detail']").value,
-              category: form.querySelector("[data-field='category']").value,
-              priority: form.querySelector("[data-field='priority']").value,
-              status: form.querySelector("[data-field='status']").value,
-              dueDate: form.querySelector("[data-field='dueDate']").value,
-              reminderAt: form.querySelector("[data-field='reminderAt']").value,
-              project: form.querySelector("[data-field='project']").value.trim() || null,
-            };
-            updateTask(task.id, patch);
-          });
-          cards.appendChild(el);
-        });
-        cards.addEventListener("dragover", e => { e.preventDefault(); cards.style.outline = "1px dashed rgba(255,255,255,0.25)"; });
-        cards.addEventListener("dragleave", () => { cards.style.outline = ""; });
-        cards.addEventListener("drop", e => { e.preventDefault(); cards.style.outline = ""; const id = e.dataTransfer.getData("text/plain"); if (id) moveTask(id, status); });
-        col.addEventListener("dragover", e => e.preventDefault());
-        col.addEventListener("drop", e => { e.preventDefault(); const id = e.dataTransfer.getData("text/plain"); if (id) moveTask(id, status); });
-        wrap.appendChild(col);
-      });
-      content.appendChild(wrap);
-    }
-
-    function renderCalendarView() {
-      toolbar.hidden = true;
-      content.innerHTML = "";
-      const wrap = document.createElement("div");
-      wrap.className = "calendar";
-      const now = new Date();
-      const y = now.getFullYear(), m = now.getMonth();
-      const first = new Date(y,m,1); const last = new Date(y,m+1,0);
-      const startWeekday = (first.getDay() + 6) % 7; const daysInMonth = last.getDate();
-      const head = document.createElement("div");
-      head.className = "calendar-head";
-      head.innerHTML = `<h3>${now.toLocaleString("es-ES", {month:"long", year:"numeric"})}</h3><div class="segmented"><button class="active">Mes</button></div>`;
-      wrap.appendChild(head);
-      const grid = document.createElement("div");
-      grid.className = "calendar-grid";
-      ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"].forEach(d => { const w = document.createElement("div"); w.className = "dow"; w.textContent = d; grid.appendChild(w); });
-      for (let i=0; i<startWeekday; i++) { const d=document.createElement("div"); d.className="day empty"; grid.appendChild(d); }
-      for (let d=1; d<=daysInMonth; d++) {
-        const dateStr = `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
-        const dayEl = document.createElement("div");
-        dayEl.className = "day";
-        const dayTasks = visibleTasks().filter(t => t.dueDate === dateStr);
-        dayEl.innerHTML = `<div class="day-num">${d}</div>` + dayTasks.slice(0,3).map(t => `<div class="ev"><i class="ph ${STATUS_ICON[t.status] || 'ph-circle'}"></i> ${escapeHtml(t.title)}</div>`).join("") + (dayTasks.length > 3 ? `<div class="ev">+${dayTasks.length-3} más</div>` : "");
-        grid.appendChild(dayEl);
-      }
-      wrap.appendChild(grid);
-      content.appendChild(wrap);
-    }
-
-    function initDemo() {
-      if (state.tasks.length) return;
-      const t = today();
-      state.tasks = [
-        { id:uid(), title:"Validar delivery Odoo", detail:"Chequear tracking.", category:"Odoo", priority:"Alta", status:"En curso", dueDate:t, reminderAt:"", project:"Lanzamiento X", createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
-        { id:uid(), title:"Revisar stock productos", detail:"", category:"Compras", priority:"Media", status:"Pendiente", dueDate:t, reminderAt:"", project:null, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
-        { id:uid(), title:"Responder mensajes Amazon", detail:"", category:"Amazon", priority:"Alta", status:"Pendiente", dueDate:t, reminderAt:"", project:"Lanzamiento X", createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
-        { id:uid(), title:"Cerrar factura proveedor", detail:"", category:"Dashboard", priority:"Baja", status:"Listo", dueDate:t, reminderAt:"", project:null, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
-        { id:uid(), title:"Configurar recordatorio dentista", detail:"", category:"Dashboard", priority:"Media", status:"En revisión", dueDate:t, reminderAt:"", project:"Mudanza oficina", createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
-      ];
-      state.quickItems = [
-        { id:uid(), title:"Llamar a Octopus Energy", done:false, detail:"", createdAt:new Date().toISOString() },
-        { id:uid(), title:"Comprar aceite", done:false, detail:"", createdAt:new Date().toISOString() },
-      ];
-      save();
-    }
-
-    function render() {
-      renderSidebar();
-      document.querySelectorAll(".side-btn").forEach(b => b.classList.toggle("active", b.dataset.nav === state.nav));
-      ["viewList","viewBoard","viewCalendar"].forEach((id, idx) => {
-        const modes = ["list","board","calendar"];
-        document.getElementById(id).classList.toggle("active", state.view === modes[idx]);
-      });
-      if (state.nav === "inicio") { renderInicio(); return; }
-      if (state.nav === "lista_rapida") { renderQuickList(); return; }
-      if (state.view === "calendar") renderCalendarView();
-      else if (state.view === "board") renderBoard();
-      else renderList();
-    }
-
-    function renderInicio() {
-      toolbar.hidden = true;
-      content.innerHTML = "";
-      const dateObj = new Date();
-      const hour = dateObj.getHours();
-      const greeting = hour < 13 ? "Buenos días" : hour < 20 ? "Buenas tardes" : "Buenas noches";
-      const dateStr = dateObj.toLocaleDateString("es-ES", { weekday:"long", day:"numeric", month:"long", year:"numeric" });
-      const header = document.querySelector("header");
-      header.innerHTML = `<div><h1>${greeting}, Rafa</h1><p>${dateStr[0].toUpperCase()+dateStr.slice(1)}</p></div>`;
-      const wrap = document.createElement("div");
-      wrap.innerHTML = `
-        <div class="grid" style="max-width:1100px;margin:0 auto;background:#f3f4f6;color:#111827;">
-          <style>
-            :root {
-              color-scheme: light;
-              --bg:#f3f4f6; --panel:#ffffff; --panel-2:#f9fafb; --border:rgba(0,0,0,0.06); --text:#111827; --muted:#6b7280; --accent:#2563eb; --accent-2:#eff6ff; --danger:#ef4444; --warn:#f59e0b; --ok:#16a34a; --info:#0ea5e7;
-            }
-            .inicio-grid { display: grid; gap: 16px; }
-            .inicio-grid.row-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            .inicio-grid.row-1 { grid-template-columns: 1fr; }
-            .card {
-              background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px;
-              box-shadow: 0 1px 0 rgba(0,0,0,0.03), 0 6px 16px rgba(0,0,0,0.04);
-              cursor: pointer; transition: box-shadow .15s ease, transform .04s ease; display:flex; flex-direction:column; gap:10px;
-            }
-            .card:hover { box-shadow: 0 2px 0 rgba(0,0,0,0.04), 0 10px 24px rgba(0,0,0,0.06); transform: translateY(-1px); }
-            .card:active { transform: translateY(0); }
-            .card-head { display: flex; align-items: center; justify-content: space-between; }
-            .card-title { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text); font-weight: 600; }
-            .card-cta { font-size: 12px; color: var(--accent); cursor: pointer; }
-            .big { font-size: 13px; } .small { font-size: 12px; color: var(--muted); }
-            .stack { display: flex; flex-direction: column; gap: 8px; }
-            .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-            .row.left { justify-content: flex-start; gap: 10px; }
-            .dot { width: 8px; height: 8px; border-radius: 50%; }
-            .dot.critica { background: var(--danger); }
-            .pill { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); white-space: nowrap; }
-            .quick { display: flex; flex-direction: column; gap: 8px; }
-            .quick-item { display: flex; align-items: center; gap: 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; }
-            .quick-item input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
-            .quick-item .qtitle { font-size: 13px; }
-            .team-row { display: flex; align-items: center; gap: 10px; }
-            .avatar { width: 24px; height: 24px; border-radius: 50%; background: linear-gradient(135deg,#e5e7eb,#d1d5db); display: grid; place-items: center; font-size: 12px; color: #374151; font-weight: 600; }
-            .team-name { font-size: 13px; font-weight: 500; } .team-task { font-size: 13px; color: var(--muted); } .empty { padding: 10px; text-align: center; color: var(--muted); font-size: 13px; border-radius: 10px; }
-          </style>
-          <div class="inicio-grid row-2">
-
-            <div class="card" onclick="go('calendario')">
-              <div class="card-head">
-                <div class="card-title"><i class="ph ph-calendar-blank" style="color:var(--accent)"></i> <span>Agenda</span></div>
-                <div class="card-cta">Ver calendario</div>
-              </div>
-              <div class="stack big">
-                <div class="row"><span>Hoy</span> <span class="pill">${state.tasks.filter(t => t.dueDate === today()).length} tareas</span></div>
-                <div class="row"><span>Esta semana</span> <span class="pill">12 tareas</span></div>
-                <div class="row"><span>Este mes</span> <span class="pill">39 tareas</span></div>
-              </div>
-              <div class="small">Resumen de eventos próximos</div>
-            </div>
-
-            <div class="card" onclick="go('tareas')">
-              <div class="card-head">
-                <div class="card-title"><i class="ph ph-fire" style="color:var(--danger)"></i> <span>Tareas prioritarias</span></div>
-                <div class="card-cta">Ver todas</div>
-              </div>
-              <div class="stack big">
-                ${state.tasks.filter(t => t.priority === "Alta").slice(0,5).map(t => `<div class="row left"><span class="dot critica"></span>${escapeHtml(t.title)}</div>`).join("")}
-                ${(!state.tasks.some(t => t.priority === "Alta")) ? `<div class="empty">Sin tareas críticas hoy</div>` : ''}
-              </div>
-              <div class="small">Críticas primero</div>
-            </div>
-          </div>
-
-          <div class="inicio-grid row-2">
-
-            <div class="card" onclick="go('lista_rapida')">
-              <div class="card-head">
-                <div class="card-title"><i class="ph ph-lightning" style="color:var(--warn)"></i> <span>Tareas rápidas</span></div>
-                <button class="pill" onclick="event.stopPropagation(); addQuick()">+</button>
-              </div>
-              <div class="quick" id="quickList">
-                ${state.quickItems.slice(0,6).map(q => `<label class="quick-item"><input type="checkbox" onclick="event.stopPropagation();" /><span class="qtitle">${escapeHtml(q.title)}</span></label>`).join("")}
-                ${(!state.quickItems.length) ? `<div class="empty">Sin tareas rápidas</div>` : ''}
-              </div>
-              <div class="small">Checklist ligera sin fechas ni proyectos</div>
-            </div>
-
-            <div class="card" onclick="go('correos')">
-              <div class="card-head">
-                <div class="card-title"><i class="ph ph-envelope-simple" style="color:var(--info)"></i> <span>Correos importantes</span></div>
-                <div class="card-cta">Ver todos</div>
-              </div>
-              <div class="stack big" id="inboxCard">
-                <div class="empty">Cargando correos...</div>
-              </div>
-              <div class="small">Pendientes de acción</div>
-            </div>
-          </div>
-
-          <div class="inicio-grid row-1">
-            <div class="card" onclick="go('equipo')">
-              <div class="card-head">
-                <div class="card-title"><i class="ph ph-users" style="color:var(--ok)"></i> <span>Equipo trabajando</span></div>
-                <div class="card-cta">Ver equipo</div>
-              </div>
-              <div class="stack big">
-                <div class="team-row"><div class="avatar">R</div><div><div class="team-name">Rafa</div><div class="team-task">Portal devoluciones Prestashop</div></div><span class="dot" style="background:var(--ok)"></span></div>
-                <div class="team-row"><div class="avatar">P</div><div><div class="team-name">Pedro</div><div class="team-task">Optimizando publicidad Amazon</div></div><span class="dot" style="background:var(--ok)"></span></div>
-                <div class="team-row"><div class="avatar">A</div><div><div class="team-name">Ana</div><div class="team-task">Respondiendo correos</div></div><span class="dot" style="background:var(--warn)"></span></div>
-                <div class="team-row"><div class="avatar">H</div><div><div class="team-name">Hermes</div><div class="team-task">Desarrollo panel de tareas</div></div><span class="dot" style="background:var(--ok)"></span></div>
-                <div class="team-row"><div class="avatar">J</div><div><div class="team-name">Juanito</div><div class="team-task">Amazon Messages</div></div><span class="dot" style="background:var(--warn)"></span></div>
-              </div>
-              <div class="small">Tarea principal por persona</div>
-            </div>
+    function renderTaskRow(task) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const checked = ['Listo','Cerrado','Completada','Hecha'].includes(task.status);
+      row.innerHTML = `
+        <input type="checkbox" ${checked ? 'checked' : ''} />
+        <div>
+          <div class="row-title" style="${checked ? 'text-decoration:line-through;color:var(--muted)' : ''}">${escapeHtml(task.title)}</div>
+          <div class="row-meta">
+            <span class="chip">${escapeHtml(task.category)}</span>
+            <span class="chip">${escapeHtml(task.priority)}</span>
+            ${task.dueDate ? `<span>📅 ${task.dueDate}</span>` : ''}
           </div>
         </div>
+        <button class="chip ${pillFor(task.status)}">${task.status}</button>
       `;
-      content.appendChild(wrap);
-      const inboxEl = document.getElementById("inboxCard");
-      if (inboxEl) {
-        fetch("/api/inbox").then(r => r.json()).then(data => {
-          if (!Array.isArray(data) || !data.length) { inboxEl.innerHTML = `<div class="empty">Sin correos pendientes</div>`; return; }
-          inboxEl.innerHTML = data.slice(0, 5).map(m => {
-            const from = (m.from || "").replace(/<[^>]+>/g, "").trim();
-            const rel = relTime(m.date);
-            return `<div class="row"><span style="flex:1;font-size:13px">${escapeHtml(from)}</span><span class="small">${escapeHtml(rel || "")}</span></div><div class="row" style="justify-content:flex-start;gap:10px;color:var(--text);font-size:13px">${escapeHtml(m.subject || "")}</div>`;
-          }).join("");
-        }).catch(() => { inboxEl.innerHTML = `<div class="empty">No se pudieron cargar los correos</div>`; });
+      row.addEventListener('click', (e) => {
+        if (e.target.tagName === 'INPUT') return;
+        openDetail(task);
+      });
+      return row;
+    }
+
+    function openDetail(task) {
+      const detail = prompt('Detalle de tarea:\n\nTítulo: ' + task.title + '\n\nEscribe aquí notas, enlaces o indicaciones:', task.detail || '');
+      if (detail === null) return;
+      const files = [];
+      const fileInput = document.createElement('input');
+      fileInput.type = 'file';
+      fileInput.multiple = true;
+      fileInput.accept = 'image/*,.pdf,.doc,.docx,.xls,.xlsx,.zip';
+      const addFiles = () => {
+        Array.from(fileInput.files || []).forEach(file => {
+          const reader = new FileReader();
+          reader.onload = () => files.push({ name: file.name, dataUrl: reader.result });
+          reader.readAsDataURL(file);
+        });
+      };
+      fileInput.addEventListener('change', () => {}); // vacío intencional: capturamos al confirmar
+      fileInput.click();
+      const patch = { detail: detail || '', attachments: files.map(f => f.dataUrl) };
+      fetch('/api/tasks/' + encodeURIComponent(task.id), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }).catch(() => {});
+    }
+
+    function renderTasks() {
+      const container = $('tasks-list');
+      container.innerHTML = '';
+      const q = state.query.trim().toLowerCase();
+      let list = state.tasks.filter(t => {
+        if (state.filter === 'hoy') return t.dueDate === today();
+        if (state.filter === 'vencidas') return t.dueDate && t.dueDate < today() && !['Listo','Cerrado','Completada','Hecha'].includes(t.status);
+        if (state.filter === 'urgentes') return ['Crítica','Alta'].includes(t.priority);
+        if (state.filter === 'completadas') return ['Listo','Cerrado','Completada','Hecha'].includes(t.status);
+        return true;
+      });
+      if (q) {
+        list = list.filter(t => `${t.title} ${t.detail} ${t.assignee || ''} ${t.category || ''}`.toLowerCase().includes(q));
+      }
+      list.sort((a, b) => {
+        const aDone = ['Listo','Cerrado','Completada','Hecha'].includes(a.status) ? 1 : 0;
+        const bDone = ['Listo','Cerrado','Completada','Hecha'].includes(b.status) ? 1 : 0;
+        if (aDone !== bDone) return aDone - bDone;
+        return priorityWeight(a.priority) - priorityWeight(b.priority);
+      });
+      if (!list.length) { container.innerHTML = '<div class="empty-state">No hay tareas para este filtro.</div>'; return; }
+      list.forEach(task => container.appendChild(renderTaskRow(task)));
+    }
+
+    $('search-input').addEventListener('input', (e) => { state.query = e.target.value; renderTasks(); });
+
+    function applyFilter(f) {
+      state.filter = f;
+      document.querySelectorAll('.chip[data-filter]').forEach(b => b.classList.toggle('active', b.dataset.filter === f));
+      renderTasks();
+    }
+    document.querySelectorAll('.chip[data-filter]').forEach(btn => btn.addEventListener('click', () => {
+      applyFilter(btn.dataset.filter);
+    }));
+
+    function renderCalendar() {
+      const grid = $('calendar-grid');
+      grid.innerHTML = '';
+      const year = state.calYear; const month = state.calMonth;
+      const first = new Date(year, month, 1);
+      const start = new Date(first);
+      start.setDate(start.getDate() - ((first.getDay() + 6) % 7));
+      const dow = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
+      dow.forEach(d => { const el = document.createElement('div'); el.className='dow'; el.textContent=d; grid.appendChild(el); });
+      for (let i = 0; i < 35; i++) {
+        const d = new Date(start); d.setDate(start.getDate() + i);
+        const dayNum = d.getDate();
+        const cell = document.createElement('div');
+        cell.className = 'day';
+        const num = document.createElement('div'); num.className='day-num'; num.textContent=dayNum; cell.appendChild(num);
+        const evts = state.calEvents.filter(e => {
+          const sd = new Date(e.start); const ed = new Date(e.end); const cd = new Date(d); cd.setHours(0,0,0,0); sd.setHours(0,0,0,0); ed.setHours(0,0,0,0);
+          return cd >= sd && cd <= ed;
+        });
+        evts.slice(0,2).forEach(ev => {
+          const tag = document.createElement('div'); tag.className='ev'; tag.textContent=ev.title; cell.appendChild(tag);
+        });
+        grid.appendChild(cell);
+      }
+      const monthNames = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+      $('cal-title').textContent = monthNames[month] + ' ' + year;
+      const evList = $('calendar-events'); evList.innerHTML='';
+      state.calEvents.forEach(ev => {
+        const row = document.createElement('div'); row.className='row';
+        row.innerHTML = `<div><div class="row-title">${escapeHtml(ev.title)}</div><div class="row-meta">📅 ${ev.start} → ${ev.end} ${ev.location ? '· 📍 '+escapeHtml(ev.location) : ''}</div></div>`;
+        evList.appendChild(row);
+      });
+    }
+
+    function escapeHtml(str) {
+      return String(str || '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+    }
+
+    async function loadData() {
+      try {
+        const [inboxRes, tasksRes, calendarRes] = await Promise.all([
+          fetch('/api/inbox').then(r => r.ok ? r.json() : []).catch(() => []),
+          fetch('/api/tasks').then(r => r.ok ? r.json().then(d => d.tasks || d) : []).catch(() => []),
+          fetch('/api/calendar/events').then(r => r.ok ? r.json() : []).catch(() => [])
+        ]);
+        state.inbox = Array.isArray(inboxRes) ? inboxRes : (inboxRes?.messages ?? []);
+        state.tasks = Array.isArray(tasksRes) ? tasksRes : [];
+        state.calEvents = Array.isArray(calendarRes) ? calendarRes : [];
+        renderHome();
+        renderTasks();
+      } catch (e) {
+        console.error('loadData', e);
       }
     }
 
-    function relTime(raw) {
-      if (!raw) return "";
-      const diff = Math.floor((Date.now() - new Date(raw).getTime()) / 1000);
-      if (diff < 60) return "Ahora";
-      if (diff < 3600) return `Hace ${Math.floor(diff/60)} min`;
-      if (diff < 7200) return "Hace 1 hora";
-      if (diff < 86400) return `Hace ${Math.floor(diff/3600)} horas`;
-      if (diff < 172800) return "Ayer";
-      return "";
+    function renderHome() {
+      const container = $('inbox-list');
+      container.innerHTML = '';
+      const items = state.inbox.slice(0, 10);
+      if (!items.length) { container.innerHTML = '<div class="empty-state">No tienes correos sin leer en INBOX.</div>'; }
+      else {
+        items.forEach((m, i) => {
+          const el = document.createElement('div');
+          el.className = 'mail-item';
+          el.innerHTML = `
+            <div class="mail-item-header"><span class="mail-from">${escapeHtml(m.from)}</span><span>${escapeHtml(m.date)}</span></div>
+            <div class="mail-subject">${escapeHtml(m.subject)}</div>
+            <div class="mail-snippet">${escapeHtml((m.snippet || '').slice(0, 140))}</div>
+          `;
+          container.appendChild(el);
+        });
+      }
+
+      const todayTasks = state.tasks.filter(t => t.dueDate === today() && !['Listo','Cerrado','Completada','Hecha'].includes(t.status));
+      $('count-hoy').textContent = todayTasks.length;
+      const vencidas = state.tasks.filter(t => t.dueDate && t.dueDate < today() && !['Listo','Cerrado','Completada','Hecha'].includes(t.status));
+      $('count-vencidas').textContent = vencidas.length;
+
+      $('today-list').innerHTML = '';
+      todayTasks.slice(0, 8).forEach(t => $('today-list').appendChild(renderTaskRow(t)));
+
+      $('overdue-list').innerHTML = '';
+      vencidas.slice(0, 8).forEach(t => $('overdue-list').appendChild(renderTaskRow(t)));
+
+      $('urgent-list').innerHTML = '';
+      state.tasks.filter(t => ['Crítica','Alta'].includes(t.priority) && !['Listo','Cerrado','Completada','Hecha'].includes(t.status)).slice(0, 8).forEach(t => $('urgent-list').appendChild(renderTaskRow(t)));
     }
 
-    function escapeHtml(t) { return t.replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c])); }
+    const sheet = $('sheet');
+    $('fab').addEventListener('click', () => sheet.classList.add('open'));
+    $('sheet-close').addEventListener('click', () => sheet.classList.remove('open'));
+    $('sheet-cancel').addEventListener('click', () => sheet.classList.remove('open'));
+    $('quick-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const title = $('q-title').value.trim();
+      if (!title) return;
+      const payload = { title, dueDate: $('q-date').value, priority: $('q-priority').value, status: 'Pendiente', category: 'Operaciones', assignee: '' };
+      fetch('/api/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).then(() => {
+        sheet.classList.remove('open');
+        $('q-title').value = '';
+        loadData();
+      }).catch(() => sheet.classList.remove('open'));
+    });
 
-    initDemo();
-    render();
+    $('cal-prev').addEventListener('click', () => {
+      state.calMonth--;
+      if (state.calMonth < 0) { state.calMonth = 11; state.calYear--; }
+      renderCalendar();
+    });
+    $('cal-next').addEventListener('click', () => {
+      state.calMonth++;
+      if (state.calMonth > 11) { state.calMonth = 0; state.calYear++; }
+      renderCalendar();
+    });
+
+    loadData();
   </script>
 </body>
 </html>
