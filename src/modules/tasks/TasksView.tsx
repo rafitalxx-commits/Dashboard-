@@ -514,7 +514,7 @@ function MailCard({ account, onClick }: { account: MailAccount; onClick: () => v
       </div>
       <div className="mail-email">{account.email}</div>
       <div className="mail-preview" style={{ marginTop: 6 }}>
-        {account.messages.slice(0, 3).map((m, i) => (
+        {account.messages.slice(0, 5).map((m, i) => (
           <div
             key={i}
             style={{
@@ -524,24 +524,20 @@ function MailCard({ account, onClick }: { account: MailAccount; onClick: () => v
               borderBottom: "1px solid rgba(255,255,255,0.06)",
             }}
           >
+            <div style={{ color: "#94a3b8", fontSize: 11 }}>
+              {new Date(m.date).toLocaleString("es-ES", {
+                day: "2-digit",
+                month: "short",
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+            </div>
             <div style={{ color: "#94a3b8", fontSize: 12 }}>{m.from}</div>
             <div style={{ fontWeight: 600 }}>{m.subject}</div>
+            <div style={{ color: "#94a3b8", fontSize: 12 }}>{m.snippet}</div>
           </div>
         ))}
       </div>
-      <a
-        className="mail-action"
-        href={
-          account.id === "personal"
-            ? "https://mail.google.com/mail/u/0/#inbox"
-            : "https://mail.google.com/mail/u/1/#inbox"
-        }
-        target="_blank"
-        rel="noreferrer"
-        onClick={(e) => e.stopPropagation()}
-      >
-        Abrir Gmail ↗
-      </a>
     </button>
   );
 }
@@ -1394,11 +1390,11 @@ export function TasksView({
 
       <nav className="bottom-bar">
         {[
-          ["inicio", "🏠", "Inicio"],
-          ["tareas", "📝", "Tareas"],
-          ["calendario", "📅", "Calendario"],
-          ["proyectos", "📁", "Proyectos"],
-          ["equipo", "👥", "Equipo"],
+          ["inicio", "Inicio"],
+          ["tareas", "Tareas"],
+          ["calendario", "Calendario"],
+          ["proyectos", "Proyectos"],
+          ["equipo", "Equipo"],
         ].map(([k, label]) => (
           <button
             key={k}
@@ -1406,8 +1402,7 @@ export function TasksView({
             onClick={() => setTab(k as any)}
             type="button"
           >
-            <span style={{ fontSize: 16 }}>{label.split(" ")[0]}</span>
-            <span>{label.split(" ")[1]}</span>
+            <span>{label}</span>
           </button>
         ))}
       </nav>
@@ -1730,25 +1725,19 @@ const css = `
 }
 .bottom-bar button {
   display: inline-flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
   border: none;
   background: transparent;
   color: rgba(226,232,240,0.7);
-  padding: 8px 4px;
+  padding: 10px 4px;
   min-height: 52px;
   font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
   transition: color 0.15s ease, transform 0.05s ease;
 }
-.bottom-bar button.active {
-  color: #60a5fa;
-}
-.bottom-bar button span:first-child {
-  font-size: 18px;
-  line-height: 1;
-}
+.bottom-bar button.active { color: #60a5fa; }
 
 /* generic */
 .chip {
@@ -1787,11 +1776,11 @@ const css = `
 .backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(15,23,42,0.72);
+  background: rgba(15,23,42,0.82);
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  padding-bottom: env(safe-area-inset-bottom, 12px);
+  padding-bottom: max(env(safe-area-inset-bottom, 12px), 84px);
   z-index: 12;
 }
 .sheet {
