@@ -86,11 +86,88 @@ export function HermesPreview() {
   const [tasks, setTasks] = useState<Task[]>(initialTasks);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>(initialEvents);
   const [taskSection, setTaskSection] = useState<"Tareas" | "Calendario">("Tareas");
+  const [taskFilter, setTaskFilter] = useState("Activas");
+  const [newTaskTitle, setNewTaskTitle] = useState("");
+  const [newTaskDetail, setNewTaskDetail] = useState("");
+  const [newTaskCategory, setNewTaskCategory] = useState("Operaciones");
+  const [newTaskPriority, setNewTaskPriority] = useState("Media");
+  const [newTaskDueDate, setNewTaskDueDate] = useState(today);
+  const [newTaskReminderAt, setNewTaskReminderAt] = useState("");
+  const [newEventTitle, setNewEventTitle] = useState("");
+  const [newEventDetail, setNewEventDetail] = useState("");
+  const [newEventLocation, setNewEventLocation] = useState("");
+  const [newEventSource, setNewEventSource] = useState("local");
+  const [newEventStartsAt, setNewEventStartsAt] = useState(`${today}T09:00`);
+  const [newEventEndsAt, setNewEventEndsAt] = useState(`${today}T10:00`);
+  const [calendarMonth, setCalendarMonth] = useState(today.slice(0, 7));
+
+  const addTaskFromForm = () => {
+    const title = newTaskTitle.trim();
+    if (!title) return;
+    setTasks((current) => [
+      {
+        id: `task-${Date.now().toString(36)}`,
+        title,
+        detail: newTaskDetail.trim(),
+        category: newTaskCategory,
+        priority: newTaskPriority,
+        status: "Pendiente",
+        dueDate: newTaskDueDate,
+        reminderAt: newTaskReminderAt || undefined,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      ...current,
+    ]);
+    setNewTaskTitle("");
+    setNewTaskDetail("");
+  };
+
+  const addCalendarEventFromForm = () => {
+    const title = newEventTitle.trim();
+    if (!title) return;
+    setCalendarEvents((current) => [
+      ...current,
+      {
+        id: `event-${Date.now().toString(36)}`,
+        title,
+        detail: newEventDetail.trim(),
+        startsAt: newEventStartsAt,
+        endsAt: newEventEndsAt,
+        location: newEventLocation.trim(),
+        source: "local",
+      },
+    ]);
+    setNewEventTitle("");
+    setNewEventDetail("");
+    setNewEventLocation("");
+  };
 
   return (
     <div className="hermes-preview-frame">
       <TasksView
+        calendarAccounts={[
+          {
+            id: "local",
+            label: "Preview local",
+            email: "sin-produccion@preview.local",
+            connected: true,
+          },
+        ]}
         calendarEvents={calendarEvents}
+        calendarMonth={calendarMonth}
+        newEventDetail={newEventDetail}
+        newEventEndsAt={newEventEndsAt}
+        newEventLocation={newEventLocation}
+        newEventSource={newEventSource}
+        newEventStartsAt={newEventStartsAt}
+        newEventTitle={newEventTitle}
+        newTaskCategory={newTaskCategory}
+        newTaskDetail={newTaskDetail}
+        newTaskDueDate={newTaskDueDate}
+        newTaskPriority={newTaskPriority}
+        newTaskReminderAt={newTaskReminderAt}
+        newTaskTitle={newTaskTitle}
         onAddCalendarEvent={(event) => {
           setCalendarEvents((current) => [
             ...current,
@@ -102,7 +179,23 @@ export function HermesPreview() {
             },
           ]);
         }}
-        onAddTask={(task) => setTasks((current) => [task, ...current])}
+        onAddCalendarEventFromForm={addCalendarEventFromForm}
+        onAddTask={(task) => setTasks((current) => [task as Task, ...current])}
+        onAddTaskFromForm={addTaskFromForm}
+        onChangeCalendarMonth={setCalendarMonth}
+        onChangeNewEventDetail={setNewEventDetail}
+        onChangeNewEventEndsAt={setNewEventEndsAt}
+        onChangeNewEventLocation={setNewEventLocation}
+        onChangeNewEventSource={setNewEventSource}
+        onChangeNewEventStartsAt={setNewEventStartsAt}
+        onChangeNewEventTitle={setNewEventTitle}
+        onChangeNewTaskCategory={setNewTaskCategory}
+        onChangeNewTaskDetail={setNewTaskDetail}
+        onChangeNewTaskDueDate={setNewTaskDueDate}
+        onChangeNewTaskPriority={setNewTaskPriority}
+        onChangeNewTaskReminderAt={setNewTaskReminderAt}
+        onChangeNewTaskTitle={setNewTaskTitle}
+        onChangeTaskFilter={setTaskFilter}
         onChangeTaskSection={setTaskSection}
         onDeleteTask={(id) => setTasks((current) => current.filter((task) => task.id !== id))}
         onUpdateTask={(id, patch) => {
@@ -114,6 +207,7 @@ export function HermesPreview() {
             ),
           );
         }}
+        taskFilter={taskFilter}
         taskSection={taskSection}
         tasks={tasks}
       />
