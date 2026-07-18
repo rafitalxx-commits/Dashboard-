@@ -131,7 +131,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             ])
             return
 
-        if route == "/api/mail/send":
+        if route in {"/api/mail/send", "/api/mail/draft"}:
             body = self._read_body()
             self._send_json(200, {"ok": True, "draft_id": f"draft-{int(time.time())}", "to": body.get("to"), "subject": body.get("subject")})
             return
@@ -167,7 +167,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json(201, task)
             return
 
-        if route == "/api/mail/send":
+        if route in {"/api/mail/send", "/api/mail/draft"}:
             body = self._read_body()
             self._send_json(200, {"ok": True, "draft_id": f"draft-{int(time.time())}", "to": body.get("to"), "subject": body.get("subject")})
             return
