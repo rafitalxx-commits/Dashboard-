@@ -31,7 +31,7 @@ import {
 } from "lucide-react";
 import { money, orders as demoOrders, statusTone } from "./data/demoData";
 // import { AmazonMessagesView } from "./modules/amazonMessages";
-import { TasksView } from "./modules/tasks/TasksView";
+import { TasksView, type TasksViewProps } from "./modules/tasks/TasksView";
 import { odooClient } from "./services/odooClient";
 import type {
   InvoiceAnalytics,
@@ -1119,6 +1119,32 @@ function App() {
       );
     }
   };
+  const addCalendarEventFromHermes = async (event: {
+    title: string;
+    startsAt: string;
+    endsAt: string;
+    location?: string;
+  }) => {
+    const title = event.title.trim();
+    if (!title) return;
+    setCalendarMessage("");
+    try {
+      await odooClient.createCalendarEvent({
+        source: "local",
+        title,
+        detail: "",
+        startsAt: event.startsAt,
+        endsAt: event.endsAt,
+        location: event.location?.trim() ?? "",
+      });
+      setCalendarMessage("Evento creado en el calendario interno.");
+      await refreshCalendar();
+    } catch (error) {
+      setCalendarMessage(
+        error instanceof Error ? error.message : "No se pudo crear el evento",
+      );
+    }
+  };
   const deleteCalendarEvent = async (eventId: string) => {
     await odooClient.deleteCalendarEvent(eventId);
     await refreshCalendar();
@@ -1355,16 +1381,14 @@ function App() {
             syncStats={ordersSyncStats}
           />
         ) : activeView === "tasks" ? (
-          <TasksViewInline
-            calendarEvents={calendarEvents}
+          <TasksView
+            calendarEvents={calendarEvents as TasksViewProps["calendarEvents"]}
             taskSection={taskSection}
             tasks={(tasks ?? []).filter(
               (t): t is DashboardTask => "id" in t && "title" in t && "dueDate" in t,
             )}
             calendarAccounts={calendarAccounts}
-            calendarMessage={calendarMessage}
             calendarMonth={calendarMonth}
-            filter={taskFilter}
             newTaskCategory={newTaskCategory}
             newTaskDetail={newTaskDetail}
             newTaskDueDate={newTaskDueDate}
@@ -1377,26 +1401,40 @@ function App() {
             newEventSource={newEventSource}
             newEventStartsAt={newEventStartsAt}
             newEventTitle={newEventTitle}
-            onAddCalendarEvent={addCalendarEvent}
-            onAddTask={addTask}
-            onChangeFilter={setTaskFilter}
+            onAddCalendarEvent={(event) => {
+              void addCalendarEventFromHermes(event);
+            }}
+            onAddCalendarEventFromForm={addCalendarEvent}
+            onAddTask={() => undefined}
+            onAddTaskFromForm={addTask}
+            taskFilter={taskFilter}
+            onChangeTaskFilter={(value) => {
+              setTaskFilter(value as "Activas" | "Todas" | "Hechas");
+            }}
             onChangeCalendarMonth={setCalendarMonth}
             onChangeNewEventDetail={setNewEventDetail}
             onChangeNewEventEndsAt={setNewEventEndsAt}
             onChangeNewEventLocation={setNewEventLocation}
-            onChangeNewEventSource={setNewEventSource}
+            onChangeNewEventSource={(value) => {
+              setNewEventSource(value as CalendarAccountId);
+            }}
             onChangeNewEventStartsAt={setNewEventStartsAt}
             onChangeNewEventTitle={setNewEventTitle}
-            onChangeNewTaskCategory={setNewTaskCategory}
+            onChangeNewTaskCategory={(value) => {
+              setNewTaskCategory(value as DashboardTaskCategory);
+            }}
             onChangeNewTaskDetail={setNewTaskDetail}
             onChangeNewTaskDueDate={setNewTaskDueDate}
-            onChangeNewTaskPriority={setNewTaskPriority}
+            onChangeNewTaskPriority={(value) => {
+              setNewTaskPriority(value as DashboardTaskPriority);
+            }}
             onChangeNewTaskReminderAt={setNewTaskReminderAt}
             onChangeNewTaskTitle={setNewTaskTitle}
             onChangeTaskSection={setTaskSection}
-            onDeleteCalendarEvent={deleteCalendarEvent}
             onDeleteTask={deleteTask}
-            onUpdateTask={updateTask}
+            onUpdateTask={(taskId, patch) => {
+              void updateTask(taskId, patch as Partial<DashboardTask>);
+            }}
           />
         ) : activeView === "customerInvoices" ? (
           <CustomerInvoicesView
