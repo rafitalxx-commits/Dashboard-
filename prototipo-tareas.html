@@ -33,7 +33,7 @@
       overscroll-behavior: none;
     }
 
-    .app-shell { display: flex; flex-direction: column; min-height: 100vh; padding-bottom: 96px; }
+    .app-shell { display: flex; flex-direction: column; min-height: 100vh; padding-bottom: 108px; }
 
     .topbar {
       display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -72,9 +72,7 @@
     .row-title { font-weight: 500; font-size: 14px; }
     .row-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: 12px; }
 
-    .search {
-      display: flex; gap: 10px; flex-wrap: wrap;
-    }
+    .search { display: flex; gap: 10px; flex-wrap: wrap; }
     .search input, .input {
       width: 100%; background: var(--panel); color: inherit; border: 1px solid var(--border); padding: 12px 14px; border-radius: 10px; font-size: 16px;
     }
@@ -86,21 +84,21 @@
     .chip.active { background: var(--accent); border-color: var(--accent); color: white; }
 
     .fab {
-      position: fixed; right: 18px; bottom: 84px; width: 56px; height: 56px; border-radius: 999px; border: none; background: var(--accent); color: white; font-size: 28px; line-height: 56px; text-align: center; box-shadow: 0 8px 24px rgba(29,78,216,0.35); cursor: pointer; z-index: 8;
+      position: fixed; right: 18px; bottom: 84px; width: 56px; height: 56px; border-radius: 999px; border: none; background: var(--accent); color: white; font-size: 24px; line-height: 56px; text-align: center; box-shadow: 0 8px 24px rgba(29,78,216,0.35); cursor: pointer; z-index: 8;
     }
 
     .bottom-nav {
       position: fixed; left: 0; right: 0; bottom: 0; padding: env(safe-area-inset-bottom, 10px) 8px 10px; display: flex; justify-content: space-between; gap: 6px; border-top: 1px solid var(--border); background: rgba(15,23,42,0.85); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); z-index: 20;
     }
     .bottom-nav button {
-      flex: 1; display: inline-flex; flex-direction: column; align-items: center; gap: 4px; border: none; background: transparent; color: var(--muted); padding: 8px 6px; min-height: 48px; font-size: 11px;
+      flex: 1; display: inline-flex; flex-direction: column; align-items: center; gap: 4px; border: none; background: transparent; color: var(--muted); padding: 10px 6px; min-height: 48px; font-size: 11px;
     }
     .bottom-nav button.active { color: var(--accent-2); }
-    .bottom-nav button span { font-size: 20px; }
+    .bottom-nav button .label-text { font-size: 11px; }
 
     .empty-state { color: var(--muted); font-size: 14px; padding: 10px 0; }
 
-    .mail-item { background: var(--panel); border: 1px solid var(--border); padding: 12px; border-radius: 10px; }
+    .mail-item { background: var(--panel); border: 1px solid var(--border); padding: 12px; border-radius: 10px; cursor: pointer; }
     .mail-item-header { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
     .mail-from { color: var(--text); font-weight: 600; }
     .mail-subject { font-weight: 600; color: var(--text); margin-top: 6px; }
@@ -129,7 +127,7 @@
     .button.primary { background: var(--accent); border-color: var(--accent); color: white; }
     .close { border: none; background: transparent; color: inherit; font-size: 18px; padding: 4px 8px; border-radius: 8px; }
 
-    .calendar { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px; }
+    .calendar { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px; color-scheme: dark; }
     .calendar-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
     .calendar-head h3 { margin: 0; font-size: 14px; }
     .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
@@ -147,8 +145,38 @@
       border: 1px solid rgba(37,99,235,0.35);
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
+    .day-events { display: flex; flex-wrap: wrap; gap: 2px; overflow: hidden; }
 
     .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+
+    .mail-panel { display: flex; flex-direction: column; gap: 12px; }
+    .mail-accounts { display: flex; gap: 8px; flex-wrap: wrap; }
+    .mail-account { border: 1px solid var(--border); background: rgba(255,255,255,0.04); padding: 10px 12px; border-radius: 10px; color: var(--text); min-width: 140px; }
+    .mail-account.active { border-color: var(--accent-2); }
+    .mail-account-name { font-weight: 600; font-size: 13px; }
+    .mail-account-email { font-size: 12px; color: var(--muted); }
+
+    .composer { display: flex; flex-direction: column; gap: 10px; }
+    .composer-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    .composer-actions .button { flex: 1; }
+    .reply-preview { background: rgba(255,255,255,0.04); border: 1px solid var(--border); padding: 10px; border-radius: 10px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+    .reply-snippet { color: var(--muted); font-size: 12px; }
+
+    .mail-list { display: flex; flex-direction: column; gap: 10px; }
+    .mail-row { background: var(--panel); border: 1px solid var(--border); padding: 12px; border-radius: 10px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; }
+    .mail-row-head { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+    .mail-row-subject { font-weight: 600; color: var(--text); }
+    .mail-row-snippet { color: var(--muted); font-size: 13px; }
+
+    .chat-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+    .chat-history { display: flex; flex-direction: column; gap: 10px; max-height: 220px; overflow-y: auto; }
+    .chat-msg { display: flex; flex-direction: column; gap: 4px; }
+    .chat-msg .bubble { padding: 10px 12px; border-radius: 12px; font-size: 14px; max-width: 85%; word-wrap: break-word; }
+    .chat-msg.user .bubble { align-self: flex-end; background: var(--accent); color: white; }
+    .chat-msg.hermes .bubble { align-self: flex-start; background: rgba(255,255,255,0.06); border: 1px solid var(--border); }
+    .chat-msg .at { font-size: 11px; color: var(--muted); }
+    .chat-form { display: flex; gap: 10px; }
+    .chat-form input { flex: 1; }
 
     @media (min-width: 640px) {
       .quick-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -171,102 +199,115 @@
     </header>
 
     <main>
-      <!-- Inicio -->
       <section id="inicio" class="page active">
         <div class="section">
-          <div class="section-title">📧 Correo · INBOX no leídos</div>
-          <div id="inbox-list" class="rows">Cargando correo...</div>
+          <div class="section-title">Correo</div>
+          <div id="inbox-list" class="mail-list">Cargando correo...</div>
         </div>
         <div class="section">
           <div class="section-title">Accesos directos</div>
           <div class="quick-actions">
-            <button class="quick-card" onclick="switchTab('tareas'); setTimeout(applyFilter('hoy'),0)">
-              <span class="quick-title">📅 Tareas de hoy</span>
+            <button class="quick-card" id="qa-today">
+              <span class="quick-title">Tareas de hoy</span>
               <span class="quick-count" id="count-hoy">0</span>
             </button>
-            <button class="quick-card" onclick="switchTab('tareas'); setTimeout(applyFilter('vencidas'),0)">
-              <span class="quick-title">⏰ Vencidas</span>
+            <button class="quick-card" id="qa-overdue">
+              <span class="quick-title">Vencidas</span>
               <span class="quick-count" id="count-vencidas">0</span>
             </button>
-            <button class="quick-card" onclick="switchTab('calendario')">
-              <span class="quick-title">🗓 Calendario</span>
+            <button class="quick-card" id="qa-calendar">
+              <span class="quick-title">Calendario</span>
             </button>
           </div>
         </div>
         <div class="section">
           <div class="section-title">Tareas de hoy</div>
-          <div id="today-list" class="rows">Cargando...</div>
+          <div id="today-list" class="rows"></div>
         </div>
         <div class="section">
           <div class="section-title">Vencidas</div>
-          <div id="overdue-list" class="rows">Cargando...</div>
+          <div id="overdue-list" class="rows"></div>
         </div>
         <div class="section">
-          <div class="section-title">Urgentes</div>
-          <div id="urgent-list" class="rows">Cargando...</div>
+          <div class="section-title">Chat Hermes</div>
+          <div class="chat-panel" id="chat-panel">
+            <div class="chat-history" id="chat-history">
+              <div class="empty-state">Sin mensajes todavia.</div>
+            </div>
+            <form class="chat-form" id="chat-form">
+              <input id="chat-input" placeholder="Mensaje para Hermes" />
+              <button class="button primary" type="submit">Enviar</button>
+            </form>
+          </div>
         </div>
       </section>
 
-      <!-- Tareas -->
       <section id="tareas" class="page">
         <div class="section">
           <div class="search">
             <input id="search-input" placeholder="Buscar tarea, proyecto o responsable..." />
           </div>
-          <div class="chips">
-            <button class="chip active" data-filter="todos">Todos</button>
-            <button class="chip" data-filter="hoy">Hoy</button>
-            <button class="chip" data-filter="vencidas">Vencidas</button>
-            <button class="chip" data-filter="urgentes">Urgentes</button>
-            <button class="chip" data-filter="completadas">Completadas</button>
-          </div>
+          <div class="chips" id="filter-chips"></div>
         </div>
         <div id="tasks-list" class="rows">Cargando tareas...</div>
       </section>
 
-      <!-- Calendario -->
       <section id="calendario" class="page">
         <div class="calendar">
           <div class="calendar-head">
-            <button class="ghost" id="cal-prev">←</button>
+            <button class="ghost" id="cal-prev">Anterior</button>
             <h3 id="cal-title">Julio 2026</h3>
-            <button class="ghost" id="cal-next">→</button>
+            <button class="ghost" id="cal-next">Siguiente</button>
           </div>
           <div class="calendar-grid" id="calendar-grid"></div>
           <div id="calendar-events" class="rows" style="margin-top:12px"></div>
-          <div class="hint">Calendario sincronizado con tu cuenta de Google Calendar</div>
+          <div class="hint">Calendario oscuro sincronizado.</div>
         </div>
       </section>
     </main>
 
-    <button class="fab" id="fab" type="button">＋</button>
+    <button class="fab" id="fab" type="button">+</button>
     <nav class="bottom-nav" id="bottom-nav">
-      <button class="active" data-tab="inicio"><span>🏠</span><span>Inicio</span></button>
-      <button data-tab="tareas"><span>✅</span><span>Tareas</span></button>
-      <button data-tab="calendario"><span>📅</span><span>Calendario</span></button>
-      <button data-tab="proyectos"><span>📂</span><span>Proyectos</span></button>
-      <button data-tab="equipo"><span>👥</span><span>Equipo</span></button>
+      <button class="active" data-tab="inicio"><span class="label-text">Inicio</span></button>
+      <button data-tab="tareas"><span class="label-text">Tareas</span></button>
+      <button data-tab="calendario"><span class="label-text">Calendario</span></button>
+      <button data-tab="proyectos"><span class="label-text">Proyectos</span></button>
+      <button data-tab="equipo"><span class="label-text">Equipo</span></button>
     </nav>
   </div>
 
-  <div id="sheet" class="sheet-backdrop">
+  <div id="sheet-backdrop" class="sheet-backdrop">
     <form class="sheet" id="quick-form">
       <div class="sheet-header">
-        <span>Creación rápida</span>
-        <button class="ghost close" id="sheet-close" type="button">×</button>
+        <span>Creacion rapida</span>
+        <button class="ghost close" id="sheet-close" type="button">Cerrar</button>
       </div>
-      <input class="input" id="q-title" placeholder="Tarea rápida" />
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <label style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--muted)">
+        Tipo
+        <select class="input" id="q-type">
+          <option value="task">Tarea</option>
+          <option value="event">Evento</option>
+          <option value="mail">Correo</option>
+        </select>
+      </label>
+      <input class="input" id="q-title" placeholder="Tarea / Asunto" />
+      <textarea class="input" id="q-detail" placeholder="Indicaciones, bloqueo o siguiente paso" rows="3"></textarea>
+      <div id="q-task-fields" style="display:flex;gap:10px;flex-wrap:wrap">
         <label style="flex:1;min-width:140px;display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--muted)">
-          Fecha
+          Fecha limite
           <input class="input" id="q-date" type="date" />
         </label>
         <label style="flex:1;min-width:140px;display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--muted)">
           Prioridad
           <select class="input" id="q-priority">
-            <option>Crítica</option><option selected>Alta</option><option>Media</option><option>Baja</option>
+            <option>Alta</option><option selected>Media</option><option>Baja</option>
           </select>
         </label>
+      </div>
+      <div id="q-event-fields" style="display:none;gap:10px;flex-wrap:wrap;flex-direction:column">
+        <input class="input" id="q-start" type="datetime-local" placeholder="Inicio" />
+        <input class="input" id="q-end" type="datetime-local" placeholder="Fin" />
+        <input class="input" id="q-location" placeholder="Ubicacion" />
       </div>
       <div class="actions">
         <button class="ghost" id="sheet-cancel" type="button">Cancelar</button>
@@ -275,243 +316,217 @@
     </form>
   </div>
 
+  <div id="mail-backdrop" class="sheet-backdrop">
+    <div class="sheet mail-panel">
+      <div class="sheet-header">
+        <span>Correo</span>
+        <button class="ghost close" id="mail-close" type="button">Cerrar</button>
+      </div>
+      <div class="mail-accounts" id="mail-accounts"></div>
+      <div class="actions">
+        <button class="button primary" id="mail-new" type="button">Nuevo correo</button>
+        <button class="ghost" id="mail-clear" type="button">Limpiar</button>
+      </div>
+      <div id="mail-body"></div>
+    </div>
+  </div>
+
   <script>
-    const state = {
-      tab: 'inicio',
-      filter: 'todos',
-      query: '',
-      tasks: [],
-      inbox: [],
-      calYear: 2026,
-      calMonth: 6,
-      calEvents: []
-    };
+    const API = '';
+    const state = { tab: 'inicio', filter: 'todos', query: '', tasks: [], inbox: [], mailAccount: 0, chat: [], calendars: [] };
+    const $ = id => document.getElementById(id);
 
-    function $(id) { return document.getElementById(id); }
+    function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-    function switchTab(tab) {
-      state.tab = tab;
-      document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === tab));
-      document.querySelectorAll('#bottom-nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-      if (tab === 'calendario') renderCalendar();
-      if (tab === 'tareas') renderTasks();
+    function switchTab(tab){ state.tab = tab; document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === tab)); document.querySelectorAll('#bottom-nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab)); if(tab === 'calendario') renderCalendar(); if(tab === 'tareas') renderTasks(); if(tab === 'inicio') renderInicio(); }
+
+    function today(){ return new Date().toISOString().slice(0,10); }
+    function shift(days){ const d = new Date(); d.setDate(d.getDate() + days); return d.toISOString().slice(0,10); }
+
+    document.getElementById('bottom-nav').addEventListener('click', e => { const b = e.target.closest('button[data-tab]'); if(!b) return; switchTab(b.dataset.tab); });
+    document.querySelector('.segmented').addEventListener('click', e => { const b = e.target.closest('button[data-view]'); if(!b) return; document.querySelectorAll('.segmented button').forEach(x => x.classList.toggle('active', x === b)); switchTab(b.dataset.view === 'calendario' ? 'calendario' : 'tareas'); });
+
+    $('fab').addEventListener('click', () => { $('sheet-backdrop').classList.add('open'); });
+    $('sheet-close').addEventListener('click', () => $('sheet-backdrop').classList.remove('open'));
+    $('sheet-cancel').addEventListener('click', () => $('sheet-backdrop').classList.remove('open'));
+
+    $('quick-form').addEventListener('submit', async e => {
+      e.preventDefault();
+      const type = $('q-type').value;
+      const title = $('q-title').value.trim();
+      const detail = $('q-detail').value.trim();
+      if(!title && type !== 'mail') return;
+      if(type === 'task'){
+        const payload = { title, detail, status: 'Pendiente', category: 'Operaciones', priority: $('q-priority').value || 'Media', dueDate: $('q-date').value || today(), reminderAt: '' };
+        await fetch('/api/tasks', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      } else if(type === 'event'){
+        const payload = { title, detail, startsAt: ($('q-start').value || today()+'T09:00'), endsAt: ($('q-end').value || today()+'T10:00'), location: '' };
+        await fetch('/api/calendar/events', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      } else if(type === 'mail'){
+        openMailCompose({ to:'', subject: title, body: detail });
+      }
+      $('q-title').value = ''; $('q-detail').value = ''; $('sheet-backdrop').classList.remove('open');
+      loadAll();
+    });
+
+    $('q-type').addEventListener('change', e => {
+      const isMail = e.target.value === 'mail';
+      $('q-title').placeholder = isMail ? 'Asunto' : 'Tarea / Evento';
+      $('q-task-fields').style.display = e.target.value === 'task' ? 'flex' : 'none';
+      $('q-event-fields').style.display = e.target.value === 'event' ? 'flex' : 'none';
+    });
+
+    $('search-input').addEventListener('input', e => { state.query = e.target.value; renderTasks(); });
+
+    function applyFilter(f){ state.filter = f; document.querySelectorAll('#filter-chips .chip').forEach(c => c.classList.toggle('active', c.dataset.filter === f)); renderTasks(); }
+
+    async function loadAll(){ await Promise.all([loadTasks(), loadInbox(), loadCalendar()]); renderInicio(); renderTasks(); if(state.tab === 'calendario') renderCalendar(); }
+    async function loadTasks(){ try { const r = await fetch('/api/tasks'); const d = await r.json(); state.tasks = Array.isArray(d) ? d : (d.tasks || []); } catch { state.tasks = []; } }
+    async function loadInbox(){ try { const r = await fetch('/api/inbox'); const d = await r.json(); state.inbox = d.messages || []; } catch { state.inbox = []; } renderInbox(); }
+    async function loadCalendar(){ try { const r = await fetch('/api/calendar/events'); state.calendars = await r.json(); } catch { state.calendars = []; } }
+
+    function renderInbox(){
+      const c = $('inbox-list'); c.innerHTML = '';
+      const list = state.inbox.slice(0,10);
+      if(!list.length){ c.innerHTML = '<div class="empty-state">No hay correos.</div>'; return; }
+      list.forEach(m => {
+        const el = document.createElement('div'); el.className = 'mail-item';
+        el.innerHTML = `<div class="mail-item-header"><span class="mail-from">${escapeHtml(m.from)}</span><span>${escapeHtml(m.date)}</span></div><div class="mail-subject">${escapeHtml(m.subject)}</div><div class="mail-snippet">${escapeHtml(m.snippet)}</div>`;
+        el.addEventListener('click', () => openMailCompose({ to: extractEmail(m.from), subject: 'Re: ' + m.subject, body: m.snippet || '' }));
+        c.appendChild(el);
+      });
     }
 
-    document.getElementById('bottom-nav').addEventListener('click', (e) => {
-      const btn = e.target.closest('button[data-tab]');
-      if (!btn) return;
-      switchTab(btn.dataset.tab);
-    });
+    function extractEmail(from){ const m = String(from).match(/<(.+)>/); return m ? m[1] : from; }
 
-    document.querySelector('.segmented').addEventListener('click', (e) => {
-      const btn = e.target.closest('button[data-view]');
-      if (!btn) return;
-      document.querySelectorAll('.segmented button').forEach(b => b.classList.toggle('active', b === btn));
-      if (btn.dataset.view === 'calendario') switchTab('calendario');
-      else switchTab('tareas');
-    });
-
-    function today() { return new Date().toISOString().slice(0, 10); }
-    function shift(days) { const d = new Date(); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); }
-
-    const priorityWeight = p => ({ 'Crítica': 0, 'Alta': 1, 'Media': 2, 'Baja': 3 }[p] ?? 4);
-    const pillFor = s => ({ 'En curso': 'activo', 'Pendiente': 'pendiente', 'En revisión': 'revision', 'Listo': 'listo', 'Cerrado': 'cerrado' }[s] || 'pendiente');
-
-    function renderTaskRow(task) {
-      const row = document.createElement('div');
-      row.className = 'row';
-      const checked = ['Listo','Cerrado','Completada','Hecha'].includes(task.status);
-      row.innerHTML = `
-        <input type="checkbox" ${checked ? 'checked' : ''} />
-        <div>
-          <div class="row-title" style="${checked ? 'text-decoration:line-through;color:var(--muted)' : ''}">${escapeHtml(task.title)}</div>
-          <div class="row-meta">
-            <span class="chip">${escapeHtml(task.category)}</span>
-            <span class="chip">${escapeHtml(task.priority)}</span>
-            ${task.dueDate ? `<span>📅 ${task.dueDate}</span>` : ''}
+    const mailState = { composing: false, to:'', subject:'', body:'', draftSaved: false };
+    function openMailCompose({to = '', subject = '', body = ''}){
+      mailState.composing = true; mailState.to = to; mailState.subject = subject; mailState.body = body; mailState.draftSaved = false;
+      $('mail-backdrop').classList.add('open');
+      renderMailComposer();
+    }
+    function renderMailComposer(){
+      const c = $('mail-body');
+      c.innerHTML = `
+        <div class="composer">
+          <label style="font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:6px">Para <input class="input" id="compose-to" value="${escapeHtml(mailState.to)}" /></label>
+          <label style="font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:6px">Asunto <input class="input" id="compose-subject" value="${escapeHtml(mailState.subject)}" /></label>
+          <label style="font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:6px">Mensaje <textarea class="input" id="compose-body" rows="5">${escapeHtml(mailState.body)}</textarea></label>
+          <div class="attach-card"><span>Adjuntos (prototipo localStorage)</span><label class="upload-btn"><input type="file" id="compose-files" multiple /> Adjuntar</label></div>
+          <div id="compose-files-list"></div>
+          <div class="composer-actions">
+            <button class="button primary" id="compose-send" type="button">Enviar</button>
+            <button class="ghost" id="compose-draft" type="button">Guardar borrador</button>
+            <button class="ghost" id="compose-reply-all" type="button">Responder a todos</button>
+            <button class="ghost" id="compose-cancel" type="button">Cancelar</button>
           </div>
         </div>
-        <button class="chip ${pillFor(task.status)}">${task.status}</button>
       `;
-      row.addEventListener('click', (e) => {
-        if (e.target.tagName === 'INPUT') return;
-        openDetail(task);
+      bindComposerEvents();
+    }
+    function bindComposerEvents(){
+      $('compose-send').addEventListener('click', async () => {
+        const payload = { to: $('compose-to').value, subject: $('compose-subject').value, body: $('compose-body').value };
+        const r = await fetch('/api/mail/send', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        if(r.ok){ alert('Correo enviado'); mailState.composing = false; $('mail-backdrop').classList.remove('open'); }
+        else alert('No se pudo enviar');
       });
+      $('compose-draft').addEventListener('click', async () => {
+        const payload = { to: $('compose-to').value, subject: $('compose-subject').value, body: $('compose-body').value };
+        const r = await fetch('/api/mail/draft', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        if(r.ok){ alert('Borrador guardado'); mailState.draftSaved = true; }
+        else alert('No se pudo guardar');
+      });
+      $('compose-reply-all').addEventListener('click', async () => {
+        const payload = { to: $('compose-to').value, subject: 'Re: ' + ($('compose-subject').value || ''), body: $('compose-body').value, replyAll: true };
+        await fetch('/api/mail/send', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        alert('Responder a todos: prototipo');
+      });
+      $('compose-cancel').addEventListener('click', () => { mailState.composing = false; $('mail-backdrop').classList.remove('open'); });
+      $('compose-files')?.addEventListener('change', e => { const arr = Array.from(e.target.files || []).map(f => ({name: f.name, size: f.size})); $('compose-files-list').innerHTML = arr.map(a => `<div class="attach-card"><span>${escapeHtml(a.name)}</span><span>${a.size} B</span></div>`).join(''); });
+    }
+    $('mail-close').addEventListener('click', () => { mailState.composing = false; $('mail-backdrop').classList.remove('open'); });
+    $('mail-new').addEventListener('click', () => openMailCompose({ to:'', subject:'', body:'' }));
+    $('mail-clear').addEventListener('click', () => { $('mail-body').innerHTML = ''; mailState.composing = false; });
+
+    $('qa-today').addEventListener('click', () => { switchTab('tareas'); applyFilter('hoy'); });
+    $('qa-overdue').addEventListener('click', () => { switchTab('tareas'); applyFilter('vencidas'); });
+    $('qa-calendar').addEventListener('click', () => switchTab('calendario'));
+
+    function renderCalendar(){
+      const container = $('calendar-grid');
+      const evts = state.calendars || [];
+      const [y,m] = [new Date().getFullYear(), new Date().getMonth()];
+      const first = new Date(y, m, 1); const daysIn = new Date(y, m+1, 0).getDate(); const startWeekday = (first.getDay()+6)%7;
+      const map = new Map(); evts.forEach(ev => { const k = (ev.startsAt || '').slice(0,10); if(!map.has(k)) map.set(k, []); map.get(k).push(ev); });
+      const days = []; for(let i=0;i<startWeekday;i++) days.push({d:'', outside:true}); for(let i=1;i<=daysIn;i++){ const ds = `${y}-${String(m+1).padStart(2,'0')}-${String(i).padStart(2,'0')}`; days.push({d:i, date:ds, events: map.get(ds) || []}); }
+      const remaining = 42 - days.length; for(let i=1;i<=remaining;i++) days.push({d:i, outside:true});
+      $('cal-title').textContent = `${['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'][m]} ${y}`;
+      container.innerHTML = days.map(day => {
+        const cls = `day ${day.outside ? 'empty' : ''}`;
+        const evHtml = (day.events || []).map(ev => `<div class="ev">${escapeHtml(ev.title)}</div>`).join('');
+        return `<button class="${cls}" type="button"><div class="day-num">${day.d}</div><div class="day-events">${evHtml}</div></button>`;
+      }).join('');
+      const evs = evts.filter(ev => (ev.startsAt || '').startsWith(`${y}-${String(m+1).padStart(2,'0')}`));
+      $('calendar-events').innerHTML = evs.map(ev => `<div class="row"><div><div class="row-title">${escapeHtml(ev.title)}</div><div class="row-meta">${ev.startsAt ? escapeHtml(ev.startsAt.slice(11,16)) : ''}</div></div></div>`).join('');
+    }
+    $('cal-prev').addEventListener('click', () => { const d = new Date(state.calYear, state.calMonth - 1, 1); state.calYear = d.getFullYear(); state.calMonth = d.getMonth(); renderCalendar(); });
+    $('cal-next').addEventListener('click', () => { const d = new Date(state.calYear, state.calMonth + 1, 1); state.calYear = d.getFullYear(); state.calMonth = d.getMonth(); renderCalendar(); });
+
+    function renderTaskRow(task){
+      const row = document.createElement('div'); row.className = 'row';
+      const checked = ['Listo','Cerrado','Completada','Hecha'].includes(task.status);
+      row.innerHTML = `<input type="checkbox" ${checked ? 'checked' : ''}><div><div class="row-title" style="${checked ? 'text-decoration:line-through;color:var(--muted)' : ''}">${escapeHtml(task.title)}</div><div class="row-meta"><span class="chip">${escapeHtml(task.category || 'Operaciones')}</span><span class="chip">${escapeHtml(task.priority || 'Media')}</span>${task.dueDate ? `<span>${task.dueDate}</span>` : ''}</div></div><button class="chip">${escapeHtml(task.status)}</button>`;
+      row.addEventListener('click', e => { if(e.target.tagName === 'INPUT') return; });
       return row;
     }
-
-    function openDetail(task) {
-      const detail = prompt('Detalle de tarea:\n\nTítulo: ' + task.title + '\n\nEscribe aquí notas, enlaces o indicaciones:', task.detail || '');
-      if (detail === null) return;
-      const files = [];
-      const fileInput = document.createElement('input');
-      fileInput.type = 'file';
-      fileInput.multiple = true;
-      fileInput.accept = 'image/*,.pdf,.doc,.docx,.xls,.xlsx,.zip';
-      const addFiles = () => {
-        Array.from(fileInput.files || []).forEach(file => {
-          const reader = new FileReader();
-          reader.onload = () => files.push({ name: file.name, dataUrl: reader.result });
-          reader.readAsDataURL(file);
-        });
-      };
-      fileInput.addEventListener('change', () => {}); // vacío intencional: capturamos al confirmar
-      fileInput.click();
-      const patch = { detail: detail || '', attachments: files.map(f => f.dataUrl) };
-      fetch('/api/tasks/' + encodeURIComponent(task.id), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }).catch(() => {});
-    }
-
-    function renderTasks() {
-      const container = $('tasks-list');
-      container.innerHTML = '';
+    function renderTasks(){
+      const container = $('tasks-list'); container.innerHTML = '';
       const q = state.query.trim().toLowerCase();
       let list = state.tasks.filter(t => {
-        if (state.filter === 'hoy') return t.dueDate === today();
-        if (state.filter === 'vencidas') return t.dueDate && t.dueDate < today() && !['Listo','Cerrado','Completada','Hecha'].includes(t.status);
-        if (state.filter === 'urgentes') return ['Crítica','Alta'].includes(t.priority);
-        if (state.filter === 'completadas') return ['Listo','Cerrado','Completada','Hecha'].includes(t.status);
+        if(state.filter !== 'todos' && !((state.filter==='hoy' && t.dueDate===today()) || (state.filter==='vencidas' && t.dueDate && t.dueDate < today() && !['Listo','Cerrado','Completada','Hecha'].includes(t.status)) || (state.filter==='urgentes' && ['Crítica','Alta'].includes(t.priority)) || (state.filter==='completadas' && ['Listo','Cerrado','Completada','Hecha'].includes(t.status)))) return false;
+        if(q){ const h=`${t.title} ${t.detail} ${t.assignee || ''} ${t.category || ''}`.toLowerCase(); if(!h.includes(q)) return false; }
         return true;
       });
-      if (q) {
-        list = list.filter(t => `${t.title} ${t.detail} ${t.assignee || ''} ${t.category || ''}`.toLowerCase().includes(q));
-      }
-      list.sort((a, b) => {
-        const aDone = ['Listo','Cerrado','Completada','Hecha'].includes(a.status) ? 1 : 0;
-        const bDone = ['Listo','Cerrado','Completada','Hecha'].includes(b.status) ? 1 : 0;
-        if (aDone !== bDone) return aDone - bDone;
-        return priorityWeight(a.priority) - priorityWeight(b.priority);
+      list.forEach(t => container.appendChild(renderTaskRow(t)));
+      if(!list.length) container.innerHTML = '<div class="empty-state">No hay tareas.</div>';
+    }
+
+    function renderInicio(){
+      const todayList = $('today-list'); todayList.innerHTML = '';
+      const overdueList = $('overdue-list'); overdueList.innerHTML = '';
+      const tasks = state.tasks;
+      const todayItems = tasks.filter(t => t.dueDate === today() && !['Listo','Cerrado','Completada','Hecha'].includes(t.status));
+      const overdueItems = tasks.filter(t => t.dueDate && t.dueDate < today() && !['Listo','Cerrado','Completada','Hecha'].includes(t.status));
+      $('count-hoy').textContent = todayItems.length;
+      $('count-vencidas').textContent = overdueItems.length;
+      todayItems.forEach(t => todayList.appendChild(renderTaskRow(t)));
+      overdueItems.forEach(t => overdueList.appendChild(renderTaskRow(t)));
+    }
+
+    const chatMessages = [];
+    function addChat(from, text){
+      chatMessages.push({ id: Date.now() + Math.random(), from, text, at: new Date().toLocaleTimeString() });
+      const h = $('chat-history'); h.innerHTML = '';
+      chatMessages.slice(-50).forEach(m => {
+        const el = document.createElement('div'); el.className = 'chat-msg ' + m.from;
+        el.innerHTML = `<div class="bubble">${escapeHtml(m.text)}</div><div class="at">${m.at}</div>`;
+        h.appendChild(el);
       });
-      if (!list.length) { container.innerHTML = '<div class="empty-state">No hay tareas para este filtro.</div>'; return; }
-      list.forEach(task => container.appendChild(renderTaskRow(task)));
+      h.scrollTop = h.scrollHeight;
     }
-
-    $('search-input').addEventListener('input', (e) => { state.query = e.target.value; renderTasks(); });
-
-    function applyFilter(f) {
-      state.filter = f;
-      document.querySelectorAll('.chip[data-filter]').forEach(b => b.classList.toggle('active', b.dataset.filter === f));
-      renderTasks();
-    }
-    document.querySelectorAll('.chip[data-filter]').forEach(btn => btn.addEventListener('click', () => {
-      applyFilter(btn.dataset.filter);
-    }));
-
-    function renderCalendar() {
-      const grid = $('calendar-grid');
-      grid.innerHTML = '';
-      const year = state.calYear; const month = state.calMonth;
-      const first = new Date(year, month, 1);
-      const start = new Date(first);
-      start.setDate(start.getDate() - ((first.getDay() + 6) % 7));
-      const dow = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
-      dow.forEach(d => { const el = document.createElement('div'); el.className='dow'; el.textContent=d; grid.appendChild(el); });
-      for (let i = 0; i < 35; i++) {
-        const d = new Date(start); d.setDate(start.getDate() + i);
-        const dayNum = d.getDate();
-        const cell = document.createElement('div');
-        cell.className = 'day';
-        const num = document.createElement('div'); num.className='day-num'; num.textContent=dayNum; cell.appendChild(num);
-        const evts = state.calEvents.filter(e => {
-          const sd = new Date(e.start); const ed = new Date(e.end); const cd = new Date(d); cd.setHours(0,0,0,0); sd.setHours(0,0,0,0); ed.setHours(0,0,0,0);
-          return cd >= sd && cd <= ed;
-        });
-        evts.slice(0,2).forEach(ev => {
-          const tag = document.createElement('div'); tag.className='ev'; tag.textContent=ev.title; cell.appendChild(tag);
-        });
-        grid.appendChild(cell);
-      }
-      const monthNames = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
-      $('cal-title').textContent = monthNames[month] + ' ' + year;
-      const evList = $('calendar-events'); evList.innerHTML='';
-      state.calEvents.forEach(ev => {
-        const row = document.createElement('div'); row.className='row';
-        row.innerHTML = `<div><div class="row-title">${escapeHtml(ev.title)}</div><div class="row-meta">📅 ${ev.start} → ${ev.end} ${ev.location ? '· 📍 '+escapeHtml(ev.location) : ''}</div></div>`;
-        evList.appendChild(row);
-      });
-    }
-
-    function escapeHtml(str) {
-      return String(str || '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
-    }
-
-    async function loadData() {
-      try {
-        const [inboxRes, tasksRes, calendarRes] = await Promise.all([
-          fetch('/api/inbox').then(r => r.ok ? r.json() : []).catch(() => []),
-          fetch('/api/tasks').then(r => r.ok ? r.json().then(d => d.tasks || d) : []).catch(() => []),
-          fetch('/api/calendar/events').then(r => r.ok ? r.json() : []).catch(() => [])
-        ]);
-        state.inbox = Array.isArray(inboxRes) ? inboxRes : (inboxRes?.messages ?? []);
-        state.tasks = Array.isArray(tasksRes) ? tasksRes : [];
-        state.calEvents = Array.isArray(calendarRes) ? calendarRes : [];
-        renderHome();
-        renderTasks();
-      } catch (e) {
-        console.error('loadData', e);
-      }
-    }
-
-    function renderHome() {
-      const container = $('inbox-list');
-      container.innerHTML = '';
-      const items = state.inbox.slice(0, 10);
-      if (!items.length) { container.innerHTML = '<div class="empty-state">No tienes correos sin leer en INBOX.</div>'; }
-      else {
-        items.forEach((m, i) => {
-          const el = document.createElement('div');
-          el.className = 'mail-item';
-          el.innerHTML = `
-            <div class="mail-item-header"><span class="mail-from">${escapeHtml(m.from)}</span><span>${escapeHtml(m.date)}</span></div>
-            <div class="mail-subject">${escapeHtml(m.subject)}</div>
-            <div class="mail-snippet">${escapeHtml((m.snippet || '').slice(0, 140))}</div>
-          `;
-          container.appendChild(el);
-        });
-      }
-
-      const todayTasks = state.tasks.filter(t => t.dueDate === today() && !['Listo','Cerrado','Completada','Hecha'].includes(t.status));
-      $('count-hoy').textContent = todayTasks.length;
-      const vencidas = state.tasks.filter(t => t.dueDate && t.dueDate < today() && !['Listo','Cerrado','Completada','Hecha'].includes(t.status));
-      $('count-vencidas').textContent = vencidas.length;
-
-      $('today-list').innerHTML = '';
-      todayTasks.slice(0, 8).forEach(t => $('today-list').appendChild(renderTaskRow(t)));
-
-      $('overdue-list').innerHTML = '';
-      vencidas.slice(0, 8).forEach(t => $('overdue-list').appendChild(renderTaskRow(t)));
-
-      $('urgent-list').innerHTML = '';
-      state.tasks.filter(t => ['Crítica','Alta'].includes(t.priority) && !['Listo','Cerrado','Completada','Hecha'].includes(t.status)).slice(0, 8).forEach(t => $('urgent-list').appendChild(renderTaskRow(t)));
-    }
-
-    const sheet = $('sheet');
-    $('fab').addEventListener('click', () => sheet.classList.add('open'));
-    $('sheet-close').addEventListener('click', () => sheet.classList.remove('open'));
-    $('sheet-cancel').addEventListener('click', () => sheet.classList.remove('open'));
-    $('quick-form').addEventListener('submit', (e) => {
+    $('chat-form').addEventListener('submit', async e => {
       e.preventDefault();
-      const title = $('q-title').value.trim();
-      if (!title) return;
-      const payload = { title, dueDate: $('q-date').value, priority: $('q-priority').value, status: 'Pendiente', category: 'Operaciones', assignee: '' };
-      fetch('/api/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).then(() => {
-        sheet.classList.remove('open');
-        $('q-title').value = '';
-        loadData();
-      }).catch(() => sheet.classList.remove('open'));
+      const text = $('chat-input').value.trim(); if(!text) return; $('chat-input').value = '';
+      addChat('user', text);
+      try {
+        const r = await fetch('/api/telegram/send-hermes', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text }) });
+        const d = await r.json();
+        addChat('hermes', d.reply || 'Prototipo sin respuesta');
+      } catch { addChat('hermes', 'Prototipo sin backend'); }
     });
 
-    $('cal-prev').addEventListener('click', () => {
-      state.calMonth--;
-      if (state.calMonth < 0) { state.calMonth = 11; state.calYear--; }
-      renderCalendar();
-    });
-    $('cal-next').addEventListener('click', () => {
-      state.calMonth++;
-      if (state.calMonth > 11) { state.calMonth = 0; state.calYear++; }
-      renderCalendar();
-    });
-
-    loadData();
+    loadAll();
   </script>
 </body>
 </html>

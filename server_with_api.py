@@ -167,6 +167,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json(201, task)
             return
 
+        if route == "/api/mail/send":
+            body = self._read_body()
+            self._send_json(200, {"ok": True, "draft_id": f"draft-{int(time.time())}", "to": body.get("to"), "subject": body.get("subject")})
+            return
+
+        if route == "/api/telegram/send-hermes":
+            body = self._read_body()
+            self._send_json(200, {"reply": f"Prototipo: recibí “{body.get('text','')[:80]}”"})
+            return
+
         self._send_json(404, {"error": "not_found"})
 
     def do_PATCH(self):

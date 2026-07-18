@@ -25,7 +25,6 @@ export type TaskRecord = {
   updatedAt: string;
   assignee?: string;
   tags?: string[];
-  attachments?: string[];
 };
 
 const COLUMNS: { key: Status; label: string }[] = [
@@ -64,7 +63,7 @@ export function TasksKanbanBoard({
     const map = new Map<Status, TaskRecord[]>();
     for (const col of COLUMNS) map.set(col.key, []);
     for (const t of tasks) {
-      const list = map.get(t.status as Status);
+      const list = map.get(t.status as any);
       if (list) list.push(t); else map.get("Pendiente")?.push(t);
     }
     return map;

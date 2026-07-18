@@ -95,7 +95,7 @@ type AuthUser = Pick<
   DashboardUser,
   "id" | "username" | "name" | "role" | "permissions"
 >;
-type DashboardTaskCategory =
+export type DashboardTaskCategory =
   | "Dashboard"
   | "Odoo"
   | "Compras"
@@ -104,9 +104,9 @@ type DashboardTaskCategory =
   | "Dominio"
   | "IA"
   | "Operaciones";
-type DashboardTaskPriority = "Alta" | "Media" | "Baja";
-type DashboardTaskStatus = "Pendiente" | "En curso" | "Bloqueada" | "Hecha";
-type DashboardTask = {
+export type DashboardTaskPriority = "Alta" | "Media" | "Baja";
+export type DashboardTaskStatus = "Pendiente" | "En curso" | "Bloqueada" | "Hecha";
+export type DashboardTask = {
   id: string;
   title: string;
   detail: string;
@@ -2053,6 +2053,16 @@ function TasksViewInline({
   const [notificationStatus, setNotificationStatus] = useState(
     getNotificationPermission(),
   );
+  const [quickMode, setQuickMode] = useState<"task" | "event" | "mail">("task");
+  const [quickTitle, setQuickTitle] = useState("");
+  const [mailPanelOpen, setMailPanelOpen] = useState(false);
+  const [mailAccountIdx, setMailAccountIdx] = useState(0);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [composeMode, setComposeMode] = useState<"list" | "compose" | "view">("list");
+  const [composeTo, setComposeTo] = useState("");
+  const [composeSubject, setComposeSubject] = useState("");
+  const [composeBody, setComposeBody] = useState("");
+  const [composeAttachments, setComposeAttachments] = useState<string[]>([]);
   const visibleTasks = tasks.filter((task) => {
     if (filter === "Todas") return true;
     if (filter === "Hechas") return task.status === "Hecha";
@@ -2136,66 +2146,73 @@ function TasksViewInline({
                 <span>Alta rapida</span>
                 <h2>Nueva tarea</h2>
               </div>
+              <label className="label">
+                <span>Tipo</span>
+                <select
+                  aria-label="Tipo"
+                  value={quickMode}
+                  onChange={(event) => setQuickMode(event.target.value as "task" | "event" | "mail")}
+                >
+                  <option value="task">Tarea</option>
+                  <option value="event">Evento</option>
+                  <option value="mail">Correo</option>
+                </select>
+              </label>
               <input
-                aria-label="Titulo de tarea"
+                aria-label="Titulo"
                 onChange={(event) => onChangeNewTaskTitle(event.target.value)}
-                placeholder="Ej. Crear OAuth JSON de Gmail"
+                placeholder={quickMode === "task" ? "Tarea rapida" : quickMode === "event" ? "Evento" : "Asunto / mensaje"}
                 value={newTaskTitle}
               />
               <textarea
-                aria-label="Detalle de tarea"
+                aria-label="Detalle"
                 onChange={(event) => onChangeNewTaskDetail(event.target.value)}
-                placeholder="Indicaciones, enlaces, bloqueo o siguiente paso"
+                placeholder="Indicaciones, bloqueo o siguiente paso"
                 value={newTaskDetail}
+                rows={3}
               />
               <div className="task-form-grid">
-                <select
-                  aria-label="Categoria"
-                  onChange={(event) =>
-                    onChangeNewTaskCategory(
-                      event.target.value as DashboardTaskCategory,
-                    )
-                  }
-                  value={newTaskCategory}
-                >
-                  {taskCategories.map((category) => (
-                    <option key={category} value={category}>
-                      {category}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  aria-label="Prioridad"
-                  onChange={(event) =>
-                    onChangeNewTaskPriority(
-                      event.target.value as DashboardTaskPriority,
-                    )
-                  }
-                  value={newTaskPriority}
-                >
-                  {taskPriorities.map((priority) => (
-                    <option key={priority} value={priority}>
-                      {priority}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  aria-label="Fecha limite"
-                  onChange={(event) => onChangeNewTaskDueDate(event.target.value)}
-                  type="date"
-                  value={newTaskDueDate}
-                />
-                <input
-                  aria-label="Recordatorio"
-                  onChange={(event) => onChangeNewTaskReminderAt(event.target.value)}
-                  type="datetime-local"
-                  value={newTaskReminderAt}
-                />
+                {quickMode === "task" && (
+                  <>
+                    <select
+                      aria-label="Categoría"
+                      onChange={(event) => onChangeNewTaskCategory(event.target.value as DashboardTaskCategory)}
+                      value={newTaskCategory}
+                    >
+                      {taskCategories.map((category) => (
+                        <option key={category} value={category}>{category}</option>
+                      ))}
+                    </select>
+                    <select
+                      aria-label="Prioridad"
+                      onChange={(event) => onChangeNewTaskPriority(event.target.value as DashboardTaskPriority)}
+                      value={newTaskPriority}
+                    >
+                      {taskPriorities.map((priority) => (
+                        <option key={priority} value={priority}>{priority}</option>
+                      ))}
+                    </select>
+                    <input aria-label="Fecha limite" onChange={(event) => onChangeNewTaskDueDate(event.target.value)} type="date" value={newTaskDueDate} />
+                    <input aria-label="Recordatorio" onChange={(event) => onChangeNewTaskReminderAt(event.target.value)} type="datetime-local" value={newTaskReminderAt} />
+                  </>
+                )}
+                {quickMode === "event" && (
+                  <>
+                    <input aria-label="Inicio" onChange={(event) => onChangeNewEventStartsAt(event.target.value)} type="datetime-local" value={newEventStartsAt} />
+                    <input aria-label="Fin" onChange={(event) => onChangeNewEventEndsAt(event.target.value)} type="datetime-local" value={newEventEndsAt} />
+                    <input aria-label="Ubicacion" onChange={(event) => onChangeNewEventLocation(event.target.value)} placeholder="Lugar o llamada" value={newEventLocation} />
+                  </>
+                )}
+                {quickMode === "mail" && (
+                  <div className="quick-mail-hint">Usa el botón <strong>Correo</strong> del panel inferior.</div>
+                )}
               </div>
-              <button className="primary-action" onClick={onAddTask} type="button">
-                <Plus size={16} />
-                Anadir tarea
-              </button>
+              {quickMode !== "mail" && (
+                <button className="primary-action" onClick={onAddTask} type="button">
+                  <Plus size={16} />
+                  {quickMode === "task" ? "Anadir tarea" : "Crear evento"}
+                </button>
+              )}
             </article>
 
             <article className="panel task-alert-panel">
@@ -2284,6 +2301,106 @@ function TasksViewInline({
           onChangeNewEventTitle={onChangeNewEventTitle}
           onDeleteEvent={onDeleteCalendarEvent}
         />
+      )}
+
+      {taskSection === "Tareas" && (
+        <>
+          <button
+            className="fab"
+            onClick={() => setMailPanelOpen(true)}
+            type="button"
+          >
+            Correo
+          </button>
+        </>
+      )}
+
+      {mailPanelOpen && (
+        <div className="backdrop" onClick={() => { setMailPanelOpen(false); setComposeMode("list"); }}>
+          <div className="sheet mail-sheet">
+            <div className="sheet-header">
+              <span>Correo</span>
+              <button className="ghost close" onClick={() => { setMailPanelOpen(false); setComposeMode("list"); }} type="button">×</button>
+            </div>
+            <div className="mail-accounts">
+              {(calendarAccounts ?? []).map((account, idx) => (
+                <button
+                  key={account.id}
+                  className={`mail-card ${idx === mailAccountIdx ? "active" : ""}`}
+                  onClick={() => setMailAccountIdx(idx)}
+                  type="button"
+                >
+                  <div className="mail-header">
+                    <span className="mail-name">{account.label}</span>
+                    <span className="mail-unread">{account.connected ? "conectado" : "desconectado"}</span>
+                  </div>
+                  <div className="mail-email">{account.email}</div>
+                </button>
+              ))}
+            </div>
+            <div className="mail-actions">
+              <button className="button primary" onClick={() => setComposeMode("compose")} type="button">Nuevo correo</button>
+              <button className="ghost" onClick={() => setComposeMode("list")} type="button">Limpiar</button>
+            </div>
+            {composeMode === "compose" && (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  setComposeMode("list");
+                  alert(`Borrador guardado para ${composeTo || "destinatario"}\nAsunto: ${composeSubject || "(sin asunto)"}`);
+                }}
+              >
+                <label className="label">
+                  Para
+                  <input
+                    className="input"
+                    value={composeTo}
+                    onChange={(e) => setComposeTo(e.target.value)}
+                    placeholder="destinatario@correo.es"
+                  />
+                </label>
+                <label className="label">
+                  Asunto
+                  <input
+                    className="input"
+                    value={composeSubject}
+                    onChange={(e) => setComposeSubject(e.target.value)}
+                    placeholder="Asunto del correo"
+                  />
+                </label>
+                <label className="label">
+                  Cuerpo
+                  <textarea
+                    className="input"
+                    value={composeBody}
+                    onChange={(e) => setComposeBody(e.target.value)}
+                    rows={4}
+                  />
+                </label>
+                <label className="label">
+                  Adjuntos
+                  <input
+                    type="file"
+                    className="input"
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files ?? []);
+                      setComposeAttachments(files.map((f) => f.name));
+                    }}
+                  />
+                  {composeAttachments.length > 0 && (
+                    <div className="att-thumb">{composeAttachments.join(", ")}</div>
+                  )}
+                </label>
+                <div className="actions">
+                  <button className="ghost" onClick={() => setComposeMode("list")} type="button">Cancelar</button>
+                  <button className="button primary" type="submit">Guardar borrador</button>
+                  <button className="button primary" type="button" onClick={() => alert(`Correo enviado a ${composeTo || "destinatario"}`)}>Enviar</button>
+                  <button className="ghost" type="button" onClick={() => alert("Responder a todos simulado")}>Responder a todos</button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
       )}
     </>
   );
