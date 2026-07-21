@@ -1687,6 +1687,19 @@ function registerHermesUpdatedRoutes(
         return;
       }
 
+      if (
+        request.method === "POST" &&
+        resource === "mail" &&
+        id === "delete"
+      ) {
+        const payload = await readJsonBody<Record<string, unknown>>(request);
+        const messageId = cleanText((payload.messageId as string | undefined) ?? "");
+        if (!messageId) throw new Error("Falta messageId para borrar el correo");
+        await trashHermesGmailMessage(hermesEnv, messageId);
+        sendJson(response, 200, { ok: true });
+        return;
+      }
+
       if (request.method === "POST" && resource === "telegram" && id === "send-hermes") {
         const payload = await readJsonBody<{ text?: string }>(request);
         const text = cleanText(payload.text);
@@ -2342,6 +2355,16 @@ async function sendHermesGmailDraft(env: HermesGmailEnv, draftId?: string) {
     },
   );
   return requiredText(sent.id, "sentMessageId");
+}
+
+async function trashHermesGmailMessage(env: HermesGmailEnv, messageId: string) {
+  const config = hermesGmailConfigFromEnv(env);
+  const token = await getHermesGmailAccessToken(config);
+  return hermesGmailFetch<{ id?: string }>(
+    token,
+    `/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}/trash`,
+    { method: "POST" },
+  );
 }
 
 async function getHermesGmailAccessToken(config: HermesGmailConfig) {

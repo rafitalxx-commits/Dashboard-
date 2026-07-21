@@ -561,12 +561,14 @@ function QuickCreate({
     if (!title.trim()) return;
     onSaveTask({
       title,
+      detail: draftNote || undefined,
       dueDate,
       reminderAt: buildDateTime(dueDate, reminderTime),
       priority,
       assignee,
     });
     setTitle("");
+    setDraftNote("");
     onClose();
   };
 
@@ -580,10 +582,17 @@ function QuickCreate({
         <div className="sheet-header">Tarea rápida</div>
         <input
           className="input"
+          placeholder="Nota rápida"
+          value={draftNote}
+          onChange={(e) => setDraftNote(e.target.value)}
+          autoFocus
+        />
+        <input
+          className="input"
           placeholder="Tarea rápida"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          autoFocus
+          style={{ marginTop: 8 }}
         />
         <div className="row">
           <label className="label">
@@ -649,7 +658,18 @@ function QuickCreate({
   );
 }
 
-function MailCard({ account, onClick }: { account: MailAccount; onClick: () => void }) {
+function MailCard({ account, onClick, compact, badge }: { account: MailAccount; onClick: () => void; compact?: boolean; badge?: string }) {
+  const totalMessages = account.messages.length;
+  if (compact) {
+    return (
+      <button className="mail-card compact" onClick={onClick} type="button">
+        <span className="mail-name">{account.name}</span>
+        <span className="mail-email">{account.email}</span>
+        {badge ? <span className="mail-badge">{badge}</span> : null}
+      </button>
+    );
+  }
+
   return (
     <button className="mail-card" onClick={onClick} type="button">
       <div className="mail-header">
@@ -980,6 +1000,42 @@ function MailPanel({ account, onClose }: { account: MailAccount; onClose: () => 
                 type="button"
               >
                 Volver
+              </button>
+              <button
+                className="ghost"
+                disabled={!selectedMessage}
+                onClick={async () => {
+                  if (!selectedMessage?.id) return;
+                  const confirmed =
+                    typeof window !== "undefined"
+                      ? window.confirm("Borrar este correo de Gmail?")
+                      : true;
+                  if (!confirmed) return;
+                  setDraftNote("Borrando correo...");
+                  try {
+                    const res = await fetchHermes("/mail/delete", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ messageId: selectedMessage.id }),
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok)
+                      throw new Error(
+                        data.message ?? "No se pudo borrar el correo."
+                      );
+                    setDraftNote("Correo borrado.");
+                    setRepr("list");
+                  } catch (e) {
+                    setDraftNote(
+                      e instanceof Error
+                        ? e.message
+                        : "No se pudo borrar el correo."
+                    );
+                  }
+                }}
+                type="button"
+              >
+                🗑 Borrar
               </button>
               <button
                 className="button primary"
@@ -1588,13 +1644,18 @@ export function TasksView({
                 onDisconnect={(accountKey) => void disconnectGoogleAccount(accountKey)}
               />
               <div className="mail-list">
-                {mailAccounts.map((acc) => (
-                  <MailCard
-                    key={acc.id}
-                    account={acc}
-                    onClick={() => setOpenMailId(acc.id)}
-                  />
-                ))}
+                {mailAccounts.map((acc) => {
+                  const total = acc.unread + (acc.messages?.length ?? 0);
+                  return (
+                    <MailCard
+                      key={acc.id}
+                      account={acc}
+                      compact
+                      badge={total > 0 ? String(total) : undefined}
+                      onClick={() => setOpenMailId(acc.id)}
+                    />
+                  );
+                })}
               </div>
             </div>
 
