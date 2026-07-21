@@ -50,6 +50,9 @@ export type Order = {
   city: string;
   shippingAddress?: string;
   shippingPhone?: string;
+  shippingEmail?: string;
+  shippingPostalCode?: string;
+  shippingCountryCode?: string;
   items: Array<{
     sku: string;
     name: string;

@@ -188,7 +188,12 @@ export function ensureAmazonMessagesGmailAutoSync(
   }
 
   const interval = setInterval(() => {
-    void runDueAmazonMessagesGmailSync(repository, actor);
+    void runDueAmazonMessagesGmailSync(repository, actor).catch((error) => {
+      console.error(
+        "[amazon-messages:gmail-sync] Auto sync failed without stopping dashboard",
+        error,
+      );
+    });
   }, Math.min(60_000, intervalMinutes * 60_000));
   globalState[AUTO_SYNC_KEY] = { repository, interval };
 }
@@ -197,7 +202,16 @@ async function runDueAmazonMessagesGmailSync(
   repository: Repository,
   actor: AmazonMessagesActor,
 ) {
-  const state = repository.getGmailSync(actor);
+  let state: ReturnType<Repository["getGmailSync"]>;
+  try {
+    state = repository.getGmailSync(actor);
+  } catch (error) {
+    console.error(
+      "[amazon-messages:gmail-sync] Could not read sync state; skipping auto sync",
+      error,
+    );
+    return;
+  }
   if (!state?.jobEnabled || state.status === "EN_CURSO") return;
   if (state.nextSyncAt && new Date(state.nextSyncAt).getTime() > Date.now()) return;
   await syncAmazonMessagesFromGmail(repository, actor, {

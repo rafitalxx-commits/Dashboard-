@@ -19,6 +19,7 @@ import {
   ReceiptText,
   RefreshCw,
   Search,
+  Send,
   Settings,
   ShieldCheck,
   ShoppingCart,
@@ -31,6 +32,7 @@ import {
 } from "lucide-react";
 import { money, orders as demoOrders, statusTone } from "./data/demoData";
 import { AmazonMessagesView } from "./modules/amazonMessages";
+import { ExpeditionsView } from "./modules/expeditions/ExpeditionsView";
 import { odooClient } from "./services/odooClient";
 import type {
   InvoiceAnalytics,
@@ -50,6 +52,7 @@ const navItems = [
   { label: "Tareas", icon: ListTodo, view: "tasks", permission: "tasks" },
   { label: "Pedidos", icon: ClipboardList, view: "orders", permission: "orders" },
   { label: "Pedidos V2", icon: Truck, view: "ordersV2", permission: "orders" },
+  { label: "Expediciones", icon: Send, view: "expeditions", permission: "orders" },
   { label: "Facturas cliente", icon: ReceiptText, view: "customerInvoices", permission: "billing" },
   { label: "Facturas proveedor", icon: FileText, view: "supplierInvoices", permission: "supplierBilling" },
   { label: "Compras", icon: ShoppingCart, view: "purchases", permission: "purchases" },
@@ -64,6 +67,7 @@ const viewRoutes: Record<ActiveView, string> = {
   tasks: "tareas",
   orders: "pedidos",
   ordersV2: "pedidos-v2",
+  expeditions: "expediciones",
   customerInvoices: "facturacion",
   supplierInvoices: "facturas-proveedor",
   purchases: "compras",
@@ -108,7 +112,7 @@ type DashboardTaskCategory =
   | "Dominio"
   | "IA"
   | "Operaciones";
-type DashboardTaskPriority = "Alta" | "Media" | "Baja";
+type DashboardTaskPriority = "Crítica" | "Alta" | "Media" | "Baja";
 type DashboardTaskStatus = "Pendiente" | "En curso" | "Bloqueada" | "Hecha";
 type DashboardTask = {
   id: string;
@@ -212,7 +216,7 @@ const taskCategories: DashboardTaskCategory[] = [
   "IA",
   "Operaciones",
 ];
-const taskPriorities: DashboardTaskPriority[] = ["Alta", "Media", "Baja"];
+const taskPriorities: DashboardTaskPriority[] = ["Crítica", "Alta", "Media", "Baja"];
 const taskStatuses: DashboardTaskStatus[] = [
   "Pendiente",
   "En curso",
@@ -1295,6 +1299,8 @@ function App() {
                   ? "Pedidos"
                 : activeView === "ordersV2"
                   ? "Pedidos V2"
+                : activeView === "expeditions"
+                  ? "Expediciones"
                 : activeView === "amazonMessages"
                     ? "Amazon Messages"
                   : activeView === "settings"
@@ -1507,6 +1513,8 @@ function App() {
             currentUser={authUser}
             orders={orders.length > 0 ? orders : demoOrders}
           />
+        ) : activeView === "expeditions" ? (
+          <ExpeditionsView />
         ) : isOrdersView ? (
           <>
             {isV2View && (

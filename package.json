@@ -20,7 +20,8 @@
     "test:agent-api": "node --experimental-strip-types scripts/test-agent-api.ts",
     "validate:amazon-manual-send-mock-flow": "node --experimental-strip-types scripts/validate-amazon-manual-send-mock-flow.ts",
     "validate:amazon-final-send-real": "node --experimental-strip-types scripts/validate-amazon-final-send-real.ts",
-    "validate:amazon-gmail-draft-real": "node --experimental-strip-types scripts/validate-amazon-gmail-draft-real.ts"
+    "validate:amazon-gmail-draft-real": "node --experimental-strip-types scripts/validate-amazon-gmail-draft-real.ts",
+    "test:tasks-api": "node --experimental-strip-types scripts/test-tasks-api.ts"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.5.2",

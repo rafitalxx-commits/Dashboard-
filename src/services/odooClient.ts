@@ -48,7 +48,7 @@ type DashboardTaskCategory =
   | "Dominio"
   | "IA"
   | "Operaciones";
-type DashboardTaskPriority = "Alta" | "Media" | "Baja";
+type DashboardTaskPriority = "Crítica" | "Alta" | "Media" | "Baja";
 type DashboardTaskStatus = "Pendiente" | "En curso" | "Bloqueada" | "Hecha";
 type DashboardTask = {
   id: string;

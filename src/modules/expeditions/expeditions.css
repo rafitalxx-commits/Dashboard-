@@ -1,0 +1,325 @@
+.expeditions-view {
+  display: grid;
+  gap: 18px;
+}
+
+.expeditions-hero,
+.expeditions-toolbar,
+.scan-panel,
+.expeditions-empty,
+.expeditions-card,
+.settings-demo {
+  border: 1px solid var(--border, #d9e2ec);
+  border-radius: 8px;
+  background: var(--panel, #fff);
+  box-shadow: 0 8px 20px rgb(15 23 42 / 6%);
+}
+
+.expeditions-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 22px;
+}
+
+.expeditions-kicker,
+.settings-demo-head span,
+.expeditions-card .card-heading span {
+  display: block;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.expeditions-hero h2,
+.expeditions-card h3,
+.settings-demo h3 {
+  margin: 4px 0;
+  color: #111827;
+}
+
+.expeditions-hero p,
+.expeditions-card p,
+.settings-demo p {
+  margin: 0;
+  color: #475569;
+}
+
+.station-card,
+.rule-applied,
+.shipment-success,
+.settings-demo-note {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 12px;
+}
+
+.station-card span,
+.rule-applied span,
+.shipment-success span {
+  display: block;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.station-ok,
+.demo-badge,
+.status-chip {
+  border-radius: 999px;
+  background: #dcfce7;
+  color: #166534;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 9px;
+}
+
+.expeditions-subnav,
+.mode-toggle,
+.settings-demo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.expeditions-subnav button,
+.mode-toggle button,
+.text-button,
+.primary-action,
+.secondary-action,
+.remove-parcel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #fff;
+  color: #1f2937;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.expeditions-subnav button,
+.mode-toggle button,
+.text-button,
+.primary-action,
+.secondary-action {
+  padding: 0 12px;
+}
+
+.expeditions-subnav button.active,
+.mode-toggle button.active,
+.primary-action {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: #fff;
+}
+
+.secondary-action.full,
+.primary-action.full {
+  width: 100%;
+}
+
+.expeditions-toolbar,
+.scan-panel {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+}
+
+.expeditions-toolbar span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #475569;
+}
+
+.scan-icon {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.scan-copy {
+  display: grid;
+  min-width: 170px;
+}
+
+.scan-copy span {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.scan-panel input,
+.parcel-row input,
+.destination-fields input,
+.station-settings select {
+  min-height: 38px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  padding: 0 10px;
+}
+
+.scan-panel input {
+  flex: 1;
+  min-width: 180px;
+}
+
+.expeditions-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: #92400e;
+}
+
+.expeditions-notice.success {
+  color: #166534;
+}
+
+.expeditions-empty {
+  display: grid;
+  place-items: center;
+  padding: 42px 18px;
+  text-align: center;
+}
+
+.expeditions-grid,
+.integration-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.expeditions-card {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  padding: 16px;
+}
+
+.card-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.expeditions-card dl {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.expeditions-card dt {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.expeditions-card dd {
+  margin: 0;
+}
+
+.destination-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.destination-fields label {
+  display: grid;
+  gap: 5px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.destination-fields input {
+  width: 100%;
+  color: #111827;
+  font: inherit;
+}
+
+.destination-fields input.missing {
+  border-color: #dc2626;
+  background: #fef2f2;
+}
+
+.quote-list,
+.parcels-card {
+  display: grid;
+  gap: 10px;
+}
+
+.quote {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.quote.selected {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.quote span {
+  display: block;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.parcel-row {
+  display: grid;
+  grid-template-columns: minmax(72px, .8fr) repeat(4, minmax(58px, 1fr)) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.parcel-row label,
+.station-settings label {
+  display: grid;
+  gap: 4px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.remove-parcel {
+  width: 38px;
+  padding: 0;
+}
+
+@media (max-width: 760px) {
+  .expeditions-hero,
+  .scan-panel,
+  .expeditions-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .scan-copy {
+    min-width: 0;
+  }
+
+  .parcel-row {
+    grid-template-columns: 1fr 1fr;
+  }
+}

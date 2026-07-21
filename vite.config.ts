@@ -1,10 +1,18 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { registerAgentApiRoutes } from "./backend/agentApi/routes";
 import { registerAmazonMessagesRoutes } from "./backend/amazonMessages/routes";
+import { registerGeneiRoutes } from "./backend/genei/routes";
 import {
   getExternalOrderRef,
   getFulfillmentBy,
@@ -118,6 +126,7 @@ type PartnerRecord = {
   country_id?: false | [number, string];
   phone?: string | false;
   mobile?: string | false;
+  email?: string | false;
 };
 
 type ReadGroupRow = {
@@ -177,7 +186,7 @@ type DashboardTaskCategory =
   | "Dominio"
   | "IA"
   | "Operaciones";
-type DashboardTaskPriority = "Alta" | "Media" | "Baja";
+type DashboardTaskPriority = "Crítica" | "Alta" | "Media" | "Baja";
 type DashboardTaskStatus = "Pendiente" | "En curso" | "Bloqueada" | "Hecha";
 type DashboardTask = {
   id: string;
@@ -188,6 +197,9 @@ type DashboardTask = {
   status: DashboardTaskStatus;
   dueDate: string;
   reminderAt: string;
+  assignee?: string;
+  tags?: string[];
+  attachments?: string[];
   createdAt: string;
   updatedAt: string;
   createdBy: string;
@@ -378,6 +390,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
       const auth = createAuthRepository(env);
       const tasks = createTaskRepository(env);
       const calendar = createCalendarRepository(env);
+      registerGeneiRoutes(server, auth, env);
       registerAmazonMessagesRoutes(server, auth, {
         dataDir: env.DASHBOARD_DATA_DIR,
       });
@@ -386,6 +399,8 @@ function odooReadOnlyApi(env: Record<string, string>) {
         tasks,
         amazonDataDir: env.DASHBOARD_DATA_DIR,
       });
+
+      registerHermesUpdatedRoutes(server, env, tasks);
 
       server.middlewares.use("/api/auth/me", async (request, response) => {
         const user = auth.getSessionUser(request.headers.cookie);
@@ -555,9 +570,21 @@ function odooReadOnlyApi(env: Record<string, string>) {
         }
       });
 
+      const hermesGoogleOAuth = createHermesGoogleOAuthService(env);
+
       const finishGoogleCalendarCallback = async (request: any, response: any) => {
         try {
           const url = new URL(request.url ?? "/", "http://local");
+          if (isHermesGoogleState(url.searchParams.get("state"))) {
+            const result = await hermesGoogleOAuth.handleCallback(url, request);
+            response.statusCode = 302;
+            response.setHeader(
+              "Location",
+              `/hermes-updated?google_oauth=${encodeURIComponent(result.status)}&account=${encodeURIComponent(result.accountKey)}`,
+            );
+            response.end();
+            return;
+          }
           const accountId = normalizeCalendarAccount(url.searchParams.get("state"));
           const code = url.searchParams.get("code");
           if (accountId === "local" || !code) throw new Error("Callback OAuth no valido");
@@ -996,6 +1023,16 @@ function odooReadOnlyApi(env: Record<string, string>) {
 }
 
 function createAuthRepository(env: Record<string, string>) {
+  const developmentBypassUser = env.DASHBOARD_DEV_BYPASS_AUTH === "true"
+    ? {
+        id: "development-preview",
+        username: "desarrollo",
+        name: "Vista de desarrollo",
+        role: "admin" as DashboardUserRole,
+        active: true,
+        permissions: permissionsForRole("admin"),
+      }
+    : null;
   const storePath =
     env.DASHBOARD_AUTH_STORE ||
     join(
@@ -1038,6 +1075,7 @@ function createAuthRepository(env: Record<string, string>) {
 
   return {
     getSessionUser(cookieHeader?: string) {
+      if (developmentBypassUser) return developmentBypassUser;
       const sessionId = getCookie(cookieHeader, "dashboard_session");
       if (!sessionId) return null;
       const store = readStore();
@@ -1461,6 +1499,934 @@ async function getPrimaryCalendarInfo(accessToken: string) {
   }
 }
 
+function registerHermesUpdatedRoutes(
+  server: { middlewares: { use: Function } },
+  env: Record<string, string>,
+  tasks: ReturnType<typeof createTaskRepository>,
+) {
+  const hermesEnv = loadHermesGmailEnv(env);
+  const draftStorePath =
+    env.HERMES_DRAFT_STORE ||
+    join(
+      process.env.HOME || "/home/admin",
+      ".openclaw",
+      "workspace",
+      ".openclaw",
+      "hermes-mail-drafts.json",
+    );
+  const googleOAuth = createHermesGoogleOAuthService(env);
+
+  const readDrafts = () => {
+    if (!existsSync(draftStorePath)) return [];
+    try {
+      return JSON.parse(readFileSync(draftStorePath, "utf8")) as unknown[];
+    } catch {
+      return [];
+    }
+  };
+
+  const saveDraft = (draft: Record<string, unknown>) => {
+    const drafts = readDrafts();
+    mkdirSync(dirname(draftStorePath), { recursive: true });
+    writeFileSync(
+      draftStorePath,
+      `${JSON.stringify([draft, ...drafts].slice(0, 200), null, 2)}\n`,
+      { mode: 0o600 },
+    );
+  };
+
+  server.middlewares.use("/hermes-updated/api", async (request: any, response: any) => {
+    try {
+      const url = new URL(request.url ?? "/", "http://local");
+      const parts = url.pathname.split("/").filter(Boolean);
+      const [resource, id] = parts;
+
+      if (resource === "google") {
+        const action = id;
+        const accountKey = parts[2] as HermesGoogleAccountKey | undefined;
+        if (request.method === "GET" && action === "accounts" && !accountKey) {
+          sendJson(response, 200, googleOAuth.listAccountStatuses());
+          return;
+        }
+        if (request.method === "GET" && action === "connect" && accountKey) {
+          const authUrl = googleOAuth.buildConsentUrl(accountKey, request);
+          response.statusCode = 302;
+          response.setHeader("Location", authUrl);
+          response.end("");
+          return;
+        }
+        if (request.method === "GET" && action === "callback") {
+          const result = await googleOAuth.handleCallback(url, request);
+          response.statusCode = 302;
+          response.setHeader(
+            "Location",
+            `/hermes-updated?google_oauth=${encodeURIComponent(result.status)}&account=${encodeURIComponent(result.accountKey)}`,
+          );
+          response.end("");
+          return;
+        }
+        if (request.method === "DELETE" && action === "accounts" && accountKey) {
+          googleOAuth.disconnect(accountKey);
+          sendJson(response, 200, { ok: true, accountKey });
+          return;
+        }
+        sendJson(response, 404, { message: "Hermes Google OAuth route not found" });
+        return;
+      }
+
+      if (request.method === "GET" && resource === "inbox") {
+        const accountKey = url.searchParams.get("account") as HermesGoogleAccountKey | null;
+        sendJson(
+          response,
+          200,
+          await listHermesGmailInbox(
+            hermesEnv,
+            accountKey && isHermesGoogleAccountKey(accountKey)
+              ? googleOAuth.configForAccount(accountKey)
+              : undefined,
+          ),
+        );
+        return;
+      }
+
+      if (resource === "tasks") {
+        if (request.method === "GET") {
+          sendJson(response, 200, { tasks: tasks.listTasks() });
+          return;
+        }
+        if (request.method === "POST") {
+          const payload = await readJsonBody<Partial<DashboardTask>>(request);
+          sendJson(response, 201, tasks.createTask(payload, "hermes-updated"));
+          return;
+        }
+        if (request.method === "PATCH" && id) {
+          const payload = await readJsonBody<Partial<DashboardTask>>(request);
+          sendJson(response, 200, tasks.updateTask(id, payload));
+          return;
+        }
+        if (request.method === "DELETE" && id) {
+          tasks.deleteTask(id);
+          sendJson(response, 200, { ok: true });
+          return;
+        }
+      }
+
+      if (
+        request.method === "POST" &&
+        resource === "mail" &&
+        (id === "draft" || id === "send")
+      ) {
+        const payload = await readJsonBody<Record<string, unknown>>(request);
+        const draft = await createHermesGmailDraft(hermesEnv, {
+          to: cleanText(payload.to),
+          subject: cleanText(payload.subject),
+          body: cleanText(payload.body),
+          threadId: cleanText(payload.threadId),
+        });
+        saveDraft(draft);
+        let sentMessageId = "";
+        if (id === "send" && env.HERMES_GMAIL_SEND_ENABLED === "true") {
+          sentMessageId = await sendHermesGmailDraft(hermesEnv, draft.gmailDraftId);
+        }
+        sendJson(response, 200, {
+          ok: true,
+          draft_id: draft.gmailDraftId,
+          to: draft.to,
+          subject: draft.subject,
+          mode: id,
+          sent: Boolean(sentMessageId),
+          sentMessageId,
+          message:
+            id === "send" && env.HERMES_GMAIL_SEND_ENABLED !== "true"
+              ? "Envio real Gmail deshabilitado por flag; guardado como borrador real en Gmail."
+              : undefined,
+        });
+        return;
+      }
+
+      if (request.method === "POST" && resource === "mail" && id === "draft-reply") {
+        const payload = await readJsonBody<Record<string, unknown>>(request);
+        const from = cleanText(payload.from);
+        const subject = cleanText(payload.subject);
+        const snippet = cleanText(payload.snippet || payload.body);
+        sendJson(response, 200, {
+          ok: true,
+          body: [
+            "Hola,",
+            "",
+            `Gracias por tu correo${from ? `, ${from}` : ""}.`,
+            snippet
+              ? `He revisado el mensaje sobre "${subject || snippet.slice(0, 60)}" y lo dejamos controlado.`
+              : "He revisado el mensaje y lo dejamos controlado.",
+            "Te confirmo en cuanto tenga el siguiente paso cerrado.",
+            "",
+            "Un saludo,",
+            "Rafa",
+          ].join("\n"),
+        });
+        return;
+      }
+
+      if (request.method === "POST" && resource === "mail" && id === "summary") {
+        const payload = await readJsonBody<Record<string, unknown>>(request);
+        const from = cleanText(payload.from);
+        const subject = cleanText(payload.subject);
+        const body = cleanText(payload.body || payload.snippet);
+        const compactBody = body.replace(/\s+/g, " ").slice(0, 420);
+        sendJson(response, 200, {
+          ok: true,
+          summary: [
+            subject ? `Asunto: ${subject}.` : "",
+            from ? `Remitente: ${from}.` : "",
+            compactBody
+              ? `Resumen: ${compactBody}${body.length > compactBody.length ? "..." : ""}`
+              : "Resumen: sin contenido suficiente para resumir.",
+          ].filter(Boolean).join(" "),
+        });
+        return;
+      }
+
+      if (request.method === "POST" && resource === "telegram" && id === "send-hermes") {
+        const payload = await readJsonBody<{ text?: string }>(request);
+        const text = cleanText(payload.text);
+        const token = env.TELEGRAM_BOT_TOKEN;
+        const chatId = env.HERMES_TELEGRAM_CHAT_ID || "-1004313251535";
+        if (token && text) {
+          try {
+            await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ chat_id: chatId, text }),
+            });
+          } catch {
+            // Keep the UI responsive even if Telegram is temporarily unavailable.
+          }
+        }
+        sendJson(response, 200, {
+          reply: token
+            ? "Mensaje enviado al grupo Hermes."
+            : `Hermes API activa. Mensaje recibido: ${text.slice(0, 80)}`,
+        });
+        return;
+      }
+
+      sendJson(response, 404, { message: "Hermes API route not found" });
+    } catch (error) {
+      sendJson(response, 400, {
+        message: error instanceof Error ? error.message : "Error Hermes API",
+      });
+    }
+  });
+}
+
+type HermesGoogleAccountKey = "personal" | "work";
+
+type HermesGoogleTokenPayload = {
+  accessToken?: string;
+  refreshToken?: string;
+  expiresAt?: string;
+  scope?: string;
+  tokenType?: string;
+};
+
+type HermesGoogleStoredAccount = {
+  email: string;
+  encryptedToken: string;
+  connectedAt: string;
+  updatedAt: string;
+  scopes: string[];
+};
+
+type HermesGoogleOAuthStore = {
+  version: 1;
+  accounts: Partial<Record<HermesGoogleAccountKey, HermesGoogleStoredAccount>>;
+};
+
+const HERMES_GOOGLE_ACCOUNTS: Record<
+  HermesGoogleAccountKey,
+  { label: string; email: string }
+> = {
+  personal: { label: "Personal", email: "rafitalxx@gmail.com" },
+  work: { label: "Trabajo", email: "todoelectrico.es@gmail.com" },
+};
+
+const HERMES_GOOGLE_SCOPES = [
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/gmail.compose",
+  "https://www.googleapis.com/auth/gmail.send",
+  "https://www.googleapis.com/auth/calendar.events",
+  "https://www.googleapis.com/auth/drive.file",
+];
+
+function createHermesGoogleOAuthService(env: Record<string, string>) {
+  const oauthEnv = loadHermesGmailEnv(env);
+  const storePath =
+    env.HERMES_GOOGLE_OAUTH_STORE ||
+    join(
+      process.env.HOME || "/home/admin",
+      ".openclaw",
+      "workspace",
+      ".openclaw",
+      "hermes-google-oauth-store.json",
+    );
+
+  const readStore = (): HermesGoogleOAuthStore => {
+    if (!existsSync(storePath)) return { version: 1, accounts: {} };
+    try {
+      const parsed = JSON.parse(readFileSync(storePath, "utf8")) as HermesGoogleOAuthStore;
+      return {
+        version: 1,
+        accounts: parsed.accounts ?? {},
+      };
+    } catch {
+      return { version: 1, accounts: {} };
+    }
+  };
+
+  const writeStore = (store: HermesGoogleOAuthStore) => {
+    mkdirSync(dirname(storePath), { recursive: true });
+    writeFileSync(storePath, `${JSON.stringify(store, null, 2)}\n`, {
+      mode: 0o600,
+    });
+  };
+
+  const getClientConfig = (accountKey?: HermesGoogleAccountKey) => {
+    const accountPrefix = accountKey
+      ? `HERMES_GOOGLE_${accountKey.toUpperCase()}`
+      : undefined;
+    const clientId =
+      (accountPrefix ? oauthEnv[`${accountPrefix}_CLIENT_ID`] : undefined) ??
+      oauthEnv.GMAIL_CLIENT_ID ??
+      oauthEnv.GOOGLE_CLIENT_ID ??
+      oauthEnv.GOOGLE_CALENDAR_CLIENT_ID;
+    const clientSecret =
+      (accountPrefix ? oauthEnv[`${accountPrefix}_CLIENT_SECRET`] : undefined) ??
+      oauthEnv.GMAIL_CLIENT_SECRET ??
+      oauthEnv.GOOGLE_CLIENT_SECRET ??
+      oauthEnv.GOOGLE_CALENDAR_CLIENT_SECRET;
+    const encryptionSecret = oauthEnv.HERMES_GOOGLE_OAUTH_ENCRYPTION_KEY;
+    return { clientId, clientSecret, encryptionSecret };
+  };
+
+  const decryptAccountToken = (
+    account: HermesGoogleStoredAccount,
+  ): HermesGoogleTokenPayload => {
+    const { encryptionSecret } = getClientConfig();
+    return decryptHermesGoogleToken(account.encryptedToken, requiredText(
+      encryptionSecret,
+      "HERMES_GOOGLE_OAUTH_ENCRYPTION_KEY",
+    ));
+  };
+
+  return {
+    listAccountStatuses() {
+      const store = readStore();
+      return {
+        accounts: (Object.keys(HERMES_GOOGLE_ACCOUNTS) as HermesGoogleAccountKey[]).map(
+          (accountKey) => {
+            const { clientId, clientSecret, encryptionSecret } = getClientConfig(accountKey);
+            const meta = HERMES_GOOGLE_ACCOUNTS[accountKey];
+            const stored = store.accounts[accountKey];
+            if (!clientId || !clientSecret || !encryptionSecret) {
+              return {
+                accountKey,
+                label: meta.label,
+                email: meta.email,
+                status: "config_missing",
+                connected: false,
+                missing: {
+                  clientId: !clientId,
+                  clientSecret: !clientSecret,
+                  encryptionKey: !encryptionSecret,
+                },
+              };
+            }
+            if (!stored) {
+              return {
+                accountKey,
+                label: meta.label,
+                email: meta.email,
+                status: "disconnected",
+                connected: false,
+              };
+            }
+            try {
+              const token = decryptAccountToken(stored);
+              const expiresAtMs = token.expiresAt ? Date.parse(token.expiresAt) : 0;
+              const hasRefresh = Boolean(token.refreshToken);
+              return {
+                accountKey,
+                label: meta.label,
+                email: stored.email || meta.email,
+                status: hasRefresh || expiresAtMs > Date.now() ? "connected" : "token_expired",
+                connected: hasRefresh || expiresAtMs > Date.now(),
+                connectedAt: stored.connectedAt,
+                updatedAt: stored.updatedAt,
+                expiresAt: token.expiresAt,
+                scopes: stored.scopes,
+              };
+            } catch {
+              return {
+                accountKey,
+                label: meta.label,
+                email: stored.email || meta.email,
+                status: "auth_error",
+                connected: false,
+              };
+            }
+          },
+        ),
+      };
+    },
+
+    buildConsentUrl(accountKey: HermesGoogleAccountKey, request: any) {
+      assertHermesGoogleAccountKey(accountKey);
+      const { clientId, clientSecret, encryptionSecret } = getClientConfig(accountKey);
+      const redirectUri = hermesGoogleRedirectUri(oauthEnv, request);
+      const state = signHermesGoogleState(
+        {
+          accountKey,
+          nonce: randomToken(),
+          createdAt: new Date().toISOString(),
+        },
+        requiredText(encryptionSecret, "HERMES_GOOGLE_OAUTH_ENCRYPTION_KEY"),
+      );
+      const query = new URLSearchParams({
+        client_id: requiredText(clientId, "GMAIL_CLIENT_ID"),
+        redirect_uri: redirectUri,
+        response_type: "code",
+        scope: HERMES_GOOGLE_SCOPES.join(" "),
+        access_type: "offline",
+        prompt: "consent select_account",
+        include_granted_scopes: "true",
+        state,
+      });
+      requiredText(clientSecret, "GMAIL_CLIENT_SECRET");
+      return `https://accounts.google.com/o/oauth2/v2/auth?${query.toString()}`;
+    },
+
+    async handleCallback(url: URL, request: any) {
+      const { encryptionSecret } = getClientConfig();
+      const error = url.searchParams.get("error");
+      const stateValue = requiredText(url.searchParams.get("state") ?? "", "oauth_state");
+      const state = verifyHermesGoogleState(
+        stateValue,
+        requiredText(encryptionSecret, "HERMES_GOOGLE_OAUTH_ENCRYPTION_KEY"),
+      );
+      const accountKey = state.accountKey;
+      assertHermesGoogleAccountKey(accountKey);
+      const { clientId, clientSecret } = getClientConfig(accountKey);
+      if (error) {
+        return { accountKey, status: "error" };
+      }
+      const code = requiredText(url.searchParams.get("code") ?? "", "oauth_code");
+      const token = await exchangeHermesGoogleCode({
+        code,
+        clientId: requiredText(clientId, "GMAIL_CLIENT_ID"),
+        clientSecret: requiredText(clientSecret, "GMAIL_CLIENT_SECRET"),
+        redirectUri: hermesGoogleRedirectUri(oauthEnv, request),
+      });
+      const selectedEmail = await getHermesGoogleProfileEmail(token.access_token);
+      const expectedEmail = HERMES_GOOGLE_ACCOUNTS[accountKey].email;
+      if (selectedEmail.toLowerCase() !== expectedEmail.toLowerCase()) {
+        throw new Error(
+          `Cuenta Google incorrecta. Has elegido ${selectedEmail}, pero este boton espera ${expectedEmail}.`,
+        );
+      }
+      const store = readStore();
+      const existing = store.accounts[accountKey];
+      let existingRefreshToken = "";
+      if (existing) {
+        try {
+          existingRefreshToken = decryptAccountToken(existing).refreshToken ?? "";
+        } catch {
+          existingRefreshToken = "";
+        }
+      }
+      const now = new Date().toISOString();
+      const payload: HermesGoogleTokenPayload = {
+        accessToken: token.access_token,
+        refreshToken: token.refresh_token ?? existingRefreshToken,
+        expiresAt: token.expires_in
+          ? new Date(Date.now() + Number(token.expires_in) * 1000).toISOString()
+          : undefined,
+        scope: token.scope,
+        tokenType: token.token_type,
+      };
+      if (!payload.refreshToken) {
+        throw new Error("Google no devolvio refresh token. Reautoriza con prompt=consent.");
+      }
+      store.accounts[accountKey] = {
+        email: HERMES_GOOGLE_ACCOUNTS[accountKey].email,
+        encryptedToken: encryptHermesGoogleToken(
+          payload,
+          requiredText(encryptionSecret, "HERMES_GOOGLE_OAUTH_ENCRYPTION_KEY"),
+        ),
+        connectedAt: existing?.connectedAt ?? now,
+        updatedAt: now,
+        scopes: HERMES_GOOGLE_SCOPES,
+      };
+      writeStore(store);
+      return { accountKey, status: "connected" };
+    },
+
+    disconnect(accountKey: HermesGoogleAccountKey) {
+      assertHermesGoogleAccountKey(accountKey);
+      const store = readStore();
+      delete store.accounts[accountKey];
+      writeStore(store);
+    },
+
+    configForAccount(accountKey: HermesGoogleAccountKey): HermesGmailConfig {
+      assertHermesGoogleAccountKey(accountKey);
+      const { clientId, clientSecret } = getClientConfig(accountKey);
+      const stored = readStore().accounts[accountKey];
+      if (!stored) throw new Error(`Cuenta Google no conectada: ${accountKey}`);
+      const token = decryptAccountToken(stored);
+      return {
+        account: stored.email || HERMES_GOOGLE_ACCOUNTS[accountKey].email,
+        clientId,
+        clientSecret,
+        refreshToken: token.refreshToken,
+      };
+    },
+  };
+}
+
+function isHermesGoogleAccountKey(value: string): value is HermesGoogleAccountKey {
+  return value === "personal" || value === "work";
+}
+
+function assertHermesGoogleAccountKey(value: string): asserts value is HermesGoogleAccountKey {
+  if (!isHermesGoogleAccountKey(value)) {
+    throw new Error("Cuenta Google no soportada");
+  }
+}
+
+function hermesGoogleRedirectUri(env: HermesGmailEnv, request?: any) {
+  if (env.HERMES_GOOGLE_OAUTH_REDIRECT_URI) {
+    return env.HERMES_GOOGLE_OAUTH_REDIRECT_URI;
+  }
+  const host = request?.headers?.host ?? "dashboard.todoelectrico.net";
+  const proto =
+    request?.headers?.["x-forwarded-proto"] ??
+    (host.includes("localhost") || host.startsWith("127.") ? "http" : "https");
+  return `${proto}://${host}/hermes-updated/api/google/callback`;
+}
+
+function hermesGoogleKey(secret: string) {
+  return createHash("sha256").update(secret).digest();
+}
+
+function encryptHermesGoogleToken(payload: HermesGoogleTokenPayload, secret: string) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", hermesGoogleKey(secret), iv);
+  const ciphertext = Buffer.concat([
+    cipher.update(JSON.stringify(payload), "utf8"),
+    cipher.final(),
+  ]);
+  const tag = cipher.getAuthTag();
+  return [iv, tag, ciphertext]
+    .map((part) => part.toString("base64url"))
+    .join(".");
+}
+
+function decryptHermesGoogleToken(value: string, secret: string): HermesGoogleTokenPayload {
+  const [ivValue, tagValue, ciphertextValue] = value.split(".");
+  if (!ivValue || !tagValue || !ciphertextValue) {
+    throw new Error("Token cifrado invalido");
+  }
+  const decipher = createDecipheriv(
+    "aes-256-gcm",
+    hermesGoogleKey(secret),
+    Buffer.from(ivValue, "base64url"),
+  );
+  decipher.setAuthTag(Buffer.from(tagValue, "base64url"));
+  const plaintext = Buffer.concat([
+    decipher.update(Buffer.from(ciphertextValue, "base64url")),
+    decipher.final(),
+  ]).toString("utf8");
+  return JSON.parse(plaintext) as HermesGoogleTokenPayload;
+}
+
+function signHermesGoogleState(
+  payload: { accountKey: HermesGoogleAccountKey; nonce: string; createdAt: string },
+  secret: string,
+) {
+  const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  const signature = createHmac("sha256", secret).update(encoded).digest("base64url");
+  return `${encoded}.${signature}`;
+}
+
+function isHermesGoogleState(value: string | null) {
+  if (!value?.includes(".")) return false;
+  const [encoded] = value.split(".");
+  try {
+    const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as {
+      accountKey?: string;
+    };
+    return payload.accountKey === "personal" || payload.accountKey === "work";
+  } catch {
+    return false;
+  }
+}
+
+function verifyHermesGoogleState(value: string, secret: string) {
+  const [encoded, signature] = value.split(".");
+  if (!encoded || !signature) throw new Error("OAuth state invalido");
+  const expected = createHmac("sha256", secret).update(encoded).digest("base64url");
+  const expectedBuffer = Buffer.from(expected);
+  const actualBuffer = Buffer.from(signature);
+  if (
+    expectedBuffer.length !== actualBuffer.length ||
+    !timingSafeEqual(expectedBuffer, actualBuffer)
+  ) {
+    throw new Error("OAuth state no verificado");
+  }
+  const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as {
+    accountKey: string;
+    nonce?: string;
+    createdAt?: string;
+  };
+  assertHermesGoogleAccountKey(payload.accountKey);
+  if (!payload.createdAt || Date.now() - Date.parse(payload.createdAt) > 15 * 60 * 1000) {
+    throw new Error("OAuth state caducado");
+  }
+  return {
+    accountKey: payload.accountKey,
+    nonce: payload.nonce ?? "",
+    createdAt: payload.createdAt,
+  };
+}
+
+async function exchangeHermesGoogleCode(input: {
+  code: string;
+  clientId: string;
+  clientSecret: string;
+  redirectUri: string;
+}) {
+  const body = new URLSearchParams({
+    client_id: input.clientId,
+    client_secret: input.clientSecret,
+    code: input.code,
+    redirect_uri: input.redirectUri,
+    grant_type: "authorization_code",
+  });
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const payload = (await response.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    scope?: string;
+    token_type?: string;
+    error?: string;
+    error_description?: string;
+  };
+  if (!response.ok || !payload.access_token) {
+    const tokenError = [payload.error, payload.error_description]
+      .filter(Boolean)
+      .join(": ");
+    throw new Error(
+      tokenError || `No se pudo completar OAuth Google (${response.status})`,
+    );
+  }
+  return payload;
+}
+
+async function getHermesGoogleProfileEmail(accessToken: string) {
+  const response = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {
+    headers: { Authorization: `Bearer ${requiredText(accessToken, "access_token")}` },
+  });
+  const payload = (await response.json()) as {
+    emailAddress?: string;
+    error?: { message?: string };
+  };
+  if (!response.ok || !payload.emailAddress) {
+    throw new Error(
+      payload.error?.message ?? "No se pudo verificar la cuenta Google autorizada",
+    );
+  }
+  return payload.emailAddress;
+}
+
+type HermesGmailEnv = Record<string, string | undefined>;
+
+type HermesGmailConfig = {
+  account: string;
+  clientId?: string;
+  clientSecret?: string;
+  refreshToken?: string;
+};
+
+type HermesGmailMessage = {
+  id?: string;
+  threadId?: string;
+  snippet?: string;
+  internalDate?: string;
+  labelIds?: string[];
+  payload?: {
+    mimeType?: string;
+    headers?: Array<{ name?: string; value?: string }>;
+    body?: { data?: string };
+    parts?: HermesGmailMessage["payload"][];
+  };
+};
+
+function loadHermesGmailEnv(env: Record<string, string>): HermesGmailEnv {
+  return {
+    ...readKeyValueEnvFile("/etc/odoo-v18-dashboard/amazon-messages-gmail.env"),
+    ...process.env,
+    ...env,
+  };
+}
+
+function readKeyValueEnvFile(path: string): Record<string, string> {
+  if (!existsSync(path)) return {};
+  const values: Record<string, string> = {};
+  let contents = "";
+  try {
+    contents = readFileSync(path, "utf8");
+  } catch (error) {
+    console.warn(
+      `[hermes-gmail] No se pudo leer ${path}; se usaran solo variables de entorno ya cargadas.`,
+      error instanceof Error ? error.message : error,
+    );
+    return {};
+  }
+  for (const line of contents.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const equalsAt = trimmed.indexOf("=");
+    if (equalsAt <= 0) continue;
+    const key = trimmed.slice(0, equalsAt).trim();
+    let value = trimmed.slice(equalsAt + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    values[key] = value;
+  }
+  return values;
+}
+
+function hermesGmailConfigFromEnv(env: HermesGmailEnv): HermesGmailConfig {
+  return {
+    account:
+      env.GMAIL_ACCOUNT ??
+      env.AMAZON_MESSAGES_GMAIL_ACCOUNT ??
+      env.AMAZON_MESSAGES_GMAIL_DRAFT_ACCOUNT ??
+      "rafitalxx@gmail.com",
+    clientId:
+      env.GMAIL_CLIENT_ID ??
+      env.GOOGLE_CLIENT_ID ??
+      env.GOOGLE_CALENDAR_CLIENT_ID,
+    clientSecret:
+      env.GMAIL_CLIENT_SECRET ??
+      env.GOOGLE_CLIENT_SECRET ??
+      env.GOOGLE_CALENDAR_CLIENT_SECRET,
+    refreshToken:
+      env.GMAIL_REFRESH_TOKEN ??
+      env.AMAZON_MESSAGES_GMAIL_REFRESH_TOKEN ??
+      env.AMAZON_MESSAGES_GMAIL_DRAFT_REFRESH_TOKEN,
+  };
+}
+
+async function listHermesGmailInbox(
+  env: HermesGmailEnv,
+  accountConfig?: HermesGmailConfig,
+) {
+  const config = accountConfig ?? hermesGmailConfigFromEnv(env);
+  const token = await getHermesGmailAccessToken(config);
+  const query = new URLSearchParams({
+    maxResults: "10",
+    q: "in:inbox newer_than:30d",
+  });
+  const list = await hermesGmailFetch<{ messages?: Array<{ id?: string; threadId?: string }> }>(
+    token,
+    `/gmail/v1/users/me/messages?${query.toString()}`,
+  );
+  const messages = await Promise.all(
+    (list.messages ?? []).filter((message) => message.id).map(async (message) => {
+      const item = await hermesGmailFetch<HermesGmailMessage>(
+        token,
+        `/gmail/v1/users/me/messages/${encodeURIComponent(message.id ?? "")}?format=full`,
+      );
+      const headers = new Map(
+        (item.payload?.headers ?? []).map((header) => [
+          (header.name ?? "").toLowerCase(),
+          header.value ?? "",
+        ]),
+      );
+      return {
+        id: item.id,
+        threadId: item.threadId,
+        from: headers.get("from") ?? "",
+        to: headers.get("to") ?? config.account,
+        subject: headers.get("subject") ?? "",
+        date: headers.get("date")
+          ? new Date(headers.get("date") ?? "").toISOString()
+          : item.internalDate
+            ? new Date(Number(item.internalDate)).toISOString()
+            : new Date().toISOString(),
+        snippet: item.snippet ?? "",
+        read: !(item.labelIds ?? []).includes("UNREAD"),
+        body: extractHermesGmailBody(item.payload) || item.snippet || "",
+      };
+    }),
+  );
+  return { account: config.account, messages };
+}
+
+async function createHermesGmailDraft(
+  env: HermesGmailEnv,
+  input: { to: string; subject: string; body: string; threadId?: string },
+) {
+  if (!input.to || !input.subject || !input.body) {
+    throw new Error("Faltan Para, Asunto o Mensaje.");
+  }
+  const config = hermesGmailConfigFromEnv(env);
+  const token = await getHermesGmailAccessToken(config);
+  const draft = await hermesGmailFetch<{
+    id?: string;
+    message?: { id?: string; threadId?: string };
+  }>(token, "/gmail/v1/users/me/drafts", {
+    method: "POST",
+    body: JSON.stringify({
+      message: {
+        raw: encodeBase64Url(
+          [
+            `From: ${config.account}`,
+            `To: ${input.to}`,
+            `Subject: ${encodeMimeHeader(input.subject)}`,
+            "MIME-Version: 1.0",
+            'Content-Type: text/plain; charset="UTF-8"',
+            "Content-Transfer-Encoding: 8bit",
+            "",
+            input.body,
+          ].join("\r\n"),
+        ),
+        threadId: input.threadId || undefined,
+      },
+    }),
+  });
+  return {
+    id: `gmail-draft-${Date.now()}`,
+    gmailDraftId: requiredText(draft.id, "gmailDraftId"),
+    gmailMessageId: draft.message?.id,
+    threadId: draft.message?.threadId ?? input.threadId,
+    mode: "draft",
+    to: input.to,
+    subject: input.subject,
+    body: input.body,
+    account: config.account,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+async function sendHermesGmailDraft(env: HermesGmailEnv, draftId?: string) {
+  const config = hermesGmailConfigFromEnv(env);
+  const token = await getHermesGmailAccessToken(config);
+  const sent = await hermesGmailFetch<{ id?: string }>(
+    token,
+    "/gmail/v1/users/me/drafts/send",
+    {
+      method: "POST",
+      body: JSON.stringify({ id: requiredText(draftId, "gmailDraftId") }),
+    },
+  );
+  return requiredText(sent.id, "sentMessageId");
+}
+
+async function getHermesGmailAccessToken(config: HermesGmailConfig) {
+  const body = new URLSearchParams({
+    client_id: requiredText(config.clientId, "GMAIL_CLIENT_ID"),
+    client_secret: requiredText(config.clientSecret, "GMAIL_CLIENT_SECRET"),
+    refresh_token: requiredText(config.refreshToken, "GMAIL_REFRESH_TOKEN"),
+    grant_type: "refresh_token",
+  });
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const payload = (await response.json()) as {
+    access_token?: string;
+    error?: string;
+    error_description?: string;
+  };
+  if (!response.ok || !payload.access_token) {
+    throw new Error(
+      payload.error_description ??
+        payload.error ??
+        "No se pudo obtener access token Gmail",
+    );
+  }
+  return payload.access_token;
+}
+
+async function hermesGmailFetch<T>(
+  accessToken: string,
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
+  const response = await fetch(`https://gmail.googleapis.com${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...init?.headers,
+    },
+  });
+  const payload = (await response.json()) as T & {
+    error?: { message?: string };
+  };
+  if (!response.ok) {
+    throw new Error(payload.error?.message ?? "Error leyendo Gmail API");
+  }
+  return payload;
+}
+
+function extractHermesGmailBody(payload?: HermesGmailMessage["payload"]): string {
+  if (!payload) return "";
+  if (payload.mimeType === "text/plain" && payload.body?.data) {
+    return decodeBase64Url(payload.body.data);
+  }
+  for (const part of payload.parts ?? []) {
+    const text = extractHermesGmailBody(part);
+    if (text) return text;
+  }
+  if (payload.body?.data) return decodeBase64Url(payload.body.data);
+  return "";
+}
+
+function decodeBase64Url(value: string) {
+  return Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+}
+
+function encodeBase64Url(value: string) {
+  return Buffer.from(value, "utf8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function encodeMimeHeader(value: string) {
+  if (/^[\x00-\x7F]*$/.test(value)) return value;
+  return `=?UTF-8?B?${Buffer.from(value, "utf8").toString("base64")}?=`;
+}
+
+function requiredText(value: string | undefined, field: string) {
+  if (!value) throw new Error(`Campo requerido: ${field}`);
+  return value;
+}
+
 function ensureCalendarStore(storePath: string) {
   if (existsSync(storePath)) return;
   const now = new Date().toISOString();
@@ -1526,6 +2492,11 @@ function createTaskRepository(env: Record<string, string>) {
         status: normalizeTaskStatus(input.status),
         dueDate: normalizeDate(input.dueDate),
         reminderAt: normalizeDateTime(input.reminderAt),
+        assignee: cleanText(input.assignee),
+        tags: Array.isArray(input.tags) ? input.tags.map(cleanText).filter(Boolean) : [],
+        attachments: Array.isArray(input.attachments)
+          ? input.attachments.map(cleanText).filter(Boolean)
+          : [],
         createdAt: now,
         updatedAt: now,
         createdBy: userId,
@@ -1562,6 +2533,20 @@ function createTaskRepository(env: Record<string, string>) {
           patch.reminderAt === undefined
             ? task.reminderAt
             : normalizeDateTime(patch.reminderAt),
+        assignee:
+          patch.assignee === undefined ? task.assignee : cleanText(patch.assignee),
+        tags:
+          patch.tags === undefined
+            ? task.tags
+            : Array.isArray(patch.tags)
+              ? patch.tags.map(cleanText).filter(Boolean)
+              : [],
+        attachments:
+          patch.attachments === undefined
+            ? task.attachments
+            : Array.isArray(patch.attachments)
+              ? patch.attachments.map(cleanText).filter(Boolean)
+              : [],
         updatedAt: new Date().toISOString(),
       };
       if (!updated.title) throw new Error("El titulo de la tarea es obligatorio");
@@ -1696,7 +2681,9 @@ function normalizeTaskCategory(value?: string): DashboardTaskCategory {
 }
 
 function normalizeTaskPriority(value?: string): DashboardTaskPriority {
-  return value === "Alta" || value === "Baja" ? value : "Media";
+  return value === "Crítica" || value === "Alta" || value === "Baja"
+    ? value
+    : "Media";
 }
 
 function normalizeTaskStatus(value?: string): DashboardTaskStatus {
@@ -1752,9 +2739,10 @@ function sortTasks(left: DashboardTask, right: DashboardTask) {
     Hecha: 3,
   };
   const priorityRank: Record<DashboardTaskPriority, number> = {
-    Alta: 0,
-    Media: 1,
-    Baja: 2,
+    Crítica: 0,
+    Alta: 1,
+    Media: 2,
+    Baja: 3,
   };
   return (
     statusRank[left.status] - statusRank[right.status] ||
@@ -2248,6 +3236,7 @@ async function getOdooOrdersFull(
           "country_id",
           "phone",
           "mobile",
+          "email",
         ],
       })) as PartnerRecord[])
     : [];
@@ -2320,6 +3309,9 @@ async function getOdooOrdersFull(
         city: formatLocation(partner),
         shippingAddress: formatShippingAddress(partner),
         shippingPhone: formatPhone(partner),
+        shippingEmail: cleanText(partner?.email),
+        shippingPostalCode: cleanText(partner?.zip),
+        shippingCountryCode: getCountryCode(partner),
         items: (linesByOrderId.get(order.id) ?? []).map((line) => {
           const productId = getRelationId(line.product_id);
           const bom = productId ? bomByProductId.get(productId) : undefined;
@@ -2782,6 +3774,7 @@ async function getOdooOrdersBatchDemandContext(
           "country_id",
           "phone",
           "mobile",
+          "email",
         ],
       })) as PartnerRecord[])
     : [];
@@ -2851,6 +3844,9 @@ async function getOdooOrdersBatchDemandContext(
         city: formatLocation(partner),
         shippingAddress: formatShippingAddress(partner),
         shippingPhone: formatPhone(partner),
+        shippingEmail: cleanText(partner?.email),
+        shippingPostalCode: cleanText(partner?.zip),
+        shippingCountryCode: getCountryCode(partner),
         items: (linesByOrderId.get(order.id) ?? []).map((line) => {
           const productId = getRelationId(line.product_id);
           const bom = productId ? bomByProductId.get(productId) : undefined;
@@ -3175,7 +4171,7 @@ async function readLightweightOrdersFromOdoo(
   stats.odooCalls += partnerIds.length ? 1 : 0;
   const partners = partnerIds.length
     ? ((await executeKw(config, uid, "res.partner", "read", [partnerIds], {
-        fields: ["id", "city", "country_id", "phone", "mobile"],
+        fields: ["id", "street", "street2", "zip", "city", "country_id", "phone", "mobile", "email"],
       })) as PartnerRecord[])
     : [];
   const partnersById = new Map(partners.map((partner) => [partner.id, partner]));
@@ -3256,8 +4252,11 @@ function buildCachedOrder(
     invoiceStatus: translateInvoiceStatus(order.invoice_status),
     deliveryStatus,
     city: formatLocation(partner),
-    shippingAddress: "",
+    shippingAddress: formatShippingAddress(partner),
     shippingPhone: formatPhone(partner),
+    shippingEmail: cleanText(partner?.email),
+    shippingPostalCode: cleanText(partner?.zip),
+    shippingCountryCode: getCountryCode(partner),
     items: [],
     cacheMeta: {
       lightweight: true,
@@ -5395,6 +6394,22 @@ function formatPhone(partner?: PartnerRecord) {
   const mobile = cleanText(partner.mobile);
   const phone = cleanText(partner.phone);
   return mobile || phone;
+}
+
+function getCountryCode(partner?: PartnerRecord) {
+  const country = getRelationName(partner?.country_id).toUpperCase();
+  const codes: Record<string, string> = {
+    "ESPAÑA": "ES",
+    SPAIN: "ES",
+    FRANCIA: "FR",
+    FRANCE: "FR",
+    PORTUGAL: "PT",
+    ITALIA: "IT",
+    ITALY: "IT",
+    ALEMANIA: "DE",
+    GERMANY: "DE",
+  };
+  return codes[country] ?? "";
 }
 
 function cleanText(value?: string | false) {
