@@ -5,6 +5,7 @@ import { HermesPreview } from './hermesPreview';
 import './styles/app.css';
 
 const isHermesPreview =
+  window.location.pathname.startsWith('/hermes-dev') ||
   window.location.pathname.startsWith('/hermes-real') ||
   window.location.pathname.startsWith('/hermes-updated');
 

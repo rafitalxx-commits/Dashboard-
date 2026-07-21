@@ -370,6 +370,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
 
   return {
+    base: env.DASHBOARD_BASE_PATH || "/",
     plugins: [react(), odooReadOnlyApi(env)],
     server: {
       port: 5173,
