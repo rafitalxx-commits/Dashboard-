@@ -151,6 +151,7 @@ type DashboardPermission =
   | "dashboard"
   | "tasks"
   | "orders"
+  | "expeditions"
   | "billing"
   | "supplierBilling"
   | "purchases"
@@ -1051,10 +1052,15 @@ function createAuthRepository(env: Record<string, string>) {
     const activeSessions = store.sessions.filter(
       (session) => session.expiresAt > now,
     );
-    if (activeSessions.length !== store.sessions.length) {
-      writeStore({ ...store, sessions: activeSessions });
+    const users = store.users.map(migrateStoredUserPermissions);
+    const usersChanged = users.some(
+      (user, index) =>
+        user.permissions.join("|") !== store.users[index].permissions.join("|"),
+    );
+    if (activeSessions.length !== store.sessions.length || usersChanged) {
+      writeStore({ ...store, users, sessions: activeSessions });
     }
-    return { ...store, sessions: activeSessions };
+    return { ...store, users, sessions: activeSessions };
   };
 
   const writeStore = (store: AuthStore) => {
@@ -2786,6 +2792,7 @@ function permissionsForRole(role: DashboardUserRole): DashboardPermission[] {
       "dashboard",
       "tasks",
       "orders",
+      "expeditions",
       "billing",
       "supplierBilling",
       "purchases",
@@ -2795,8 +2802,8 @@ function permissionsForRole(role: DashboardUserRole): DashboardPermission[] {
       "amazonMessagesSendFinal",
     ];
   }
-  if (role === "printer") return ["dashboard", "tasks", "orders", "odooWrite"];
-  return ["dashboard", "tasks", "orders"];
+  if (role === "printer") return ["dashboard", "orders", "expeditions", "odooWrite"];
+  return ["dashboard", "orders"];
 }
 
 function normalizePermissions(values: DashboardPermission[]) {
@@ -2804,6 +2811,7 @@ function normalizePermissions(values: DashboardPermission[]) {
     "dashboard",
     "tasks",
     "orders",
+    "expeditions",
     "billing",
     "supplierBilling",
     "purchases",
@@ -2813,6 +2821,19 @@ function normalizePermissions(values: DashboardPermission[]) {
     "amazonMessagesSendFinal",
   ]);
   return Array.from(new Set(values.filter((value) => allowed.has(value))));
+}
+
+function migrateStoredUserPermissions(user: StoredDashboardUser): StoredDashboardUser {
+  const permissions = normalizePermissions(user.permissions);
+  if (
+    (user.role === "admin" || user.role === "printer") &&
+    !permissions.includes("expeditions")
+  ) {
+    permissions.push("expeditions");
+  }
+  return permissions.join("|") === user.permissions.join("|")
+    ? user
+    : { ...user, permissions };
 }
 
 function normalizeRole(role?: DashboardUserRole) {

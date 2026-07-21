@@ -48,16 +48,16 @@ import type {
 
 const navItems = [
   { label: "Inicio", icon: Home, view: "dashboard", permission: "dashboard" },
-  { label: "Inicio V2", icon: BarChart3, view: "dashboardV2", permission: "dashboard" },
-  { label: "Tareas", icon: ListTodo, view: "tasks", permission: "tasks" },
+  { label: "Inicio V2", icon: BarChart3, view: "dashboardV2", permission: "dashboard", productionNav: false },
+  { label: "Tareas", icon: ListTodo, view: "tasks", permission: "tasks", productionNav: false },
   { label: "Pedidos", icon: ClipboardList, view: "orders", permission: "orders" },
-  { label: "Pedidos V2", icon: Truck, view: "ordersV2", permission: "orders" },
-  { label: "Expediciones", icon: Send, view: "expeditions", permission: "orders" },
+  { label: "Pedidos V2", icon: Truck, view: "ordersV2", permission: "orders", productionNav: false },
+  { label: "Expediciones", icon: Send, view: "expeditions", permission: "expeditions" },
   { label: "Facturas cliente", icon: ReceiptText, view: "customerInvoices", permission: "billing" },
   { label: "Facturas proveedor", icon: FileText, view: "supplierInvoices", permission: "supplierBilling" },
   { label: "Compras", icon: ShoppingCart, view: "purchases", permission: "purchases" },
   { label: "Productos / stock", icon: Boxes, view: "products", permission: "products" },
-  { label: "Amazon Messages", icon: MessagesSquare, view: "amazonMessages", permission: "orders" },
+  { label: "Amazon Messages", icon: MessagesSquare, view: "amazonMessages", permission: "orders", productionNav: false },
   { label: "Configuracion", icon: Settings, view: "settings", permission: "settings" },
 ] as const;
 type ActiveView = (typeof navItems)[number]["view"];
@@ -84,6 +84,7 @@ type DashboardPermission =
   | "dashboard"
   | "tasks"
   | "orders"
+  | "expeditions"
   | "billing"
   | "supplierBilling"
   | "purchases"
@@ -227,6 +228,7 @@ const permissionLabels: Record<DashboardPermission, string> = {
   dashboard: "Inicio",
   tasks: "Tareas",
   orders: "Pedidos",
+  expeditions: "Expediciones",
   billing: "Facturas cliente",
   supplierBilling: "Facturas proveedor",
   purchases: "Compras",
@@ -239,6 +241,7 @@ const editablePermissions: DashboardPermission[] = [
   "dashboard",
   "tasks",
   "orders",
+  "expeditions",
   "billing",
   "supplierBilling",
   "purchases",
@@ -665,6 +668,7 @@ function App() {
     if (!authUser) return;
     const canSeeActiveView = navItems.some(
       (item) =>
+        item.productionNav !== false &&
         item.view === activeView && authUser.permissions.includes(item.permission),
     );
     if (!canSeeActiveView) {
@@ -1009,7 +1013,7 @@ function App() {
   const can = (permission: DashboardPermission) =>
     Boolean(authUser?.permissions.includes(permission));
   const visibleNavItems = authUser
-    ? navItems.filter((item) => can(item.permission))
+    ? navItems.filter((item) => item.productionNav !== false && can(item.permission))
     : [];
   const showOrderRange =
     isDashboardView ||
@@ -5107,8 +5111,8 @@ function matchesChannelOption(order: Order, option: string) {
 
 function permissionsForRole(role: DashboardUserRole): DashboardPermission[] {
   if (role === "admin") return [...editablePermissions];
-  if (role === "printer") return ["dashboard", "tasks", "orders", "odooWrite"];
-  return ["dashboard", "tasks", "orders"];
+  if (role === "printer") return ["dashboard", "orders", "expeditions", "odooWrite"];
+  return ["dashboard", "orders"];
 }
 
 function isTaskOverdue(task: DashboardTask) {

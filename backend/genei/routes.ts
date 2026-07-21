@@ -7,7 +7,8 @@ export function registerGeneiRoutes(server: Server, auth: Auth, env: Record<stri
   const genei = createGeneiClient(env);
   server.middlewares.use("/api/genei", async (request, response) => {
     const user = auth.getSessionUser(request.headers.cookie);
-    if (!user || !user.permissions.includes("dashboard")) return sendJson(response, 401, { message: "Login requerido" });
+    if (!user) return sendJson(response, 401, { message: "Login requerido" });
+    if (!user.permissions.includes("expeditions")) return sendJson(response, 403, { message: "Sin permiso de expediciones" });
     const url = new URL(request.url ?? "/", "http://local");
     const path = url.pathname.replace(/^\/+|\/+$/g, "");
     try {
@@ -19,7 +20,7 @@ export function registerGeneiRoutes(server: Server, auth: Auth, env: Record<stri
       if (request.method === "POST" && path === "quotes") {
         return sendJson(response, 200, { quotes: await genei.quote(await readJsonBody(request)) });
       }
-      if (!user.permissions.includes("settings")) return sendJson(response, 403, { message: "Solo administradores pueden crear, pagar o descargar etiquetas" });
+      if (!user.permissions.includes("expeditions")) return sendJson(response, 403, { message: "Sin permiso de expediciones" });
       if (request.method === "POST" && path === "shipments") {
         return sendJson(response, 201, { shipment: await genei.createShipment(await readJsonBody(request)) });
       }

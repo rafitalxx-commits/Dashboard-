@@ -20,6 +20,7 @@ type DashboardPermission =
   | "dashboard"
   | "tasks"
   | "orders"
+  | "expeditions"
   | "billing"
   | "supplierBilling"
   | "purchases"
