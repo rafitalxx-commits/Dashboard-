@@ -2421,6 +2421,8 @@ const css = `
 .quick-list { display: flex; flex-direction: column; gap: 10px; }
 .quick-row { display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); padding: 12px 14px; border-radius: 12px; min-height: 48px; }
 .quick-row input[type="checkbox"] { width: 20px; height: 20px; accent-color: #1d4ed8; }
+.quick-check { width: 18px; height: 18px; accent-color: #1d4ed8; opacity: 0.85; cursor: pointer; }
+.quick-check:checked { opacity: 1; }
 .quick-row-text { flex: 1; display: flex; justify-content: space-between; align-items: center; color: #e2e8f0; background: transparent; border: none; padding: 0; cursor: pointer; text-align: left; min-width: 0; }
 
 /* tareas */
