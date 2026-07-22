@@ -154,19 +154,37 @@ function getGeneiShipmentCode(shipment?: Record<string, unknown> | null) {
   );
 }
 
-function showExistingLabelWarning(shipmentCode: string) {
-  window.alert(`Etiqueta Genei ya generada: ${shipmentCode}\n\nNo se reimprime automaticamente por seguridad. Si necesitas otra copia, pulsa "Imprimir etiqueta" manualmente.`);
+function getGeneiShipmentCreatedAt(shipment?: Record<string, unknown> | null) {
+  if (!shipment) return "";
+  const raw = String(
+    shipment.createdAt ||
+      shipment.created_at ||
+      shipment.dateCreated ||
+      shipment.fecha_creacion ||
+      shipment.fechaCreacion ||
+      shipment.fecha_alta ||
+      shipment.created ||
+      shipment.date ||
+      "",
+  );
+  return formatExistingLabelDate(raw);
 }
 
-function getExistingProcessingReference(order: Order) {
-  if (!order.deliveryPrinted) return "";
-  const printedAt = order.deliveryLastPrintDate ? ` · ${order.deliveryLastPrintDate}` : "";
-  const count = order.deliveryPrintCount && order.deliveryPrintCount > 1 ? ` x${order.deliveryPrintCount}` : "";
-  return `Odoo Delivery print${count}${printedAt}`;
+function formatExistingLabelDate(value: string) {
+  if (!value.trim()) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("es-ES", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(date);
 }
 
-function showExistingProcessingWarning(reference: string) {
-  window.alert(`Pedido ya procesado: ${reference}\n\nNo se genera ni imprime automaticamente por seguridad. Si necesitas otra copia, revisa el pedido y pulsa "Imprimir etiqueta" manualmente.`);
+function showExistingLabelWarning(shipmentCode: string, createdAt?: string) {
+  const createdText = createdAt
+    ? `\nGenerada: ${createdAt}`
+    : "\nFecha de generacion: no devuelta por Genei";
+  window.alert(`Etiqueta Genei ya generada: ${shipmentCode}${createdText}\n\nNo se reimprime automaticamente por seguridad. Si necesitas otra copia, pulsa "Imprimir etiqueta" manualmente.`);
 }
 
 async function findExistingGeneiShipment(order: Order) {
@@ -202,6 +220,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
   const [selectedQuote, setSelectedQuote] = useState(0);
   const [shipment, setShipment] = useState<Shipment | null>(null);
   const [existingShipmentCode, setExistingShipmentCode] = useState<string | null>(null);
+  const [existingShipmentCreatedAt, setExistingShipmentCreatedAt] = useState("");
   const [preparedReference, setPreparedReference] = useState("");
   const [labelReference, setLabelReference] = useState("");
   const [validateInOdooAfterLabel, setValidateInOdooAfterLabel] = useState(true);
@@ -231,8 +250,8 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
     if (orderFound && order && quotes.length > 0 && isPreparedOrderReference(reference, order, preparedReference)) {
       if (existingShipmentCode) {
         setScan("");
-        showExistingLabelWarning(existingShipmentCode);
-        setNotice(`Etiqueta Genei ${existingShipmentCode} ya generada. Reimpresion bloqueada en automatico; usa el boton Imprimir etiqueta si hace falta.`);
+        showExistingLabelWarning(existingShipmentCode, existingShipmentCreatedAt);
+        setNotice(`Etiqueta Genei ${existingShipmentCode} ya generada${existingShipmentCreatedAt ? ` el ${existingShipmentCreatedAt}` : ""}. Reimpresion bloqueada en automatico; usa el boton Imprimir etiqueta si hace falta.`);
         focusScanInput();
         return;
       }
@@ -246,7 +265,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       focusScanInput();
       return;
     }
-    setLoading(true); setOrderFound(false); setOrder(null); setQuotes([]); setShipment(null); setTestShipmentCode(null); setExistingShipmentCode(null); setPreparedReference(""); setLabelReference(""); setDestinationDraft(emptyDestination);
+    setLoading(true); setOrderFound(false); setOrder(null); setQuotes([]); setShipment(null); setTestShipmentCode(null); setExistingShipmentCode(null); setExistingShipmentCreatedAt(""); setPreparedReference(""); setLabelReference(""); setDestinationDraft(emptyDestination);
     try {
       const result = reference.toUpperCase() === testOrder.odooRef ? null : await odooClient.getOrderDetail(reference);
       const found = result?.order ?? (reference.toUpperCase() === testOrder.odooRef ? testOrder : null);
@@ -267,14 +286,6 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       if (!draft.name || !draft.country || !draft.postalCode || !draft.town || !draft.phone || !draft.email) {
         throw new Error("El pedido debe tener nombre, codigo postal, ciudad, pais, telefono y email antes de cotizar");
       }
-      const existingProcessingReference = getExistingProcessingReference(found);
-      if (existingProcessingReference) {
-        setOrder(found); setQuotes([]); setSelectedQuote(0); setOrderFound(true); setPreparedReference(reference); setLabelReference(found.externalRef || found.id || found.odooRef); setScan("");
-        showExistingProcessingWarning(existingProcessingReference);
-        setNotice(`Pedido ${found.id} ya figura procesado (${existingProcessingReference}). Revisa y reimprime manualmente solo si hace falta.`);
-        focusScanInput();
-        return;
-      }
       const knownShipmentPromise = findExistingGeneiShipment(found);
       const quotePayloadPromise = fetch("/api/genei/quotes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isWarehouse: false, isoCountryOrigin: "ES", isoCountryDestination: country, postalCodeOrigin: "03690", postalCodeDestination: postalCode, townOrigin: "San Vicente del Raspeig", townDestination: town, packages: parcels.map((parcel) => ({ weight: Number(parcel.weight.replace(",", ".")), height: Number(parcel.height), width: Number(parcel.width), length: Number(parcel.length), isBox: false })) }) })
         .then(async (response) => ({
@@ -284,11 +295,12 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       const known = await knownShipmentPromise;
       const shipmentData = known?.shipment;
       const shipmentReference = getGeneiShipmentCode(shipmentData) || (found.odooRef === testOrder.odooRef ? "0DROIMAV" : "");
+      const shipmentCreatedAt = getGeneiShipmentCreatedAt(shipmentData);
       if (shipmentReference) {
         void quotePayloadPromise.catch(() => null);
-        setOrder(found); setQuotes([]); setSelectedQuote(0); setOrderFound(true); setPreparedReference(reference); setLabelReference(found.externalRef || found.id || found.odooRef); setScan(""); setExistingShipmentCode(shipmentReference);
-        showExistingLabelWarning(shipmentReference);
-        setNotice(`Pedido encontrado con etiqueta Genei ${shipmentReference} ya generada. Revisa y reimprime manualmente solo si hace falta.`);
+        setOrder(found); setQuotes([]); setSelectedQuote(0); setOrderFound(true); setPreparedReference(reference); setLabelReference(found.externalRef || found.id || found.odooRef); setScan(""); setExistingShipmentCode(shipmentReference); setExistingShipmentCreatedAt(shipmentCreatedAt);
+        showExistingLabelWarning(shipmentReference, shipmentCreatedAt);
+        setNotice(`Pedido encontrado con etiqueta Genei ${shipmentReference} ya generada${shipmentCreatedAt ? ` el ${shipmentCreatedAt}` : ""}. Revisa y reimprime manualmente solo si hace falta.`);
         focusScanInput();
         return;
       }
@@ -426,8 +438,10 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
           const existingCode = getGeneiShipmentCode(known?.shipment);
           if (existingCode) {
             setExistingShipmentCode(existingCode);
-            showExistingLabelWarning(existingCode);
-            setNotice(`Genei ya tenia la etiqueta ${existingCode}. Reimpresion bloqueada en automatico; usa Imprimir etiqueta si hace falta.`);
+            const existingCreatedAt = getGeneiShipmentCreatedAt(known?.shipment);
+            setExistingShipmentCreatedAt(existingCreatedAt);
+            showExistingLabelWarning(existingCode, existingCreatedAt);
+            setNotice(`Genei ya tenia la etiqueta ${existingCode}${existingCreatedAt ? ` generada el ${existingCreatedAt}` : ""}. Reimpresion bloqueada en automatico; usa Imprimir etiqueta si hace falta.`);
             focusScanInput();
             return;
           }
@@ -439,6 +453,10 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       const paymentPayload = (paymentText ? JSON.parse(paymentText) : {}) as { message?: string };
       if (!paymentResponse.ok) throw new Error(paymentPayload.message || "Genei no ha podido cobrar la etiqueta");
       setExistingShipmentCode(createdCode);
+      setExistingShipmentCreatedAt(new Intl.DateTimeFormat("es-ES", {
+        dateStyle: "short",
+        timeStyle: "short",
+      }).format(new Date()));
       setNotice(`Etiqueta ${createdCode} generada y pagada. Preparando ${options.delivery === "download" ? "descarga" : "impresion"}.`);
       await openLabel(createdCode, {
         labelWindow,
@@ -461,7 +479,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
   };
 
   const resetShipmentFlow = (nextNotice = "Listo para escanear un nuevo pedido.") => {
-    setOrderFound(false); setOrder(null); setQuotes([]); setShipment(null); setTestShipmentCode(null); setExistingShipmentCode(null); setPreparedReference(""); setLabelReference(""); setDestinationDraft(emptyDestination); setScan(""); setParcels([automaticParcel]); setSelectedQuote(0); setMode("automatic"); setNotice(nextNotice); focusScanInput();
+    setOrderFound(false); setOrder(null); setQuotes([]); setShipment(null); setTestShipmentCode(null); setExistingShipmentCode(null); setExistingShipmentCreatedAt(""); setPreparedReference(""); setLabelReference(""); setDestinationDraft(emptyDestination); setScan(""); setParcels([automaticParcel]); setSelectedQuote(0); setMode("automatic"); setNotice(nextNotice); focusScanInput();
   };
 
   const editInManual = () => {
@@ -732,7 +750,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
                 <CheckCircle2 size={25} />
                 <div>
                   <strong>Etiqueta Genei · {existingShipmentCode}</strong>
-                  <span>Recuperacion directa desde Genei: no se guarda ningun PDF en el equipo.</span>
+                  <span>{existingShipmentCreatedAt ? `Generada el ${existingShipmentCreatedAt}. ` : ""}Recuperacion directa desde Genei: no se guarda ningun PDF en el equipo.</span>
                   <div className="settings-demo-actions">
                     <button className="primary-action" disabled={loading} onClick={() => void openExistingLabel("inline-print", true)} type="button">Imprimir etiqueta</button>
                     <button className="secondary-action" disabled={loading} onClick={() => void openExistingLabel("download")} type="button">Descargar etiqueta</button>
