@@ -158,6 +158,17 @@ function showExistingLabelWarning(shipmentCode: string) {
   window.alert(`Etiqueta Genei ya generada: ${shipmentCode}\n\nNo se reimprime automaticamente por seguridad. Si necesitas otra copia, pulsa "Imprimir etiqueta" manualmente.`);
 }
 
+function getExistingProcessingReference(order: Order) {
+  if (!order.deliveryPrinted) return "";
+  const printedAt = order.deliveryLastPrintDate ? ` · ${order.deliveryLastPrintDate}` : "";
+  const count = order.deliveryPrintCount && order.deliveryPrintCount > 1 ? ` x${order.deliveryPrintCount}` : "";
+  return `Odoo Delivery print${count}${printedAt}`;
+}
+
+function showExistingProcessingWarning(reference: string) {
+  window.alert(`Pedido ya procesado: ${reference}\n\nNo se genera ni imprime automaticamente por seguridad. Si necesitas otra copia, revisa el pedido y pulsa "Imprimir etiqueta" manualmente.`);
+}
+
 async function findExistingGeneiShipment(order: Order) {
   const references = Array.from(
     new Set([order.externalRef, order.id, order.odooRef].map(normalizeScanReference).filter(Boolean)),
@@ -255,6 +266,14 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       setDestinationDraft(draft);
       if (!draft.name || !draft.country || !draft.postalCode || !draft.town || !draft.phone || !draft.email) {
         throw new Error("El pedido debe tener nombre, codigo postal, ciudad, pais, telefono y email antes de cotizar");
+      }
+      const existingProcessingReference = getExistingProcessingReference(found);
+      if (existingProcessingReference) {
+        setOrder(found); setQuotes([]); setSelectedQuote(0); setOrderFound(true); setPreparedReference(reference); setLabelReference(found.externalRef || found.id || found.odooRef); setScan("");
+        showExistingProcessingWarning(existingProcessingReference);
+        setNotice(`Pedido ${found.id} ya figura procesado (${existingProcessingReference}). Revisa y reimprime manualmente solo si hace falta.`);
+        focusScanInput();
+        return;
       }
       const knownShipmentPromise = findExistingGeneiShipment(found);
       const quotePayloadPromise = fetch("/api/genei/quotes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isWarehouse: false, isoCountryOrigin: "ES", isoCountryDestination: country, postalCodeOrigin: "03690", postalCodeDestination: postalCode, townOrigin: "San Vicente del Raspeig", townDestination: town, packages: parcels.map((parcel) => ({ weight: Number(parcel.weight.replace(",", ".")), height: Number(parcel.height), width: Number(parcel.width), length: Number(parcel.length), isBox: false })) }) })
