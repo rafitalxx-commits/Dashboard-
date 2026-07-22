@@ -14,6 +14,7 @@ import { registerAgentApiRoutes } from "./backend/agentApi/routes";
 import { registerAmazonMessagesRoutes } from "./backend/amazonMessages/routes";
 import { registerAmazonSpApiRoutes } from "./backend/amazonSpApi/routes";
 import type { AmazonShipmentConfirmationDraft } from "./backend/amazonSpApi/schema";
+import { registerExpeditionsSettingsRoutes } from "./backend/expeditionsSettings/routes";
 import { registerGeneiRoutes } from "./backend/genei/routes";
 import {
   getExternalOrderRef,
@@ -394,6 +395,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
       const tasks = createTaskRepository(env);
       const calendar = createCalendarRepository(env);
       registerGeneiRoutes(server, auth, env);
+      registerExpeditionsSettingsRoutes(server, auth, { dataDir: env.DASHBOARD_DATA_DIR });
       registerAmazonMessagesRoutes(server, auth, {
         dataDir: env.DASHBOARD_DATA_DIR,
       });

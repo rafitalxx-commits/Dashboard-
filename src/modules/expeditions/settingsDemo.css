@@ -44,6 +44,50 @@
   font-weight: 700;
 }
 
+.shipping-rules-list {
+  display: grid;
+  gap: 10px;
+}
+
+.shipping-rule-editor {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  padding: 12px;
+}
+
+.shipping-rule-main {
+  display: grid;
+  grid-template-columns: 82px minmax(180px, 1.4fr) minmax(130px, .8fr) minmax(150px, 1fr) minmax(170px, 1fr);
+  gap: 8px;
+}
+
+.shipping-rule-main label {
+  display: grid;
+  gap: 4px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.shipping-rule-main input,
+.shipping-rule-main select {
+  min-width: 0;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 8px;
+  font: inherit;
+}
+
+.shipping-rule-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .station-settings {
   display: grid;
   gap: 12px;
@@ -68,5 +112,9 @@
   .settings-demo-head,
   .rule-row {
     flex-direction: column;
+  }
+
+  .shipping-rule-main {
+    grid-template-columns: 1fr;
   }
 }

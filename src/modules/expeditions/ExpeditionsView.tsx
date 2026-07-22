@@ -20,6 +20,22 @@ type GeneiQuote = { id_agencia: string | number; nombre_agencia: string; importe
 type DestinationDraft = { name: string; address: string; postalCode: string; town: string; country: string; phone: string; email: string };
 type LabelDelivery = "download" | "inline-print" | "popup";
 type GeneratedShippingLabelRecord = { shipmentCode: string; createdAt: string; orderRefs: string[]; source?: string };
+type ShippingConnector = "genei" | "sendcloud";
+type ShippingRule = {
+  id: string;
+  name: string;
+  active: boolean;
+  connector: ShippingConnector;
+  countries: string[];
+  serviceFilter: string;
+  selection: "cheapest";
+  priority: number;
+};
+type ExpeditionsSettings = {
+  connectors: Array<{ id: ShippingConnector; label: string; active: boolean; ready: boolean }>;
+  rules: ShippingRule[];
+  updatedAt: string;
+};
 type AmazonShipmentRecord = {
   id: string;
   amazonOrderId: string;
@@ -33,6 +49,17 @@ type AmazonShipmentRecord = {
 
 const automaticParcel: Parcel = { id: 1, weight: "1", length: "30", width: "20", height: "15" };
 const emptyDestination: DestinationDraft = { name: "", address: "", postalCode: "", town: "", country: "", phone: "", email: "" };
+const defaultExpeditionsSettings: ExpeditionsSettings = {
+  connectors: [
+    { id: "genei", label: "Genei", active: true, ready: true },
+    { id: "sendcloud", label: "Sendcloud", active: false, ready: false },
+  ],
+  rules: [
+    { id: "rule-fedex-eu", name: "Francia, Italia y Alemania", active: true, connector: "genei", countries: ["FR", "IT", "DE"], serviceFilter: "FEDEX|GLOBAL EXPRESS", selection: "cheapest", priority: 1 },
+    { id: "rule-default", name: "Resto de destinos", active: true, connector: "genei", countries: [], serviceFilter: "", selection: "cheapest", priority: 99 },
+  ],
+  updatedAt: "",
+};
 const testOrder: Order = {
   id: "406-1883201-3960349", odooRef: "406-1883201-3960349", date: "", client: "Alouani aicha", channel: "Amazon · Prueba Genei", deliveryPrinted: false, total: 0, taxTotal: 0, status: "Prueba", invoiceStatus: "Sin factura", deliveryStatus: "Etiqueta real pendiente de abono", city: "Messina, Italia", shippingAddress: "Via vecchia comunale scala ritiro 5", shippingPhone: "+39 339 771 0152", shippingEmail: "wh0qf2x18wpvmgt@marketplace.amazon.it", shippingPostalCode: "98152", shippingCountryCode: "IT", items: [{ sku: "TEST-BOX", name: "Bulto de prueba", quantity: 1, price: 0, stock: 1 }],
 };
@@ -270,6 +297,20 @@ async function recordGeneratedShippingLabel(order: Order, shipmentCode: string, 
   }
 }
 
+function resolveShippingRule(settings: ExpeditionsSettings, country: string) {
+  const normalizedCountry = country.trim().toUpperCase();
+  const rules = [...settings.rules].filter((rule) => rule.active).sort((left, right) => left.priority - right.priority);
+  return rules.find((rule) => rule.countries.includes(normalizedCountry)) ?? rules.find((rule) => rule.countries.length === 0) ?? null;
+}
+
+function ruleCountriesText(rule: ShippingRule) {
+  return rule.countries.length ? rule.countries.join(", ") : "*";
+}
+
+function normalizeCountriesInput(value: string) {
+  return value.split(/[,\s]+/).map((country) => country.trim().toUpperCase()).filter(Boolean);
+}
+
 type ExpeditionsViewProps = {
   onRefreshOrders?: () => void;
 };
@@ -296,6 +337,8 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
   const [labelReference, setLabelReference] = useState("");
   const [validateInOdooAfterLabel, setValidateInOdooAfterLabel] = useState(true);
   const [destinationDraft, setDestinationDraft] = useState<DestinationDraft>(emptyDestination);
+  const [expeditionsSettings, setExpeditionsSettings] = useState<ExpeditionsSettings>(defaultExpeditionsSettings);
+  const [settingsLoading, setSettingsLoading] = useState(false);
   const [notice, setNotice] = useState("Listo para escanear un pedido.");
   const scannerBufferRef = useRef("");
   const scannerResetRef = useRef<number | null>(null);
@@ -314,6 +357,20 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       scanInputRef.current?.select();
     }, 50);
   };
+
+  const loadExpeditionsSettings = async () => {
+    try {
+      const response = await fetch("/api/expeditions/settings");
+      if (!response.ok) return;
+      setExpeditionsSettings(await response.json() as ExpeditionsSettings);
+    } catch {
+      setExpeditionsSettings(defaultExpeditionsSettings);
+    }
+  };
+
+  useEffect(() => {
+    void loadExpeditionsSettings();
+  }, []);
 
   const findOrder = async (value = scan) => {
     const reference = normalizeScanReference(value);
@@ -401,13 +458,16 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
         importe_sin_iva: quote.importe_sin_iva ?? quote.base,
       }));
       if (!available.length) throw new Error("Genei no ofrece servicios para este pedido con los bultos indicados");
-      const fedexRequired = ["FR", "IT", "DE"].includes(country);
-      const permitted = fedexRequired ? available.filter((quote) => /FEDEX|GLOBAL EXPRESS/.test(quote.nombre_agencia.toUpperCase())) : available;
-      if (!permitted.length) throw new Error("La regla exige FedEx, pero Genei no lo ofrece para este pedido. Requiere revision manual.");
+      const matchedRule = resolveShippingRule(expeditionsSettings, country);
+      if (!matchedRule) throw new Error("No hay regla de envio activa para este destino");
+      if (matchedRule.connector !== "genei") throw new Error(`La regla selecciona ${matchedRule.connector}, pero ese conector aun no genera etiquetas desde Expediciones`);
+      const servicePattern = matchedRule.serviceFilter ? new RegExp(matchedRule.serviceFilter, "i") : null;
+      const permitted = servicePattern ? available.filter((quote) => servicePattern.test(quote.nombre_agencia)) : available;
+      if (!permitted.length) throw new Error(`La regla "${matchedRule.name}" no encuentra servicios Genei permitidos para este pedido. Requiere revision manual.`);
       const ordered = [...permitted].sort((left, right) => Number(left.importe) - Number(right.importe));
       setOrder(found); setQuotes(ordered); setSelectedQuote(0); setOrderFound(true); setPreparedReference(reference); setLabelReference(found.externalRef || found.id || found.odooRef); setScan("");
       if (mode === "automatic") {
-        setNotice(`Pedido encontrado. Generando etiqueta con ${ordered[0].nombre_agencia} sin segundo escaneo.`);
+        setNotice(`Regla "${matchedRule.name}". Generando etiqueta con ${ordered[0].nombre_agencia} sin segundo escaneo.`);
         await createAndPayManualShipment({
           delivery: "inline-print",
           print: true,
@@ -420,7 +480,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
         });
         return;
       }
-      setNotice(shipmentReference ? `Pedido encontrado. Etiqueta Genei registrada: ${shipmentReference}. Escanea otra vez el mismo pedido para imprimirla.` : draft.address ? `Pedido encontrado. Regla aplicada: ${fedexRequired ? "FedEx / Global Express mas economico" : "servicio mas economico"}. Escanea otra vez el mismo pedido para confirmar la etiqueta.` : "Pedido encontrado y cotizado, pero falta la direccion/calle. Completala antes del segundo escaneo.");
+      setNotice(shipmentReference ? `Pedido encontrado. Etiqueta Genei registrada: ${shipmentReference}. Escanea otra vez el mismo pedido para imprimirla.` : draft.address ? `Pedido encontrado. Regla aplicada: ${matchedRule.name}. Escanea otra vez el mismo pedido para confirmar la etiqueta.` : "Pedido encontrado y cotizado, pero falta la direccion/calle. Completala antes del segundo escaneo.");
     } catch (error) {
       if (reference.toUpperCase() === testOrder.odooRef) {
         setOrder(testOrder); setOrderFound(true); setPreparedReference(reference); setLabelReference(testOrder.externalRef || testOrder.id || testOrder.odooRef); setQuotes([]); setNotice(error instanceof Error ? `Pedido de pruebas encontrado, pero la cotización ha fallado: ${error.message}` : "Pedido de pruebas encontrado, pero no se pudo obtener la cotización.");
@@ -800,6 +860,67 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
     }
   };
 
+  const saveShippingRule = async (rule: ShippingRule) => {
+    setSettingsLoading(true);
+    try {
+      const response = await fetch(`/api/expeditions/settings/rules/${encodeURIComponent(rule.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(rule),
+      });
+      const payload = await response.json() as { settings?: ExpeditionsSettings; message?: string };
+      if (!response.ok || !payload.settings) throw new Error(payload.message || "No se pudo guardar la regla");
+      setExpeditionsSettings(payload.settings);
+      setNotice(`Regla "${rule.name}" guardada.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "No se pudo guardar la regla");
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
+  const createShippingRule = async () => {
+    setSettingsLoading(true);
+    try {
+      const response = await fetch("/api/expeditions/settings/rules", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Nueva regla", connector: "genei", countries: [], serviceFilter: "" }),
+      });
+      const payload = await response.json() as { settings?: ExpeditionsSettings; message?: string };
+      if (!response.ok || !payload.settings) throw new Error(payload.message || "No se pudo crear la regla");
+      setExpeditionsSettings(payload.settings);
+      setNotice("Nueva regla de envio creada.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "No se pudo crear la regla");
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
+  const deleteShippingRule = async (rule: ShippingRule) => {
+    if (!window.confirm(`¿Eliminar la regla "${rule.name}"?`)) return;
+    setSettingsLoading(true);
+    try {
+      const response = await fetch(`/api/expeditions/settings/rules/${encodeURIComponent(rule.id)}`, { method: "DELETE" });
+      const payload = await response.json() as { settings?: ExpeditionsSettings; message?: string };
+      if (!response.ok || !payload.settings) throw new Error(payload.message || "No se pudo eliminar la regla");
+      setExpeditionsSettings(payload.settings);
+      setNotice(`Regla "${rule.name}" eliminada.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "No se pudo eliminar la regla");
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
+  const updateLocalRule = (ruleId: string, patch: Partial<ShippingRule>) => {
+    setExpeditionsSettings((current) => ({
+      ...current,
+      rules: current.rules.map((rule) => rule.id === ruleId ? { ...rule, ...patch } : rule),
+    }));
+  };
+
   const getShipmentExternalReference = (referenceOverride?: string, orderOverride?: Order) => {
     const targetOrder = orderOverride ?? order;
     return normalizeScanReference(referenceOverride ?? labelReference) || targetOrder?.externalRef || targetOrder?.id || targetOrder?.odooRef || "";
@@ -970,13 +1091,40 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
             )}
           </section>
         </div>
-      )}</> : <ExpeditionsSettingsDemo section={section} />}
+      )}</> : <ExpeditionsSettingsDemo
+        connectors={expeditionsSettings.connectors}
+        onCreateRule={createShippingRule}
+        onDeleteRule={deleteShippingRule}
+        onSaveRule={saveShippingRule}
+        onUpdateRule={updateLocalRule}
+        rules={expeditionsSettings.rules}
+        saving={settingsLoading}
+        section={section}
+      />}
     </div>
   );
 }
 
-function ExpeditionsSettingsDemo({ section }: { section: "rules" | "station" | "integrations" }) {
-  if (section === "rules") return <section className="settings-demo"><div className="settings-demo-head"><div><span>REGLAS DE ENVIO</span><h3>Prioridad y seleccion automatica</h3><p>La primera regla activa que coincide decide que servicios puede elegir Genei.</p></div><button className="primary-action" type="button">+ Nueva regla</button></div><div className="rule-row"><b>1</b><div><strong>Francia, Italia y Alemania → FedEx mas barato</strong><span>Activa · paises FR, IT, DE · restringe a FedEx · selecciona menor coste</span></div><em>Regla base</em></div><div className="rule-row"><b>2</b><div><strong>Resto de destinos → servicio mas barato</strong><span>Activa · sin condiciones · elige el menor coste de Genei</span></div><em>Regla base</em></div><div className="settings-demo-note"><CircleAlert size={17} /> Cuando conectemos Genei, las reglas solo elegiran servicios que Genei haya devuelto.</div></section>;
+function ExpeditionsSettingsDemo({
+  connectors,
+  onCreateRule,
+  onDeleteRule,
+  onSaveRule,
+  onUpdateRule,
+  rules,
+  saving,
+  section,
+}: {
+  connectors: ExpeditionsSettings["connectors"];
+  onCreateRule: () => void;
+  onDeleteRule: (rule: ShippingRule) => void;
+  onSaveRule: (rule: ShippingRule) => void;
+  onUpdateRule: (ruleId: string, patch: Partial<ShippingRule>) => void;
+  rules: ShippingRule[];
+  saving: boolean;
+  section: "rules" | "station" | "integrations";
+}) {
+  if (section === "rules") return <section className="settings-demo"><div className="settings-demo-head"><div><span>REGLAS DE ENVIO</span><h3>Prioridad y seleccion automatica</h3><p>La primera regla activa que coincide decide el conector y el servicio permitido.</p></div><button className="primary-action" disabled={saving} onClick={onCreateRule} type="button">+ Nueva regla</button></div><div className="shipping-rules-list">{rules.map((rule) => <article className="shipping-rule-editor" key={rule.id}><div className="shipping-rule-main"><label>Prioridad<input disabled={saving} inputMode="numeric" onChange={(event) => onUpdateRule(rule.id, { priority: Number(event.target.value) || 99 })} value={rule.priority} /></label><label>Nombre<input disabled={saving} onChange={(event) => onUpdateRule(rule.id, { name: event.target.value })} value={rule.name} /></label><label>Conector<select disabled={saving} onChange={(event) => onUpdateRule(rule.id, { connector: event.target.value as ShippingConnector })} value={rule.connector}>{connectors.map((connector) => <option key={connector.id} value={connector.id}>{connector.label}{connector.ready ? "" : " · preparado"}</option>)}</select></label><label>Paises<input disabled={saving} onChange={(event) => onUpdateRule(rule.id, { countries: normalizeCountriesInput(event.target.value) })} placeholder="FR, IT, DE o vacio para todos" value={ruleCountriesText(rule)} /></label><label>Filtro servicio<input disabled={saving} onChange={(event) => onUpdateRule(rule.id, { serviceFilter: event.target.value })} placeholder="FEDEX|GLOBAL EXPRESS" value={rule.serviceFilter} /></label></div><div className="shipping-rule-actions"><label className="odoo-auto-validate"><input checked={rule.active} disabled={saving} onChange={(event) => onUpdateRule(rule.id, { active: event.target.checked })} type="checkbox" /> Activa</label><button className="secondary-action" disabled={saving} onClick={() => onSaveRule(rule)} type="button">Guardar</button><button className="secondary-action" disabled={saving} onClick={() => onDeleteRule(rule)} type="button">Eliminar</button></div></article>)}</div><div className="settings-demo-note"><CircleAlert size={17} /> El filtro de servicio usa texto o patron simple. Ejemplo: FEDEX|GLOBAL EXPRESS. Si paises queda vacio, la regla funciona como regla por defecto.</div></section>;
   if (section === "station") return <section className="settings-demo"><div className="settings-demo-head"><div><span>PUESTO DE TRABAJO</span><h3>Preparacion 1</h3><p>Esta configuracion se guardara en cada ordenador, no por usuario.</p></div><span className="station-ok">Conectada</span></div><div className="station-settings"><label>Modo de trabajo<select defaultValue="automatic"><option value="automatic">Automatico</option><option value="manual">Manual</option></select></label><label>Impresora de etiquetas<select defaultValue="Zebra ZD421"><option>Zebra ZD421</option><option>Honeywell PC42t</option></select></label><label>Impresora de albaranes<select defaultValue="Microsoft Print to PDF"><option>Microsoft Print to PDF</option><option>HP Office</option></select></label><label>Perfil de caja por defecto<select defaultValue="Caja estandar S"><option>Caja estandar S · 30 × 20 × 15</option><option>Caja estandar M · 40 × 30 × 20</option></select></label></div><div className="settings-demo-actions"><button className="secondary-action" type="button">Imprimir prueba</button><button className="primary-action" type="button">Guardar configuracion</button></div></section>;
-  return <section className="settings-demo"><div className="settings-demo-head"><div><span>INTEGRACIONES</span><h3>Credenciales y remitente</h3><p>Las claves se guardaran solo en el backend; nunca se mostraran al operario.</p></div><span className="demo-badge">Pendiente de conexion</span></div><div className="integration-grid"><article><h4>Genei API v2</h4><p>Usuario, contrasena/token, URL de webhook y remitente unico.</p><button className="secondary-action" type="button">Configurar Genei</button></article><article><h4>Odoo</h4><p>Ya conectado en el dashboard. Se anadira tracking, URL y estado de expedicion.</p><span className="integration-state">Conexion existente</span></article><article><h4>Agente de impresion</h4><p>Aplicacion Windows propia que recibe trabajos del dashboard e imprime ZPL/PDF sin dialogos.</p><button className="secondary-action" type="button">Comprobar agente</button></article></div><div className="settings-demo-note"><CircleAlert size={17} /> Esta demo no permite introducir secretos todavia. La pantalla real los enviara al backend protegido.</div></section>;
+  return <section className="settings-demo"><div className="settings-demo-head"><div><span>INTEGRACIONES</span><h3>Conectores de envio</h3><p>Las reglas deciden que conector se usa para cada destino.</p></div><span className="demo-badge">Configurable</span></div><div className="integration-grid">{connectors.map((connector) => <article key={connector.id}><h4>{connector.label}</h4><p>{connector.id === "genei" ? "Conector activo para crear etiquetas reales y recuperar tracking." : "Preparado como opcion de reglas; falta integrar generacion real antes de activarlo."}</p><span className="integration-state">{connector.ready ? "Disponible" : "Preparado"}</span></article>)}<article><h4>Amazon SP-API</h4><p>Preparado en dry-run para confirmar tracking cuando haya credenciales.</p><span className="integration-state">Simulacion</span></article></div><div className="settings-demo-note"><CircleAlert size={17} /> Sendcloud puede aparecer en reglas, pero mientras no este listo el flujo automatico parara y pedira revision manual.</div></section>;
 }
