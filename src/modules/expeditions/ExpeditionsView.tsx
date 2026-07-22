@@ -154,6 +154,10 @@ function getGeneiShipmentCode(shipment?: Record<string, unknown> | null) {
   );
 }
 
+function showExistingLabelWarning(shipmentCode: string) {
+  window.alert(`Etiqueta Genei ya generada: ${shipmentCode}\n\nNo se reimprime automaticamente por seguridad. Si necesitas otra copia, pulsa "Imprimir etiqueta" manualmente.`);
+}
+
 async function findExistingGeneiShipment(order: Order) {
   const references = Array.from(
     new Set([order.externalRef, order.id, order.odooRef].map(normalizeScanReference).filter(Boolean)),
@@ -215,9 +219,8 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
     if (orderFound && order && quotes.length > 0 && isPreparedOrderReference(reference, order, preparedReference)) {
       if (existingShipmentCode) {
         setScan("");
-        setNotice(`Segundo escaneo confirmado. Esperando etiqueta Genei ${existingShipmentCode} para imprimir sin salir de Expediciones.`);
-        await openLabel(existingShipmentCode, { delivery: "inline-print", print: true });
-        if (validateInOdooAfterLabel) await validateLabelDeliveryInOdoo(existingShipmentCode);
+        showExistingLabelWarning(existingShipmentCode);
+        setNotice(`Etiqueta Genei ${existingShipmentCode} ya generada. Reimpresion bloqueada en automatico; usa el boton Imprimir etiqueta si hace falta.`);
         focusScanInput();
         return;
       }
@@ -274,10 +277,9 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       if (shipmentReference) setExistingShipmentCode(shipmentReference);
       if (mode === "automatic") {
         if (shipmentReference) {
-          setNotice(`Pedido encontrado. Etiqueta Genei ${shipmentReference} registrada. Imprimiendo sin segundo escaneo.`);
-          await openLabel(shipmentReference, { delivery: "inline-print", print: true });
-          if (validateInOdooAfterLabel) await validateLabelDeliveryInOdoo(shipmentReference, found);
-          resetShipmentFlow("Listo para escanear el siguiente pedido.");
+          showExistingLabelWarning(shipmentReference);
+          setNotice(`Pedido encontrado con etiqueta Genei ${shipmentReference} ya generada. Revisa y reimprime manualmente solo si hace falta.`);
+          focusScanInput();
           return;
         }
         setNotice(`Pedido encontrado. Generando etiqueta con ${ordered[0].nombre_agencia} sin segundo escaneo.`);
@@ -397,10 +399,9 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
           const existingCode = getGeneiShipmentCode(known?.shipment);
           if (existingCode) {
             setExistingShipmentCode(existingCode);
-            setNotice(`Genei ya tenia el envio ${existingCode}. Esperando PDF para imprimir sin salir de Expediciones.`);
-            await openLabel(existingCode, { delivery: options.delivery ?? "inline-print", print: options.print });
-            if (validateInOdooAfterLabel) await validateLabelDeliveryInOdoo(existingCode, targetOrder);
-            if (options.resetAfterSuccess) resetShipmentFlow("Listo para escanear el siguiente pedido.");
+            showExistingLabelWarning(existingCode);
+            setNotice(`Genei ya tenia la etiqueta ${existingCode}. Reimpresion bloqueada en automatico; usa Imprimir etiqueta si hace falta.`);
+            focusScanInput();
             return;
           }
         }
