@@ -18,6 +18,7 @@ type Parcel = { id: number; weight: string; length: string; width: string; heigh
 type Shipment = { code: string; tracking: string; carrier: string; service: string; printedAt: string };
 type GeneiQuote = { id_agencia: string | number; nombre_agencia: string; importe: number; importe_sin_iva?: number; iva?: number; servicio_horas?: string };
 type DestinationDraft = { name: string; address: string; postalCode: string; town: string; country: string; phone: string; email: string };
+type LabelDelivery = "download" | "inline-print" | "popup";
 
 const automaticParcel: Parcel = { id: 1, weight: "1", length: "30", width: "20", height: "15" };
 const emptyDestination: DestinationDraft = { name: "", address: "", postalCode: "", town: "", country: "", phone: "", email: "" };
@@ -93,6 +94,50 @@ function downloadPdfFromBackend(shipmentCode: string) {
   window.location.assign(`/api/genei/shipments/${encodeURIComponent(shipmentCode)}/label.pdf`);
 }
 
+function pdfBase64ToObjectUrl(base64: string) {
+  const cleanBase64 = base64.replace(/^data:application\/pdf;base64,/, "");
+  const bytes = Uint8Array.from(atob(cleanBase64), (char) => char.charCodeAt(0));
+  return URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+}
+
+function printPdfInCurrentTab(base64: string, shipmentCode: string) {
+  return new Promise<void>((resolve, reject) => {
+    const url = pdfBase64ToObjectUrl(base64);
+    const frame = document.createElement("iframe");
+    frame.title = `Etiqueta Genei ${shipmentCode}`;
+    frame.style.position = "fixed";
+    frame.style.right = "0";
+    frame.style.bottom = "0";
+    frame.style.width = "1px";
+    frame.style.height = "1px";
+    frame.style.border = "0";
+    frame.style.opacity = "0";
+    frame.onload = () => {
+      window.setTimeout(() => {
+        try {
+          frame.contentWindow?.focus();
+          frame.contentWindow?.print();
+          resolve();
+        } catch (error) {
+          reject(error);
+        } finally {
+          window.setTimeout(() => {
+            frame.remove();
+            URL.revokeObjectURL(url);
+          }, 60_000);
+        }
+      }, 350);
+    };
+    frame.onerror = () => {
+      frame.remove();
+      URL.revokeObjectURL(url);
+      reject(new Error("No se pudo preparar la etiqueta para imprimir"));
+    };
+    frame.src = url;
+    document.body.appendChild(frame);
+  });
+}
+
 function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
@@ -109,7 +154,24 @@ function getGeneiShipmentCode(shipment?: Record<string, unknown> | null) {
   );
 }
 
-export function ExpeditionsView() {
+async function findExistingGeneiShipment(order: Order) {
+  const references = Array.from(
+    new Set([order.externalRef, order.id, order.odooRef].map(normalizeScanReference).filter(Boolean)),
+  );
+  for (const reference of references) {
+    const known = await fetch(`/api/genei/shipments/external/${encodeURIComponent(reference)}`)
+      .then(async (response) => (response.ok ? response.json() : null))
+      .catch(() => null) as { shipment?: Record<string, unknown> } | null;
+    if (getGeneiShipmentCode(known?.shipment)) return known;
+  }
+  return null;
+}
+
+type ExpeditionsViewProps = {
+  onRefreshOrders?: () => void;
+};
+
+export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
   const [section, setSection] = useState<"operativa" | "rules" | "station" | "integrations">("operativa");
   const [mode, setMode] = useState<Mode>("automatic");
   const [scan, setScan] = useState("");
@@ -125,6 +187,8 @@ export function ExpeditionsView() {
   const [shipment, setShipment] = useState<Shipment | null>(null);
   const [existingShipmentCode, setExistingShipmentCode] = useState<string | null>(null);
   const [preparedReference, setPreparedReference] = useState("");
+  const [labelReference, setLabelReference] = useState("");
+  const [validateInOdooAfterLabel, setValidateInOdooAfterLabel] = useState(true);
   const [destinationDraft, setDestinationDraft] = useState<DestinationDraft>(emptyDestination);
   const [notice, setNotice] = useState("Listo para escanear un pedido.");
   const scannerBufferRef = useRef("");
@@ -143,8 +207,9 @@ export function ExpeditionsView() {
     if (orderFound && order && quotes.length > 0 && isPreparedOrderReference(reference, order, preparedReference)) {
       if (existingShipmentCode) {
         setScan("");
-        setNotice(`Segundo escaneo confirmado. Descargando etiqueta Genei ${existingShipmentCode}.`);
-        await openLabel(existingShipmentCode, { delivery: "download" });
+        setNotice(`Segundo escaneo confirmado. Esperando etiqueta Genei ${existingShipmentCode} para imprimir sin salir de Expediciones.`);
+        await openLabel(existingShipmentCode, { delivery: "inline-print", print: true });
+        if (validateInOdooAfterLabel) await validateLabelDeliveryInOdoo(existingShipmentCode);
         return;
       }
       if (!destinationReady) {
@@ -152,11 +217,11 @@ export function ExpeditionsView() {
         return;
       }
       setScan("");
-      setNotice("Segundo escaneo confirmado. Generando etiqueta Genei y descargando el PDF.");
-      await createAndPayManualShipment({ skipConfirm: true, delivery: "download" });
+      setNotice("Segundo escaneo confirmado. Generando etiqueta Genei e imprimiendo sin salir de Expediciones.");
+      await createAndPayManualShipment({ skipConfirm: true, delivery: "inline-print", print: true });
       return;
     }
-    setLoading(true); setOrderFound(false); setOrder(null); setQuotes([]); setShipment(null); setTestShipmentCode(null); setExistingShipmentCode(null); setPreparedReference(""); setDestinationDraft(emptyDestination);
+    setLoading(true); setOrderFound(false); setOrder(null); setQuotes([]); setShipment(null); setTestShipmentCode(null); setExistingShipmentCode(null); setPreparedReference(""); setLabelReference(""); setDestinationDraft(emptyDestination);
     try {
       const result = reference.toUpperCase() === testOrder.odooRef ? null : await odooClient.getOrderDetail(reference);
       const found = result?.order ?? (reference.toUpperCase() === testOrder.odooRef ? testOrder : null);
@@ -192,15 +257,15 @@ export function ExpeditionsView() {
       const permitted = fedexRequired ? available.filter((quote) => /FEDEX|GLOBAL EXPRESS/.test(quote.nombre_agencia.toUpperCase())) : available;
       if (!permitted.length) throw new Error("La regla exige FedEx, pero Genei no lo ofrece para este pedido. Requiere revision manual.");
       const ordered = [...permitted].sort((left, right) => Number(left.importe) - Number(right.importe));
-      setOrder(found); setQuotes(ordered); setSelectedQuote(0); setOrderFound(true); setPreparedReference(reference); setScan("");
-      const known = await fetch(`/api/genei/shipments/external/${encodeURIComponent(found.odooRef)}`).then(async (response) => response.ok ? response.json() : null).catch(() => null) as { shipment?: Record<string, unknown> } | null;
+      setOrder(found); setQuotes(ordered); setSelectedQuote(0); setOrderFound(true); setPreparedReference(reference); setLabelReference(found.externalRef || found.id || found.odooRef); setScan("");
+      const known = await findExistingGeneiShipment(found);
       const shipmentData = known?.shipment;
       const shipmentReference = getGeneiShipmentCode(shipmentData) || (found.odooRef === testOrder.odooRef ? "0DROIMAV" : "");
       if (shipmentReference) setExistingShipmentCode(shipmentReference);
-      setNotice(shipmentReference ? `Pedido encontrado. Etiqueta Genei registrada: ${shipmentReference}. Escanea otra vez el mismo pedido para descargarla.` : draft.address ? `Pedido encontrado. Regla aplicada: ${fedexRequired ? "FedEx / Global Express mas economico" : "servicio mas economico"}. Escanea otra vez el mismo pedido para confirmar la etiqueta.` : "Pedido encontrado y cotizado, pero falta la direccion/calle. Completala antes del segundo escaneo.");
+      setNotice(shipmentReference ? `Pedido encontrado. Etiqueta Genei registrada: ${shipmentReference}. Escanea otra vez el mismo pedido para imprimirla.` : draft.address ? `Pedido encontrado. Regla aplicada: ${fedexRequired ? "FedEx / Global Express mas economico" : "servicio mas economico"}. Escanea otra vez el mismo pedido para confirmar la etiqueta.` : "Pedido encontrado y cotizado, pero falta la direccion/calle. Completala antes del segundo escaneo.");
     } catch (error) {
       if (reference.toUpperCase() === testOrder.odooRef) {
-        setOrder(testOrder); setOrderFound(true); setPreparedReference(reference); setQuotes([]); setNotice(error instanceof Error ? `Pedido de pruebas encontrado, pero la cotización ha fallado: ${error.message}` : "Pedido de pruebas encontrado, pero no se pudo obtener la cotización.");
+        setOrder(testOrder); setOrderFound(true); setPreparedReference(reference); setLabelReference(testOrder.externalRef || testOrder.id || testOrder.odooRef); setQuotes([]); setNotice(error instanceof Error ? `Pedido de pruebas encontrado, pero la cotización ha fallado: ${error.message}` : "Pedido de pruebas encontrado, pero no se pudo obtener la cotización.");
       } else setNotice(error instanceof Error ? error.message : "No se pudo preparar el pedido");
     }
     finally { setLoading(false); }
@@ -258,7 +323,7 @@ export function ExpeditionsView() {
     }
     setLoading(true);
     try {
-      const response = await fetch("/api/genei/shipments/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agencyId: Number(quotes[selectedQuote].id_agencia), externalShippingCode: order.odooRef, packagesArray: parcels.map((parcel) => ({ weight: Number(parcel.weight.replace(",", ".")), height: Number(parcel.height), width: Number(parcel.width), length: Number(parcel.length) })), destination: { postalCode: destinationDraft.postalCode, town: destinationDraft.town, name: destinationDraft.name, address: destinationDraft.address, isoCountry: destinationDraft.country, phone: destinationDraft.phone, email: destinationDraft.email } }) });
+      const response = await fetch("/api/genei/shipments/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agencyId: Number(quotes[selectedQuote].id_agencia), externalShippingCode: getShipmentExternalReference(), orderReference: order.odooRef, packagesArray: parcels.map((parcel) => ({ weight: Number(parcel.weight.replace(",", ".")), height: Number(parcel.height), width: Number(parcel.width), length: Number(parcel.length) })), destination: { postalCode: destinationDraft.postalCode, town: destinationDraft.town, name: destinationDraft.name, address: destinationDraft.address, isoCountry: destinationDraft.country, phone: destinationDraft.phone, email: destinationDraft.email } }) });
       const payload = await response.json() as { shipment?: { reference?: string }; message?: string };
       if (!response.ok || !payload.shipment?.reference) throw new Error(payload.message || "Genei no ha creado la prueba");
       setTestShipmentCode(payload.shipment.reference); setNotice(`Prueba creada en Genei (${payload.shipment.reference}) sin pagar. Puedes cancelarla.`);
@@ -266,7 +331,7 @@ export function ExpeditionsView() {
     finally { setLoading(false); }
   };
 
-  const createAndPayManualShipment = async (options: { labelWindow?: Window | null; print?: boolean; skipConfirm?: boolean; delivery?: "download" | "popup" } = {}) => {
+  const createAndPayManualShipment = async (options: { labelWindow?: Window | null; print?: boolean; skipConfirm?: boolean; delivery?: LabelDelivery } = {}) => {
     if (!order || !quotes[selectedQuote]) return;
     if (!destinationReady) {
       setNotice(`Faltan datos de destino: ${missingDestinationFields.join(", ")}. Completa los campos antes de generar la etiqueta.`);
@@ -276,29 +341,21 @@ export function ExpeditionsView() {
     const total = Number(quote.importe).toLocaleString("es-ES", { style: "currency", currency: "EUR" });
     if (!options.skipConfirm && !window.confirm(`Vas a generar y pagar una etiqueta real con ${quote.nombre_agencia} por ${total}. ¿Confirmas?`)) return;
     let labelWindow = options.labelWindow;
-    if (options.delivery === "popup" && !labelWindow) {
-      labelWindow = window.open("", "_blank");
-      if (!labelWindow) {
-        setNotice("El navegador ha bloqueado la ventana de impresion. Permite popups para generar la etiqueta.");
-        return;
-      }
-      labelWindow.document.title = "Generando etiqueta Genei";
-      labelWindow.document.body.innerHTML = "<p>Generando etiqueta Genei...</p>";
-    }
     setLoading(true);
     try {
-      const shipmentResponse = await fetch("/api/genei/shipments/real", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agencyId: Number(quote.id_agencia), externalShippingCode: order.odooRef, packagesArray: parcels.map((parcel) => ({ weight: Number(parcel.weight.replace(",", ".")), height: Number(parcel.height), width: Number(parcel.width), length: Number(parcel.length) })), destination: { postalCode: destinationDraft.postalCode, town: destinationDraft.town, name: destinationDraft.name, address: destinationDraft.address, isoCountry: destinationDraft.country, phone: destinationDraft.phone, email: destinationDraft.email } }) });
+      const shipmentResponse = await fetch("/api/genei/shipments/real", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agencyId: Number(quote.id_agencia), externalShippingCode: getShipmentExternalReference(), orderReference: order.odooRef, packagesArray: parcels.map((parcel) => ({ weight: Number(parcel.weight.replace(",", ".")), height: Number(parcel.height), width: Number(parcel.width), length: Number(parcel.length) })), destination: { postalCode: destinationDraft.postalCode, town: destinationDraft.town, name: destinationDraft.name, address: destinationDraft.address, isoCountry: destinationDraft.country, phone: destinationDraft.phone, email: destinationDraft.email } }) });
       const shipmentText = await shipmentResponse.text();
       const shipmentPayload = (shipmentText ? JSON.parse(shipmentText) : {}) as { shipment?: Record<string, unknown> & { transactionId?: number }; message?: string };
       const createdCode = getGeneiShipmentCode(shipmentPayload.shipment);
       if (!shipmentResponse.ok || !createdCode || !shipmentPayload.shipment?.transactionId) {
         if (shipmentPayload.message?.toLowerCase().includes("externo ya corresponde")) {
-          const known = await fetch(`/api/genei/shipments/external/${encodeURIComponent(order.odooRef)}`).then(async (response) => response.ok ? response.json() : null).catch(() => null) as { shipment?: Record<string, unknown> } | null;
+          const known = await findExistingGeneiShipment(order);
           const existingCode = getGeneiShipmentCode(known?.shipment);
           if (existingCode) {
             setExistingShipmentCode(existingCode);
-            setNotice(`Genei ya tenia el envio ${existingCode}. Esperando PDF para descargar.`);
-            await openLabel(existingCode, { delivery: "download" });
+            setNotice(`Genei ya tenia el envio ${existingCode}. Esperando PDF para imprimir sin salir de Expediciones.`);
+            await openLabel(existingCode, { delivery: options.delivery ?? "inline-print", print: options.print });
+            if (validateInOdooAfterLabel) await validateLabelDeliveryInOdoo(existingCode);
             return;
           }
         }
@@ -309,12 +366,13 @@ export function ExpeditionsView() {
       const paymentPayload = (paymentText ? JSON.parse(paymentText) : {}) as { message?: string };
       if (!paymentResponse.ok) throw new Error(paymentPayload.message || "Genei no ha podido cobrar la etiqueta");
       setExistingShipmentCode(createdCode);
-      setNotice(`Etiqueta ${createdCode} generada y pagada. Descargando PDF.`);
+      setNotice(`Etiqueta ${createdCode} generada y pagada. Preparando ${options.delivery === "download" ? "descarga" : "impresion"}.`);
       await openLabel(createdCode, {
         labelWindow,
         print: options.print,
         delivery: options.delivery ?? "download",
       });
+      if (validateInOdooAfterLabel) await validateLabelDeliveryInOdoo(createdCode);
     } catch (error) {
       labelWindow?.close();
       setNotice(error instanceof Error ? error.message : "No se pudo generar la etiqueta");
@@ -329,7 +387,7 @@ export function ExpeditionsView() {
   };
 
   const resetShipmentFlow = () => {
-    setOrderFound(false); setOrder(null); setQuotes([]); setShipment(null); setTestShipmentCode(null); setExistingShipmentCode(null); setPreparedReference(""); setDestinationDraft(emptyDestination); setScan(""); setParcels([automaticParcel]); setSelectedQuote(0); setMode("automatic"); setNotice("Listo para escanear un nuevo pedido.");
+    setOrderFound(false); setOrder(null); setQuotes([]); setShipment(null); setTestShipmentCode(null); setExistingShipmentCode(null); setPreparedReference(""); setLabelReference(""); setDestinationDraft(emptyDestination); setScan(""); setParcels([automaticParcel]); setSelectedQuote(0); setMode("automatic"); setNotice("Listo para escanear un nuevo pedido.");
   };
 
   const editInManual = () => {
@@ -339,7 +397,7 @@ export function ExpeditionsView() {
 
   const openLabel = async (
     shipmentCode: string,
-    options: { labelWindow?: Window | null; print?: boolean; delivery?: "download" | "popup" } = {},
+    options: { labelWindow?: Window | null; print?: boolean; delivery?: LabelDelivery } = {},
   ) => {
     const fetchLabelBase64 = async (attempts = 10) => {
       let lastMessage = "Genei todavia no ha preparado el PDF de la etiqueta";
@@ -374,8 +432,12 @@ export function ExpeditionsView() {
         setNotice("Etiqueta lista en Genei. Descarga iniciada desde el backend.");
         return;
       }
-      const bytes = Uint8Array.from(atob(base64.replace(/^data:application\/pdf;base64,/, "")), (char) => char.charCodeAt(0));
-      const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      if (delivery === "inline-print") {
+        await printPdfInCurrentTab(base64, shipmentCode);
+        setNotice("Cuadro de impresion abierto sin salir de Expediciones.");
+        return;
+      }
+      const url = pdfBase64ToObjectUrl(base64);
       if (!labelWindow) throw new Error("No se pudo abrir la ventana de etiqueta");
       labelWindow.document.open();
       labelWindow.document.write(`
@@ -423,11 +485,17 @@ export function ExpeditionsView() {
     }
   };
 
-  const openExistingLabel = async (delivery: "download" | "popup" = "download") => {
+  const openExistingLabel = async (
+    delivery: LabelDelivery = "download",
+    print = delivery === "inline-print" || delivery === "popup",
+  ) => {
     if (!existingShipmentCode) return;
     setLoading(true);
     try {
-      await openLabel(existingShipmentCode, { delivery, print: delivery === "popup" });
+      await openLabel(existingShipmentCode, { delivery, print });
+      if (print && validateInOdooAfterLabel) {
+        await validateLabelDeliveryInOdoo(existingShipmentCode);
+      }
     }
     finally { setLoading(false); }
   };
@@ -463,10 +531,25 @@ export function ExpeditionsView() {
 
   const markAsShipped = async () => {
     if (!order || !existingShipmentCode || !window.confirm(`¿Dar por enviado el pedido ${order.odooRef}? Odoo validará la entrega y enviará el tracking mediante el conector del canal.`)) return;
+    await validateLabelDeliveryInOdoo(existingShipmentCode);
+  };
+
+  const getShipmentExternalReference = () =>
+    normalizeScanReference(labelReference) || order?.externalRef || order?.id || order?.odooRef || "";
+
+  const validateLabelDeliveryInOdoo = async (shipmentCode: string) => {
+    if (!order) return;
     setLoading(true);
     try {
-      await odooClient.validateOdooDeliveries([order.odooRef]);
-      setNotice(`Pedido ${order.odooRef} marcado como enviado en Odoo. El conector del canal recibe el tracking.`);
+      const result = await odooClient.validateOdooDeliveries([order.odooRef], {
+        source: "genei-label",
+        tracking: shipmentCode,
+      });
+      const incidentText = result.incidents?.length
+        ? ` Incidencia: ${result.incidents[0].reason}`
+        : "";
+      setNotice(`Etiqueta ${shipmentCode} impresa. Odoo: ${result.validated ?? 0} entrega(s) validada(s).${incidentText}`);
+      onRefreshOrders?.();
     } catch (error) { setNotice(error instanceof Error ? error.message : "No se pudo validar la entrega en Odoo"); }
     finally { setLoading(false); }
   };
@@ -482,7 +565,7 @@ export function ExpeditionsView() {
         <div>
           <span className="expeditions-kicker">INTEGRACION GENEI · DOBLE ESCANEO</span>
           <h2>Expediciones</h2>
-          <p>Primer escaneo: busca y cotiza. Segundo escaneo del mismo pedido: genera la etiqueta y descarga el PDF.</p>
+          <p>Primer escaneo: busca y cotiza. Segundo escaneo del mismo pedido: genera la etiqueta y abre la impresion sin salir de Expediciones.</p>
         </div>
         <div className="station-card">
           <Printer size={20} />
@@ -547,7 +630,26 @@ export function ExpeditionsView() {
           </section>
 
           <section className="expeditions-card action-card">
-            <span>Ultimo paso</span><h3>{shipment ? "Envio creado" : "Crear y descargar"}</h3>
+            <span>Ultimo paso</span><h3>{shipment ? "Envio creado" : "Crear e imprimir"}</h3>
+            <label className="label-reference-field">
+              Referencia etiqueta
+              <input
+                disabled={loading}
+                onChange={(event) => setLabelReference(event.target.value)}
+                placeholder="Amazon / Prestashop / referencia canal"
+                value={labelReference}
+              />
+              <small>Se envia a Genei como referencia externa para localizar la etiqueta por pedido.</small>
+            </label>
+            <label className="odoo-auto-validate">
+              <input
+                checked={validateInOdooAfterLabel}
+                disabled={loading}
+                onChange={(event) => setValidateInOdooAfterLabel(event.target.checked)}
+                type="checkbox"
+              />
+              Validar entrega en Odoo al imprimir etiqueta
+            </label>
             {existingShipmentCode ? (
               <div className="shipment-success">
                 <CheckCircle2 size={25} />
@@ -555,8 +657,9 @@ export function ExpeditionsView() {
                   <strong>Etiqueta Genei · {existingShipmentCode}</strong>
                   <span>Recuperacion directa desde Genei: no se guarda ningun PDF en el equipo.</span>
                   <div className="settings-demo-actions">
-                    <button className="primary-action" disabled={loading} onClick={() => void openExistingLabel("download")} type="button">Descargar etiqueta</button>
-                    <button className="secondary-action" disabled={loading} onClick={() => void openExistingLabel("popup")} type="button">Abrir PDF</button>
+                    <button className="primary-action" disabled={loading} onClick={() => void openExistingLabel("inline-print", true)} type="button">Imprimir etiqueta</button>
+                    <button className="secondary-action" disabled={loading} onClick={() => void openExistingLabel("download")} type="button">Descargar etiqueta</button>
+                    <button className="secondary-action" disabled={loading} onClick={() => void openExistingLabel("popup", false)} type="button">Abrir PDF</button>
                     <button className="secondary-action" disabled={loading} onClick={() => void markAsShipped()} type="button">Dar por enviado</button>
                     <button className="secondary-action" disabled={loading} onClick={() => void cancelGeneiShipment()} type="button">Cancelar en Genei</button>
                     <button className="secondary-action" disabled={loading} onClick={() => void unlinkGeneiShipment()} type="button">Desvincular pedido</button>
@@ -578,8 +681,9 @@ export function ExpeditionsView() {
               </div>
             ) : (
               <>
-                <p>Falta el segundo escaneo del mismo pedido. Ese segundo escaneo generara y pagara la etiqueta, y descargara el PDF.</p>
-                <button className="primary-action full" disabled={loading} onClick={() => void createAndPayManualShipment({ delivery: "download" })} type="button">Generar y descargar etiqueta</button>
+                <p>Falta el segundo escaneo del mismo pedido. Ese segundo escaneo generara y pagara la etiqueta, abrira la impresion y actualizara Odoo si esta marcado.</p>
+                <button className="primary-action full" disabled={loading} onClick={() => void createAndPayManualShipment({ delivery: "inline-print", print: true })} type="button">Generar e imprimir etiqueta</button>
+                <button className="secondary-action full" disabled={loading} onClick={() => void createAndPayManualShipment({ delivery: "download" })} type="button">Generar y descargar etiqueta</button>
                 <button className="secondary-action full" onClick={editInManual} type="button">Editar antes del segundo escaneo</button>
                 <button className="secondary-action full" disabled={loading} onClick={() => void createTestShipment()} type="button">Crear prueba sin pagar</button>
                 <button className="secondary-action full" disabled={loading} onClick={resetShipmentFlow} type="button">Cancelar y nuevo escaneo</button>

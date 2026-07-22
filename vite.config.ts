@@ -837,12 +837,18 @@ function odooReadOnlyApi(env: Record<string, string>) {
                 const payload = await readJsonBody<{
                   orderRefs?: string[];
                   orderIds?: Array<string | number>;
+                  source?: "sendcloud" | "genei-label";
+                  tracking?: string;
                 }>(request);
                 const startedAt = Date.now();
                 const result = await validateOdooDeliveries(
                   env,
                   payload.orderIds ?? [],
                   payload.orderRefs ?? [],
+                  {
+                    source: payload.source,
+                    tracking: payload.tracking,
+                  },
                 );
                 recordManualDeliveryValidationAudit(env, result, Date.now() - startedAt);
                 sendJson(response, 200, result);
@@ -4692,8 +4698,36 @@ function recordManualDeliveryValidationAudit(
       reason: incident.reason,
     })),
   ];
+  const validatedKeys = new Set(
+    (result.validatedOrders ?? []).flatMap((order) =>
+      [order.orderName, order.orderId ? `#${order.orderId}` : ""]
+        .map(cleanText)
+        .filter(Boolean),
+    ),
+  );
+  const orders = store.orders.map((order) =>
+    validatedKeys.has(cleanText(order.id)) ||
+    validatedKeys.has(cleanText(order.odooRef))
+      ? {
+          ...order,
+          deliveryStatus: "Entregado",
+          odooDeliveryValidation: {
+            status: "validated" as const,
+            tone: "ok" as const,
+            label: "Validado Odoo ahora",
+            reason: "Entrega validada desde Expediciones.",
+            dateDone: formatDate(now),
+            pickingId: order.odooDeliveryValidation?.pickingId,
+            canValidate: false,
+            validationMethod: "manual" as const,
+          },
+        }
+      : order,
+  );
   writeOrdersCache(env, {
     ...store,
+    updatedAt: now,
+    orders,
     incidents: mergeDeliveryIncidents(store.incidents, incidents),
     audit: [...store.audit, ...audit].slice(-1000),
   });
@@ -5650,6 +5684,8 @@ async function validateOdooDeliveries(
     dryRun?: boolean;
     mode?: "manual" | "automatic";
     trigger?: "manual" | "sync-incremental" | "sync-full" | "sendcloud-webhook";
+    source?: "sendcloud" | "genei-label";
+    tracking?: string;
   } = {},
 ) {
   const dryRun = options.dryRun ?? false;
@@ -5734,7 +5770,10 @@ async function validateOdooDeliveries(
     const relatedPickings = (order.picking_ids ?? [])
       .map((id) => pickingsById.get(id))
       .filter((picking): picking is OdooPickingRecord => Boolean(picking));
-    const sendcloud = sendcloudByReference.get(getExternalOrderRef(order));
+    const sendcloud =
+      options.source === "genei-label"
+        ? buildGeneiLabelValidationStatus(order, options.tracking)
+        : sendcloudByReference.get(getExternalOrderRef(order));
     const precheck = buildOdooDeliveryValidation(order, relatedPickings, sendcloud);
     const idempotencyKey = createDeliveryValidationIdempotencyKey(
       `#${order.id}`,
@@ -6665,6 +6704,21 @@ function buildOdooDeliveryValidation(
     pickingId: String(firstPicking.id),
     canValidate: true,
     validationMethod: "manual" as const,
+  };
+}
+
+function buildGeneiLabelValidationStatus(
+  order: OdooRecord,
+  tracking?: string,
+): SendcloudStatus {
+  const reference = getExternalOrderRef(order) || order.name || `#${order.id}`;
+  return {
+    reference,
+    status: "Etiqueta Genei creada",
+    rawStatus: "genei-label-created",
+    trackingNumber: cleanText(tracking),
+    carrier: "Genei",
+    hasTracking: Boolean(cleanText(tracking)),
   };
 }
 

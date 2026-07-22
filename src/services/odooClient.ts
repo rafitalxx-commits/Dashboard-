@@ -261,11 +261,14 @@ export const odooClient = {
     }
     return payload;
   },
-  async validateOdooDeliveries(orderRefs: string[]) {
+  async validateOdooDeliveries(
+    orderRefs: string[],
+    options?: { source?: "sendcloud" | "genei-label"; tracking?: string },
+  ) {
     const response = await fetch("/api/odoo/orders/validate-delivery", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ orderRefs }),
+      body: JSON.stringify({ orderRefs, ...options }),
     });
     const payload = (await response.json()) as {
       ok?: boolean;

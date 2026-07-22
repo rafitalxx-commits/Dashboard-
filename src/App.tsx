@@ -1518,7 +1518,9 @@ function App() {
             orders={orders.length > 0 ? orders : demoOrders}
           />
         ) : activeView === "expeditions" ? (
-          <ExpeditionsView />
+          <ExpeditionsView
+            onRefreshOrders={() => setOrderRefreshKey((value) => value + 1)}
+          />
         ) : isOrdersView ? (
           <>
             {isV2View && (

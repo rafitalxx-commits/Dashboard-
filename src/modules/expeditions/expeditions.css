@@ -259,6 +259,37 @@
   background: #fef2f2;
 }
 
+.label-reference-field {
+  display: grid;
+  gap: 6px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.label-reference-field input {
+  min-height: 38px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  color: #111827;
+  font: inherit;
+  padding: 0 10px;
+}
+
+.label-reference-field small {
+  color: #64748b;
+  font-weight: 500;
+}
+
+.odoo-auto-validate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #1f2937;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .quote-list,
 .parcels-card {
   display: grid;
