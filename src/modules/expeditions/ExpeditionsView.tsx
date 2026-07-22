@@ -162,13 +162,14 @@ async function findExistingGeneiShipment(order: Order) {
   const references = Array.from(
     new Set([order.externalRef, order.id, order.odooRef].map(normalizeScanReference).filter(Boolean)),
   );
-  for (const reference of references) {
-    const known = await fetch(`/api/genei/shipments/external/${encodeURIComponent(reference)}`)
+  const results = await Promise.all(
+    references.map((reference) =>
+      fetch(`/api/genei/shipments/external/${encodeURIComponent(reference)}`)
       .then(async (response) => (response.ok ? response.json() : null))
-      .catch(() => null) as { shipment?: Record<string, unknown> } | null;
-    if (getGeneiShipmentCode(known?.shipment)) return known;
-  }
-  return null;
+      .catch(() => null) as Promise<{ shipment?: Record<string, unknown> } | null>,
+    ),
+  );
+  return results.find((known) => getGeneiShipmentCode(known?.shipment)) ?? null;
 }
 
 type ExpeditionsViewProps = {
@@ -255,8 +256,25 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       if (!draft.name || !draft.country || !draft.postalCode || !draft.town || !draft.phone || !draft.email) {
         throw new Error("El pedido debe tener nombre, codigo postal, ciudad, pais, telefono y email antes de cotizar");
       }
-      const quoteResponse = await fetch("/api/genei/quotes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isWarehouse: false, isoCountryOrigin: "ES", isoCountryDestination: country, postalCodeOrigin: "03690", postalCodeDestination: postalCode, townOrigin: "San Vicente del Raspeig", townDestination: town, packages: parcels.map((parcel) => ({ weight: Number(parcel.weight.replace(",", ".")), height: Number(parcel.height), width: Number(parcel.width), length: Number(parcel.length), isBox: false })) }) });
-      const quotePayload = await quoteResponse.json() as { quotes?: Array<GeneiQuote & { id?: string | number; agency?: string; base?: number; total?: number }>; message?: string };
+      const knownShipmentPromise = findExistingGeneiShipment(found);
+      const quotePayloadPromise = fetch("/api/genei/quotes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isWarehouse: false, isoCountryOrigin: "ES", isoCountryDestination: country, postalCodeOrigin: "03690", postalCodeDestination: postalCode, townOrigin: "San Vicente del Raspeig", townDestination: town, packages: parcels.map((parcel) => ({ weight: Number(parcel.weight.replace(",", ".")), height: Number(parcel.height), width: Number(parcel.width), length: Number(parcel.length), isBox: false })) }) })
+        .then(async (response) => ({
+          ok: response.ok,
+          payload: await response.json() as { quotes?: Array<GeneiQuote & { id?: string | number; agency?: string; base?: number; total?: number }>; message?: string },
+        }));
+      const known = await knownShipmentPromise;
+      const shipmentData = known?.shipment;
+      const shipmentReference = getGeneiShipmentCode(shipmentData) || (found.odooRef === testOrder.odooRef ? "0DROIMAV" : "");
+      if (shipmentReference) {
+        void quotePayloadPromise.catch(() => null);
+        setOrder(found); setQuotes([]); setSelectedQuote(0); setOrderFound(true); setPreparedReference(reference); setLabelReference(found.externalRef || found.id || found.odooRef); setScan(""); setExistingShipmentCode(shipmentReference);
+        showExistingLabelWarning(shipmentReference);
+        setNotice(`Pedido encontrado con etiqueta Genei ${shipmentReference} ya generada. Revisa y reimprime manualmente solo si hace falta.`);
+        focusScanInput();
+        return;
+      }
+      const quoteResponse = await quotePayloadPromise;
+      const quotePayload = quoteResponse.payload;
       if (!quoteResponse.ok) throw new Error(quotePayload.message || "No se pudo cotizar con Genei");
       const available = (quotePayload.quotes || []).map((quote) => ({
         ...quote,
@@ -271,17 +289,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       if (!permitted.length) throw new Error("La regla exige FedEx, pero Genei no lo ofrece para este pedido. Requiere revision manual.");
       const ordered = [...permitted].sort((left, right) => Number(left.importe) - Number(right.importe));
       setOrder(found); setQuotes(ordered); setSelectedQuote(0); setOrderFound(true); setPreparedReference(reference); setLabelReference(found.externalRef || found.id || found.odooRef); setScan("");
-      const known = await findExistingGeneiShipment(found);
-      const shipmentData = known?.shipment;
-      const shipmentReference = getGeneiShipmentCode(shipmentData) || (found.odooRef === testOrder.odooRef ? "0DROIMAV" : "");
-      if (shipmentReference) setExistingShipmentCode(shipmentReference);
       if (mode === "automatic") {
-        if (shipmentReference) {
-          showExistingLabelWarning(shipmentReference);
-          setNotice(`Pedido encontrado con etiqueta Genei ${shipmentReference} ya generada. Revisa y reimprime manualmente solo si hace falta.`);
-          focusScanInput();
-          return;
-        }
         setNotice(`Pedido encontrado. Generando etiqueta con ${ordered[0].nombre_agencia} sin segundo escaneo.`);
         await createAndPayManualShipment({
           delivery: "inline-print",
