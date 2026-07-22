@@ -1,10 +1,21 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { createGeneiClient } from "./client.ts";
 
 type Server = { middlewares: { use: (path: string, handler: (request: any, response: any) => void) => void } };
 type Auth = { getSessionUser: (cookie?: string) => { permissions: string[] } | undefined };
+type GeneratedLabelRecord = {
+  shipmentCode: string;
+  createdAt: string;
+  updatedAt: string;
+  orderRefs: string[];
+  source: string;
+};
+type GeneratedLabelStore = { labels: GeneratedLabelRecord[] };
 
 export function registerGeneiRoutes(server: Server, auth: Auth, env: Record<string, string>) {
   const genei = createGeneiClient(env);
+  const labelsRepository = createGeneratedLabelsRepository();
   server.middlewares.use("/api/genei", async (request, response) => {
     const user = auth.getSessionUser(request.headers.cookie);
     if (!user) return sendJson(response, 401, { message: "Login requerido" });
@@ -16,6 +27,14 @@ export function registerGeneiRoutes(server: Server, auth: Auth, env: Record<stri
       if (request.method === "GET" && path === "quotes") {
         const query = Object.fromEntries(url.searchParams.entries());
         return sendJson(response, 200, { quotes: await genei.quote(query) });
+      }
+      const recordedLabelMatch = path.match(/^labels\/external\/([^/]+)$/);
+      if (request.method === "GET" && recordedLabelMatch) {
+        return sendJson(response, 200, { label: labelsRepository.findByReference(decodeURIComponent(recordedLabelMatch[1])) });
+      }
+      if (request.method === "POST" && path === "labels") {
+        const input = await readJsonBody<{ orderRefs?: string[]; shipmentCode?: string; createdAt?: string; source?: string }>(request);
+        return sendJson(response, 201, { label: labelsRepository.upsert(input) });
       }
       if (request.method === "POST" && path === "quotes") {
         return sendJson(response, 200, { quotes: await genei.quote(await readJsonBody(request)) });
@@ -121,6 +140,75 @@ export function registerGeneiRoutes(server: Server, auth: Auth, env: Record<stri
   });
 }
 
+function createGeneratedLabelsRepository() {
+  const storePath = join(process.env.DASHBOARD_DATA_DIR ?? ".dashboard-data", "genei-shipping-labels.json");
+
+  function normalizeLabelReference(value?: string) {
+    const compact = (value || "").trim().replace(/[‘’'`´]/g, "-").replace(/\s+/g, "");
+    const reference = /^\d{17}$/.test(compact)
+      ? `${compact.slice(0, 3)}-${compact.slice(3, 10)}-${compact.slice(10)}`
+      : compact;
+    return reference.toUpperCase();
+  }
+
+  function normalizeRefs(values?: string[]) {
+    return Array.from(new Set((values || []).map(normalizeLabelReference).filter(Boolean)));
+  }
+
+  function ensureStore() {
+    if (existsSync(storePath)) return;
+    mkdirSync(dirname(storePath), { recursive: true });
+    writeStore({ labels: [] });
+  }
+
+  function readStore(): GeneratedLabelStore {
+    ensureStore();
+    const parsed = JSON.parse(readFileSync(storePath, "utf8")) as Partial<GeneratedLabelStore>;
+    return { labels: Array.isArray(parsed.labels) ? parsed.labels : [] };
+  }
+
+  function writeStore(store: GeneratedLabelStore) {
+    mkdirSync(dirname(storePath), { recursive: true });
+    writeFileSync(storePath, `${JSON.stringify(store, null, 2)}\n`);
+  }
+
+  function findByReference(reference: string) {
+    const normalized = normalizeLabelReference(reference);
+    if (!normalized) return null;
+    return readStore().labels.find((label) => label.orderRefs.map(normalizeLabelReference).includes(normalized)) ?? null;
+  }
+
+  function upsert(input: { orderRefs?: string[]; shipmentCode?: string; createdAt?: string; source?: string }) {
+    const shipmentCode = String(input.shipmentCode || "").trim();
+    const orderRefs = normalizeRefs(input.orderRefs);
+    if (!shipmentCode) throw new Error("Falta codigo de etiqueta Genei");
+    if (!orderRefs.length) throw new Error("Falta referencia de pedido para registrar la etiqueta");
+    const now = new Date().toISOString();
+    const createdAt = input.createdAt && !Number.isNaN(new Date(input.createdAt).getTime())
+      ? new Date(input.createdAt).toISOString()
+      : now;
+    const store = readStore();
+    const existingIndex = store.labels.findIndex((label) =>
+      label.shipmentCode === shipmentCode ||
+      label.orderRefs.some((reference) => orderRefs.includes(normalizeLabelReference(reference))),
+    );
+    const previous = existingIndex >= 0 ? store.labels[existingIndex] : null;
+    const next: GeneratedLabelRecord = {
+      shipmentCode,
+      createdAt: previous?.createdAt || createdAt,
+      updatedAt: now,
+      orderRefs: normalizeRefs([...(previous?.orderRefs || []), ...orderRefs]),
+      source: input.source || previous?.source || "expeditions",
+    };
+    if (existingIndex >= 0) store.labels[existingIndex] = next;
+    else store.labels.unshift(next);
+    writeStore(store);
+    return next;
+  }
+
+  return { findByReference, upsert };
+}
+
 function normalizePhone(value: string) {
   const compact = value.replace(/\s+/g, "");
   return compact.startsWith("+") ? compact : `+34${compact}`;
@@ -136,11 +224,11 @@ function extractPdfBase64(label: unknown) {
   return base64.replace(/^data:application\/pdf;base64,/, "");
 }
 
-async function readJsonBody(request: { on: Function }) {
+async function readJsonBody<T = Record<string, unknown>>(request: { on: Function }): Promise<T> {
   const chunks: Buffer[] = [];
   await new Promise<void>((resolve, reject) => { request.on("data", (chunk: Buffer) => chunks.push(chunk)); request.on("end", resolve); request.on("error", reject); });
   const raw = Buffer.concat(chunks).toString("utf8");
-  return raw ? JSON.parse(raw) : {};
+  return (raw ? JSON.parse(raw) : {}) as T;
 }
 
 function sendJson(response: any, status: number, body: unknown) {

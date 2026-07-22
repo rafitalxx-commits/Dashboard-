@@ -19,6 +19,7 @@ type Shipment = { code: string; tracking: string; carrier: string; service: stri
 type GeneiQuote = { id_agencia: string | number; nombre_agencia: string; importe: number; importe_sin_iva?: number; iva?: number; servicio_horas?: string };
 type DestinationDraft = { name: string; address: string; postalCode: string; town: string; country: string; phone: string; email: string };
 type LabelDelivery = "download" | "inline-print" | "popup";
+type GeneratedShippingLabelRecord = { shipmentCode: string; createdAt: string; orderRefs: string[]; source?: string };
 
 const automaticParcel: Parcel = { id: 1, weight: "1", length: "30", width: "20", height: "15" };
 const emptyDestination: DestinationDraft = { name: "", address: "", postalCode: "", town: "", country: "", phone: "", email: "" };
@@ -155,8 +156,12 @@ function getGeneiShipmentCode(shipment?: Record<string, unknown> | null) {
 }
 
 function getGeneiShipmentCreatedAt(shipment?: Record<string, unknown> | null) {
+  return formatExistingLabelDate(getGeneiShipmentCreatedAtRaw(shipment));
+}
+
+function getGeneiShipmentCreatedAtRaw(shipment?: Record<string, unknown> | null) {
   if (!shipment) return "";
-  const raw = String(
+  return String(
     shipment.createdAt ||
       shipment.created_at ||
       shipment.dateCreated ||
@@ -167,7 +172,6 @@ function getGeneiShipmentCreatedAt(shipment?: Record<string, unknown> | null) {
       shipment.date ||
       "",
   );
-  return formatExistingLabelDate(raw);
 }
 
 function formatExistingLabelDate(value: string) {
@@ -188,9 +192,7 @@ function showExistingLabelWarning(shipmentCode: string, createdAt?: string) {
 }
 
 async function findExistingGeneiShipment(order: Order) {
-  const references = Array.from(
-    new Set([order.externalRef, order.id, order.odooRef].map(normalizeScanReference).filter(Boolean)),
-  );
+  const references = getOrderLabelReferences(order);
   const results = await Promise.all(
     references.map((reference) =>
       fetch(`/api/genei/shipments/external/${encodeURIComponent(reference)}`)
@@ -199,6 +201,41 @@ async function findExistingGeneiShipment(order: Order) {
     ),
   );
   return results.find((known) => getGeneiShipmentCode(known?.shipment)) ?? null;
+}
+
+function getOrderLabelReferences(order: Order, labelReference?: string) {
+  return Array.from(
+    new Set([labelReference, order.externalRef, order.id, order.odooRef].map(normalizeScanReference).filter(Boolean)),
+  );
+}
+
+async function findRecordedShippingLabel(order: Order) {
+  const references = getOrderLabelReferences(order);
+  const results = await Promise.all(
+    references.map((reference) =>
+      fetch(`/api/genei/labels/external/${encodeURIComponent(reference)}`)
+      .then(async (response) => (response.ok ? response.json() : null))
+      .catch(() => null) as Promise<{ label?: GeneratedShippingLabelRecord } | null>,
+    ),
+  );
+  return results.find((known) => known?.label?.shipmentCode)?.label ?? null;
+}
+
+async function recordGeneratedShippingLabel(order: Order, shipmentCode: string, labelReference?: string, createdAt = new Date().toISOString()) {
+  const response = await fetch("/api/genei/labels", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      orderRefs: getOrderLabelReferences(order, labelReference),
+      shipmentCode,
+      createdAt,
+      source: "expeditions-print",
+    }),
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { message?: string };
+    throw new Error(payload.message || "No se pudo registrar la etiqueta generada");
+  }
 }
 
 type ExpeditionsViewProps = {
@@ -286,6 +323,15 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       if (!draft.name || !draft.country || !draft.postalCode || !draft.town || !draft.phone || !draft.email) {
         throw new Error("El pedido debe tener nombre, codigo postal, ciudad, pais, telefono y email antes de cotizar");
       }
+      const recordedLabel = await findRecordedShippingLabel(found);
+      if (recordedLabel?.shipmentCode) {
+        const recordedCreatedAt = formatExistingLabelDate(recordedLabel.createdAt);
+        setOrder(found); setQuotes([]); setSelectedQuote(0); setOrderFound(true); setPreparedReference(reference); setLabelReference(found.externalRef || found.id || found.odooRef); setScan(""); setExistingShipmentCode(recordedLabel.shipmentCode); setExistingShipmentCreatedAt(recordedCreatedAt);
+        showExistingLabelWarning(recordedLabel.shipmentCode, recordedCreatedAt);
+        setNotice(`Etiqueta de envio ${recordedLabel.shipmentCode} ya registrada${recordedCreatedAt ? ` el ${recordedCreatedAt}` : ""}. Reimpresion bloqueada en automatico; usa Imprimir etiqueta si hace falta.`);
+        focusScanInput();
+        return;
+      }
       const knownShipmentPromise = findExistingGeneiShipment(found);
       const quotePayloadPromise = fetch("/api/genei/quotes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isWarehouse: false, isoCountryOrigin: "ES", isoCountryDestination: country, postalCodeOrigin: "03690", postalCodeDestination: postalCode, townOrigin: "San Vicente del Raspeig", townDestination: town, packages: parcels.map((parcel) => ({ weight: Number(parcel.weight.replace(",", ".")), height: Number(parcel.height), width: Number(parcel.width), length: Number(parcel.length), isBox: false })) }) })
         .then(async (response) => ({
@@ -298,6 +344,12 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       const shipmentCreatedAt = getGeneiShipmentCreatedAt(shipmentData);
       if (shipmentReference) {
         void quotePayloadPromise.catch(() => null);
+        void recordGeneratedShippingLabel(
+          found,
+          shipmentReference,
+          found.externalRef || found.id || found.odooRef,
+          getGeneiShipmentCreatedAtRaw(shipmentData) || new Date().toISOString(),
+        ).catch(() => null);
         setOrder(found); setQuotes([]); setSelectedQuote(0); setOrderFound(true); setPreparedReference(reference); setLabelReference(found.externalRef || found.id || found.odooRef); setScan(""); setExistingShipmentCode(shipmentReference); setExistingShipmentCreatedAt(shipmentCreatedAt);
         showExistingLabelWarning(shipmentReference, shipmentCreatedAt);
         setNotice(`Pedido encontrado con etiqueta Genei ${shipmentReference} ya generada${shipmentCreatedAt ? ` el ${shipmentCreatedAt}` : ""}. Revisa y reimprime manualmente solo si hace falta.`);
@@ -440,6 +492,12 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
             setExistingShipmentCode(existingCode);
             const existingCreatedAt = getGeneiShipmentCreatedAt(known?.shipment);
             setExistingShipmentCreatedAt(existingCreatedAt);
+            void recordGeneratedShippingLabel(
+              targetOrder,
+              existingCode,
+              getShipmentExternalReference(options.labelReferenceOverride, targetOrder),
+              getGeneiShipmentCreatedAtRaw(known?.shipment) || new Date().toISOString(),
+            ).catch(() => null);
             showExistingLabelWarning(existingCode, existingCreatedAt);
             setNotice(`Genei ya tenia la etiqueta ${existingCode}${existingCreatedAt ? ` generada el ${existingCreatedAt}` : ""}. Reimpresion bloqueada en automatico; usa Imprimir etiqueta si hace falta.`);
             focusScanInput();
@@ -452,17 +510,21 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       const paymentText = await paymentResponse.text();
       const paymentPayload = (paymentText ? JSON.parse(paymentText) : {}) as { message?: string };
       if (!paymentResponse.ok) throw new Error(paymentPayload.message || "Genei no ha podido cobrar la etiqueta");
-      setExistingShipmentCode(createdCode);
-      setExistingShipmentCreatedAt(new Intl.DateTimeFormat("es-ES", {
+      const generatedAt = new Date();
+      const generatedAtIso = generatedAt.toISOString();
+      const generatedAtLabel = new Intl.DateTimeFormat("es-ES", {
         dateStyle: "short",
         timeStyle: "short",
-      }).format(new Date()));
+      }).format(generatedAt);
+      setExistingShipmentCode(createdCode);
+      setExistingShipmentCreatedAt(generatedAtLabel);
       setNotice(`Etiqueta ${createdCode} generada y pagada. Preparando ${options.delivery === "download" ? "descarga" : "impresion"}.`);
       await openLabel(createdCode, {
         labelWindow,
         print: options.print,
         delivery: options.delivery ?? "download",
       });
+      await recordGeneratedShippingLabel(targetOrder, createdCode, getShipmentExternalReference(options.labelReferenceOverride, targetOrder), generatedAtIso);
       if (validateInOdooAfterLabel) await validateLabelDeliveryInOdoo(createdCode, targetOrder);
       if (options.resetAfterSuccess) resetShipmentFlow("Listo para escanear el siguiente pedido.");
     } catch (error) {
