@@ -12,6 +12,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { registerAgentApiRoutes } from "./backend/agentApi/routes";
 import { registerAmazonMessagesRoutes } from "./backend/amazonMessages/routes";
+import { registerAmazonSpApiRoutes } from "./backend/amazonSpApi/routes";
+import type { AmazonShipmentConfirmationDraft } from "./backend/amazonSpApi/schema";
 import { registerGeneiRoutes } from "./backend/genei/routes";
 import {
   getExternalOrderRef,
@@ -394,6 +396,10 @@ function odooReadOnlyApi(env: Record<string, string>) {
       registerGeneiRoutes(server, auth, env);
       registerAmazonMessagesRoutes(server, auth, {
         dataDir: env.DASHBOARD_DATA_DIR,
+      });
+      registerAmazonSpApiRoutes(server, auth, env, {
+        dataDir: env.DASHBOARD_DATA_DIR,
+        resolveShipmentDraft: (input) => resolveAmazonShipmentDraftFromOdoo(env, input),
       });
       registerAgentApiRoutes(server, {
         env,
@@ -5888,6 +5894,148 @@ async function validateOdooDeliveries(
     incidents,
     validatedOrders: validated,
   };
+}
+
+async function resolveAmazonShipmentDraftFromOdoo(
+  env: Record<string, string>,
+  input: Record<string, unknown>,
+): Promise<AmazonShipmentConfirmationDraft> {
+  const config = getOdooConfig(env);
+  if (!config.url || !config.database || !config.username || !config.apiKey) {
+    throw new Error("Faltan variables Odoo para preparar confirmacion Amazon");
+  }
+  const uid = await authenticate(config);
+  const sourceReference = cleanText(input.orderRef) || cleanText(input.reference) || cleanText(input.amazonOrderId);
+  const explicitOrderId = Number(input.saleOrderId);
+  const explicitPickingId = Number(input.pickingId);
+  const tracking = cleanText(input.tracking);
+  const carrier = cleanText(input.carrier);
+  if (!tracking) throw new Error("No hay tracking para preparar Amazon");
+  if (!carrier) throw new Error("No hay transportista para preparar Amazon");
+  const orders = await findAmazonShipmentOrders(config, uid, {
+    sourceReference,
+    saleOrderId: Number.isInteger(explicitOrderId) ? explicitOrderId : undefined,
+    pickingId: Number.isInteger(explicitPickingId) ? explicitPickingId : undefined,
+  });
+  if (orders.length === 0) throw new Error("No se ha encontrado pedido Odoo/Amazon para preparar tracking");
+  if (orders.length > 1) throw new Error(`La referencia coincide con ${orders.length} pedidos; requiere revision manual`);
+  const order = orders[0];
+  const amazonOrderId = cleanText(input.amazonOrderId) || cleanText(order.client_order_ref);
+  if (!/^\d{3}-\d{7}-\d{7}$/.test(amazonOrderId)) {
+    throw new Error("El pedido localizado no tiene client_order_ref Amazon valido");
+  }
+  const pickingId = Number.isInteger(explicitPickingId) && (order.picking_ids ?? []).includes(explicitPickingId)
+    ? explicitPickingId
+    : (order.picking_ids ?? [])[0];
+  if (!Number.isInteger(pickingId)) throw new Error("El pedido Amazon no tiene picking/albaran asociado");
+  const lines = (await executeKw(config, uid, "sale.order.line", "read", [order.order_line ?? []], {
+    fields: ["id", "name", "product_uom_qty", "amazon_order_item_id", "display_type"],
+  })) as Array<{
+    id: number;
+    name?: string;
+    product_uom_qty?: number;
+    amazon_order_item_id?: string | false;
+    display_type?: string | false;
+  }>;
+  const orderItems = lines
+    .filter((line) => !line.display_type)
+    .filter((line) => !cleanText(line.amazon_order_item_id).endsWith("_ship"))
+    .filter((line) => !/amazon shipping costs/i.test(cleanText(line.name)))
+    .map((line) => ({
+      orderItemId: cleanText(line.amazon_order_item_id),
+      quantity: Math.max(1, Math.trunc(Number(line.product_uom_qty || 0))),
+    }))
+    .filter((line) => line.orderItemId && line.quantity > 0);
+  if (!orderItems.length) throw new Error("No hay lineas Odoo con amazon_order_item_id para confirmShipment");
+  return {
+    pickingId,
+    saleOrderId: order.id,
+    saleOrderName: cleanText(order.name),
+    amazonOrderId,
+    tracking,
+    carrier,
+    carrierCode: cleanText(input.carrierCode) || carrier,
+    shippingMethod: cleanText(input.shippingMethod) || carrier,
+    shipmentDate: normalizeAmazonShipDate(input.shipmentDate),
+    marketplaceId: cleanText(input.marketplaceId) || env.MARKETPLACE_ID || "",
+    packageReferenceId: cleanText(input.packageReferenceId) || String(pickingId),
+    orderItems,
+    geneiShipmentCode: cleanText(input.geneiShipmentCode),
+    trackingUrl: cleanText(input.trackingUrl),
+    sourceReference,
+  };
+}
+
+async function findAmazonShipmentOrders(
+  config: ReturnType<typeof getOdooConfig>,
+  uid: number,
+  input: { sourceReference?: string; saleOrderId?: number; pickingId?: number },
+) {
+  const fields = [
+    "id",
+    "name",
+    "team_id",
+    "origin",
+    "client_order_ref",
+    "amz_fulfillment_by",
+    "state",
+    "picking_ids",
+    "order_line",
+  ];
+  if (input.saleOrderId) {
+    return (await executeKw(config, uid, "sale.order", "search_read", [[["id", "=", input.saleOrderId]]], {
+      fields,
+      limit: 2,
+    })) as Array<OdooRecord & { order_line?: number[] }>;
+  }
+  if (input.pickingId) {
+    return (await executeKw(config, uid, "sale.order", "search_read", [[["picking_ids", "in", [input.pickingId]]]], {
+      fields,
+      limit: 2,
+    })) as Array<OdooRecord & { order_line?: number[] }>;
+  }
+  const reference = normalizeScanLikeReference(input.sourceReference);
+  if (!reference) throw new Error("Falta referencia para localizar pedido Amazon");
+  const numericId = parseOdooHashId(reference);
+  const domain = numericId
+    ? [["id", "=", numericId]]
+    : ["|", "|", ["name", "=", reference], ["client_order_ref", "=", reference], ["origin", "ilike", reference]];
+  let orders = (await executeKw(config, uid, "sale.order", "search_read", [domain], {
+    fields,
+    limit: 3,
+  })) as Array<OdooRecord & { order_line?: number[] }>;
+  if (orders.length === 0) {
+    const pickings = (await executeKw(config, uid, "stock.picking", "search_read", [[["name", "=", reference]]], {
+      fields: ["id"],
+      limit: 2,
+    })) as Array<{ id: number }>;
+    if (pickings.length === 1) {
+      orders = (await executeKw(config, uid, "sale.order", "search_read", [[["picking_ids", "in", [pickings[0].id]]]], {
+        fields,
+        limit: 2,
+      })) as Array<OdooRecord & { order_line?: number[] }>;
+    }
+  }
+  return orders;
+}
+
+function normalizeAmazonShipDate(value: unknown) {
+  const raw = cleanText(value);
+  const date = raw ? new Date(raw) : new Date();
+  if (Number.isNaN(date.getTime())) return new Date().toISOString();
+  return date.toISOString();
+}
+
+function normalizeScanLikeReference(value?: string) {
+  const compact = cleanText(value).replace(/[‘’'`´]/g, "-").replace(/\s+/g, "");
+  return /^\d{17}$/.test(compact)
+    ? `${compact.slice(0, 3)}-${compact.slice(3, 10)}-${compact.slice(10)}`
+    : compact;
+}
+
+function parseOdooHashId(value: string) {
+  const match = value.match(/^#?(\d+)$/);
+  return match ? Number(match[1]) : 0;
 }
 
 async function executeKwStrictWrite(

@@ -20,6 +20,16 @@ type GeneiQuote = { id_agencia: string | number; nombre_agencia: string; importe
 type DestinationDraft = { name: string; address: string; postalCode: string; town: string; country: string; phone: string; email: string };
 type LabelDelivery = "download" | "inline-print" | "popup";
 type GeneratedShippingLabelRecord = { shipmentCode: string; createdAt: string; orderRefs: string[]; source?: string };
+type AmazonShipmentRecord = {
+  id: string;
+  amazonOrderId: string;
+  tracking: string;
+  carrier: string;
+  status: "pending" | "sent" | "error" | "retrying";
+  dryRun: boolean;
+  retries: number;
+  lastError?: string;
+};
 
 const automaticParcel: Parcel = { id: 1, weight: "1", length: "30", width: "20", height: "15" };
 const emptyDestination: DestinationDraft = { name: "", address: "", postalCode: "", town: "", country: "", phone: "", email: "" };
@@ -174,6 +184,28 @@ function getGeneiShipmentCreatedAtRaw(shipment?: Record<string, unknown> | null)
   );
 }
 
+function getGeneiTrackingNumber(shipment?: Record<string, unknown> | null) {
+  if (!shipment) return "";
+  return String(
+    shipment.codigo_seguimiento ||
+      shipment.trackingNumber ||
+      shipment.tracking_number ||
+      shipment.tracking ||
+      shipment.codigo_bulto ||
+      "",
+  ).trim();
+}
+
+function getGeneiTrackingUrl(shipment?: Record<string, unknown> | null) {
+  if (!shipment) return "";
+  return String(shipment.trackingUrl || shipment.web_seguimiento || shipment.tracking_url || "").trim();
+}
+
+function getGeneiCarrierName(shipment?: Record<string, unknown> | null) {
+  if (!shipment) return "";
+  return String(shipment.nombre_agencia || shipment.carrier || shipment.carrierName || "Genei").trim();
+}
+
 function formatExistingLabelDate(value: string) {
   if (!value.trim()) return "";
   const date = new Date(value);
@@ -258,6 +290,8 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
   const [shipment, setShipment] = useState<Shipment | null>(null);
   const [existingShipmentCode, setExistingShipmentCode] = useState<string | null>(null);
   const [existingShipmentCreatedAt, setExistingShipmentCreatedAt] = useState("");
+  const [amazonShipment, setAmazonShipment] = useState<AmazonShipmentRecord | null>(null);
+  const [amazonLoading, setAmazonLoading] = useState(false);
   const [preparedReference, setPreparedReference] = useState("");
   const [labelReference, setLabelReference] = useState("");
   const [validateInOdooAfterLabel, setValidateInOdooAfterLabel] = useState(true);
@@ -302,7 +336,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       focusScanInput();
       return;
     }
-    setLoading(true); setOrderFound(false); setOrder(null); setQuotes([]); setShipment(null); setTestShipmentCode(null); setExistingShipmentCode(null); setExistingShipmentCreatedAt(""); setPreparedReference(""); setLabelReference(""); setDestinationDraft(emptyDestination);
+    setLoading(true); setOrderFound(false); setOrder(null); setQuotes([]); setShipment(null); setTestShipmentCode(null); setExistingShipmentCode(null); setExistingShipmentCreatedAt(""); setAmazonShipment(null); setPreparedReference(""); setLabelReference(""); setDestinationDraft(emptyDestination);
     try {
       const result = reference.toUpperCase() === testOrder.odooRef ? null : await odooClient.getOrderDetail(reference);
       const found = result?.order ?? (reference.toUpperCase() === testOrder.odooRef ? testOrder : null);
@@ -525,6 +559,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
         delivery: options.delivery ?? "download",
       });
       await recordGeneratedShippingLabel(targetOrder, createdCode, getShipmentExternalReference(options.labelReferenceOverride, targetOrder), generatedAtIso);
+      await prepareAmazonTrackingDryRun(createdCode, targetOrder);
       if (validateInOdooAfterLabel) await validateLabelDeliveryInOdoo(createdCode, targetOrder);
       if (options.resetAfterSuccess) resetShipmentFlow("Listo para escanear el siguiente pedido.");
     } catch (error) {
@@ -541,7 +576,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
   };
 
   const resetShipmentFlow = (nextNotice = "Listo para escanear un nuevo pedido.") => {
-    setOrderFound(false); setOrder(null); setQuotes([]); setShipment(null); setTestShipmentCode(null); setExistingShipmentCode(null); setExistingShipmentCreatedAt(""); setPreparedReference(""); setLabelReference(""); setDestinationDraft(emptyDestination); setScan(""); setParcels([automaticParcel]); setSelectedQuote(0); setMode("automatic"); setNotice(nextNotice); focusScanInput();
+    setOrderFound(false); setOrder(null); setQuotes([]); setShipment(null); setTestShipmentCode(null); setExistingShipmentCode(null); setExistingShipmentCreatedAt(""); setAmazonShipment(null); setPreparedReference(""); setLabelReference(""); setDestinationDraft(emptyDestination); setScan(""); setParcels([automaticParcel]); setSelectedQuote(0); setMode("automatic"); setNotice(nextNotice); focusScanInput();
   };
 
   const editInManual = () => {
@@ -688,6 +723,83 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
     await validateLabelDeliveryInOdoo(existingShipmentCode);
   };
 
+  const prepareAmazonTrackingDryRun = async (shipmentCode = existingShipmentCode || "", orderOverride?: Order | null) => {
+    const targetOrder = orderOverride ?? order;
+    if (!shipmentCode || !targetOrder) return null;
+    if (!/amazon/i.test(targetOrder.channel) && !/^\d{3}-\d{7}-\d{7}$/.test(targetOrder.externalRef || "")) return null;
+    setAmazonLoading(true);
+    try {
+      const detailsResponse = await fetch(`/api/genei/shipments/${encodeURIComponent(shipmentCode)}`);
+      const details = await detailsResponse.json() as { shipment?: Record<string, unknown>; message?: string };
+      if (!detailsResponse.ok || !details.shipment) throw new Error(details.message || "No se pudo leer el envio Genei");
+      const tracking = getGeneiTrackingNumber(details.shipment);
+      const carrier = getGeneiCarrierName(details.shipment);
+      if (!tracking) throw new Error("Genei aun no ha devuelto tracking real para Amazon");
+      const response = await fetch("/api/amazon-sp-api/shipments/prepare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderRef: targetOrder.externalRef || targetOrder.odooRef || targetOrder.id,
+          saleOrderId: Number(String(targetOrder.id).replace(/^#/, "")) || undefined,
+          pickingId: targetOrder.odooDeliveryValidation?.pickingId,
+          amazonOrderId: targetOrder.externalRef,
+          geneiShipmentCode: shipmentCode,
+          tracking,
+          trackingUrl: getGeneiTrackingUrl(details.shipment),
+          carrier,
+          carrierCode: carrier,
+          shippingMethod: carrier,
+          shipmentDate: getGeneiShipmentCreatedAtRaw(details.shipment) || new Date().toISOString(),
+        }),
+      });
+      const payload = await response.json() as { shipment?: AmazonShipmentRecord; message?: string };
+      if (!response.ok || !payload.shipment) throw new Error(payload.message || "No se pudo preparar Amazon dry-run");
+      setAmazonShipment(payload.shipment);
+      setNotice(`Amazon dry-run preparado: ${payload.shipment.amazonOrderId} · ${payload.shipment.carrier} · ${payload.shipment.tracking}. No se ha enviado nada real.`);
+      return payload.shipment;
+    } catch (error) {
+      setNotice(error instanceof Error ? `Amazon pendiente: ${error.message}` : "Amazon pendiente: no se pudo preparar dry-run");
+      return null;
+    } finally {
+      setAmazonLoading(false);
+    }
+  };
+
+  const sendAmazonTracking = async () => {
+    const prepared = amazonShipment ?? await prepareAmazonTrackingDryRun();
+    if (!prepared) return;
+    setAmazonLoading(true);
+    try {
+      const response = await fetch(`/api/amazon-sp-api/shipments/${encodeURIComponent(prepared.id)}/send`, { method: "POST" });
+      const payload = await response.json() as { shipment?: AmazonShipmentRecord; dryRun?: boolean; message?: string };
+      if (!response.ok || !payload.shipment) throw new Error(payload.message || "No se pudo enviar tracking Amazon");
+      setAmazonShipment(payload.shipment);
+      setNotice(payload.dryRun
+        ? "Amazon dry-run ejecutado. No se ha enviado nada real; la peticion queda registrada para revisar."
+        : `Tracking enviado a Amazon para ${payload.shipment.amazonOrderId}.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "No se pudo enviar tracking Amazon");
+    } finally {
+      setAmazonLoading(false);
+    }
+  };
+
+  const retryAmazonTracking = async () => {
+    if (!amazonShipment) return;
+    setAmazonLoading(true);
+    try {
+      const response = await fetch(`/api/amazon-sp-api/shipments/${encodeURIComponent(amazonShipment.id)}/retry`, { method: "POST" });
+      const payload = await response.json() as { shipment?: AmazonShipmentRecord; dryRun?: boolean; message?: string };
+      if (!response.ok || !payload.shipment) throw new Error(payload.message || "No se pudo reintentar Amazon");
+      setAmazonShipment(payload.shipment);
+      setNotice(payload.dryRun ? "Reintento Amazon simulado. No se ha enviado nada real." : "Reintento Amazon enviado.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "No se pudo reintentar Amazon");
+    } finally {
+      setAmazonLoading(false);
+    }
+  };
+
   const getShipmentExternalReference = (referenceOverride?: string, orderOverride?: Order) => {
     const targetOrder = orderOverride ?? order;
     return normalizeScanReference(referenceOverride ?? labelReference) || targetOrder?.externalRef || targetOrder?.id || targetOrder?.odooRef || "";
@@ -808,22 +920,32 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
               Validar entrega en Odoo al imprimir etiqueta
             </label>
             {existingShipmentCode ? (
-              <div className="shipment-success">
-                <CheckCircle2 size={25} />
-                <div>
-                  <strong>Etiqueta Genei · {existingShipmentCode}</strong>
-                  <span>{existingShipmentCreatedAt ? `Generada el ${existingShipmentCreatedAt}. ` : ""}Recuperacion directa desde Genei: no se guarda ningun PDF en el equipo.</span>
-                  <div className="settings-demo-actions">
-                    <button className="primary-action" disabled={loading} onClick={() => void openExistingLabel("inline-print", true)} type="button">Imprimir etiqueta</button>
-                    <button className="secondary-action" disabled={loading} onClick={() => void openExistingLabel("download")} type="button">Descargar etiqueta</button>
-                    <button className="secondary-action" disabled={loading} onClick={() => void openExistingLabel("popup", false)} type="button">Abrir PDF</button>
-                    <button className="secondary-action" disabled={loading} onClick={() => void markAsShipped()} type="button">Dar por enviado</button>
-                    <button className="secondary-action" disabled={loading} onClick={() => void cancelGeneiShipment()} type="button">Cancelar en Genei</button>
-                    <button className="secondary-action" disabled={loading} onClick={() => void unlinkGeneiShipment()} type="button">Desvincular pedido</button>
-                    <button className="secondary-action" disabled={loading} onClick={resetShipmentFlow} type="button">Nuevo escaneo</button>
+              <>
+                <div className="shipment-success">
+                  <CheckCircle2 size={25} />
+                  <div>
+                    <strong>Etiqueta Genei · {existingShipmentCode}</strong>
+                    <span>{existingShipmentCreatedAt ? `Generada el ${existingShipmentCreatedAt}. ` : ""}Recuperacion directa desde Genei: no se guarda ningun PDF en el equipo.</span>
+                    <div className="settings-demo-actions">
+                      <button className="primary-action" disabled={loading} onClick={() => void openExistingLabel("inline-print", true)} type="button">Imprimir etiqueta</button>
+                      <button className="secondary-action" disabled={loading} onClick={() => void openExistingLabel("download")} type="button">Descargar etiqueta</button>
+                      <button className="secondary-action" disabled={loading} onClick={() => void openExistingLabel("popup", false)} type="button">Abrir PDF</button>
+                      <button className="secondary-action" disabled={loading} onClick={() => void markAsShipped()} type="button">Dar por enviado</button>
+                      <button className="secondary-action" disabled={loading || amazonLoading} onClick={() => void sendAmazonTracking()} type="button">Enviar tracking Amazon</button>
+                      <button className="secondary-action" disabled={loading || amazonLoading || !amazonShipment} onClick={() => void retryAmazonTracking()} type="button">Reintentar Amazon</button>
+                      <button className="secondary-action" disabled={loading} onClick={() => void cancelGeneiShipment()} type="button">Cancelar en Genei</button>
+                      <button className="secondary-action" disabled={loading} onClick={() => void unlinkGeneiShipment()} type="button">Desvincular pedido</button>
+                      <button className="secondary-action" disabled={loading} onClick={resetShipmentFlow} type="button">Nuevo escaneo</button>
+                    </div>
                   </div>
                 </div>
-              </div>
+                {amazonShipment ? (
+                  <div className="amazon-shipment-state">
+                    <strong>Amazon: {amazonShipment.status === "pending" ? "Pendiente" : amazonShipment.status === "sent" ? "Enviado" : amazonShipment.status === "retrying" ? "Reintentando" : "Error"}</strong>
+                    <span>{amazonShipment.dryRun ? "Modo simulacion. " : ""}{amazonShipment.carrier} · {amazonShipment.tracking}{amazonShipment.lastError ? ` · ${amazonShipment.lastError}` : ""}</span>
+                  </div>
+                ) : null}
+              </>
             ) : testShipmentCode ? (
               <div className="shipment-success">
                 <CheckCircle2 size={25} />

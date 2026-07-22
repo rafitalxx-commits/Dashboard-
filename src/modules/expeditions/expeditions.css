@@ -290,6 +290,26 @@
   font-weight: 700;
 }
 
+.amazon-shipment-state {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 10px;
+}
+
+.amazon-shipment-state strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.amazon-shipment-state span {
+  color: #475569;
+  font-size: 12px;
+}
+
 .quote-list,
 .parcels-card {
   display: grid;
