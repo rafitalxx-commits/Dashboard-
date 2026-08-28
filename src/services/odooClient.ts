@@ -72,6 +72,26 @@ type CalendarAccount = {
   connected: boolean;
   status: string;
 };
+
+/**
+ * A proxy/service restart can briefly return an HTML error page for an API URL.
+ * Never let that become a raw `Unexpected token < in JSON` crash in the UI.
+ */
+async function readJson<T = any>(response: Response): Promise<T> {
+  const body = await response.text();
+  try {
+    return JSON.parse(body) as T;
+  } catch {
+    const contentType = response.headers.get("content-type") || "desconocido";
+    throw new Error(
+      `El servidor devolvió una respuesta no válida (${response.status}, ${contentType}). Reintenta en unos segundos.`,
+    );
+  }
+}
+const productsApi = (path = "") =>
+  `${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/odoo/products${path}`;
+const inventoriesApi = () =>
+  `${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/odoo/inventories`;
 type DashboardCalendarEvent = {
   id: string;
   source: CalendarAccountId;
@@ -95,11 +115,223 @@ export type OdooConnectionConfig = {
 
 export const odooClient = {
   mode: "demo",
+  async getProductCatalog() {
+    const response = await fetch(productsApi());
+    if (!response.ok)
+      throw new Error("No se pudo leer el catálogo de Productos");
+    return (await readJson(response)) as CatalogStore;
+  },
+  async syncProductCatalog(full = false) {
+    const response = await fetch(
+      productsApi(`/sync${full ? "?full=true" : ""}`),
+      { method: "POST" },
+    );
+    const payload = (await readJson(response)) as CatalogStore & {
+      message?: string;
+    };
+    if (!response.ok)
+      throw new Error(payload.message ?? "No se pudo sincronizar Productos");
+    return payload;
+  },
+  async updateProductBarcode(productId: number, barcode: string) {
+    const response = await fetch(productsApi("/barcode"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ productId, barcode }),
+    });
+    const payload = (await readJson(response)) as {
+      id?: number;
+      name?: string;
+      reference?: string;
+      barcode?: string;
+      message?: string;
+    };
+    if (!response.ok)
+      throw new Error(payload.message ?? "No se pudo guardar el EAN en Odoo");
+    return payload;
+  },
+  async getProductCatalogDetail(id: number) {
+    const response = await fetch(productsApi(`/detail?id=${id}`));
+    const payload = (await readJson(response)) as CatalogProductDetail & {
+      message?: string;
+    };
+    if (!response.ok)
+      throw new Error(
+        payload.message ?? "No se pudo leer el detalle del producto",
+      );
+    return payload;
+  },
+  async getProductCatalogImages(ids: number[]) {
+    const response = await fetch(productsApi(`/images?ids=${ids.join(",")}`));
+    if (!response.ok) throw new Error("No se pudieron cargar las imágenes");
+    const images = (await readJson(response)) as Record<string, string>;
+    // Odoo entrega image_128 como base64 sin prefijo MIME. Un <img> necesita
+    // una URL real para que la miniatura se pinte en el catálogo.
+    return Object.fromEntries(
+      Object.entries(images).map(([id, image]) => [
+        id,
+        /^(data:|https?:)/.test(image)
+          ? image
+          : `data:image/png;base64,${image}`,
+      ]),
+    );
+  },
+  async getProductLocations(productId: number) {
+    const response = await fetch(
+      productsApi(`/locations?productId=${productId}`),
+    );
+    const payload = (await readJson(response)) as {
+      locations?: ProductLocation[];
+      message?: string;
+    };
+    if (!response.ok)
+      throw new Error(payload.message ?? "No se pudieron leer las ubicaciones");
+    return payload.locations ?? [];
+  },
+  async saveProductLocation(
+    input: Pick<ProductLocation, "productId" | "code" | "quantity"> & {
+      preferred?: boolean;
+      replenishmentMin?: number;
+    },
+  ) {
+    const response = await fetch(productsApi("/locations"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const payload = (await readJson(response)) as {
+      locations?: ProductLocation[];
+      message?: string;
+    };
+    if (!response.ok)
+      throw new Error(payload.message ?? "No se pudo guardar la ubicación");
+    return payload.locations ?? [];
+  },
+  async adjustProductLocationAndOdoo(
+    input: Pick<ProductLocation, "productId" | "code" | "quantity"> & {
+      preferred?: boolean;
+      replenishmentMin?: number;
+    },
+  ) {
+    const response = await fetch(productsApi("/locations/adjust-odoo"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const payload = (await readJson(response)) as { locations?: ProductLocation[]; message?: string };
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo ajustar el stock en Odoo");
+    return payload.locations ?? [];
+  },
+  async removeProductLocation(productId: number, code: string) {
+    const response = await fetch(productsApi("/locations"), {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ productId, code }),
+    });
+    const payload = (await readJson(response)) as {
+      locations?: ProductLocation[];
+      message?: string;
+    };
+    if (!response.ok)
+      throw new Error(payload.message ?? "No se pudo eliminar la ubicación");
+    return payload.locations ?? [];
+  },
+  async transferProductLocation(
+    productId: number,
+    fromCode: string,
+    toCode: string,
+    quantity: number,
+  ) {
+    const response = await fetch(productsApi("/locations/transfer"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ productId, fromCode, toCode, quantity }),
+    });
+    const payload = (await readJson(response)) as {
+      locations?: ProductLocation[];
+      message?: string;
+    };
+    if (!response.ok)
+      throw new Error(payload.message ?? "No se pudo registrar la reposición");
+    return payload.locations ?? [];
+  },
+  async syncProductLocationMovements() {
+    const response = await fetch(productsApi("/locations/sync-odoo"), {
+      method: "POST",
+    });
+    const payload = (await readJson(response)) as {
+      processed?: number;
+      applied?: number;
+      skipped?: number;
+      warnings?: string[];
+      message?: string;
+    };
+    if (!response.ok)
+      throw new Error(payload.message ?? "No se pudieron sincronizar los movimientos de Odoo");
+    return payload;
+  },
+  async getProductInventories() {
+    const response = await fetch(inventoriesApi());
+    const payload = (await readJson(response)) as {
+      inventories?: import("./odooTypes").ProductInventory[];
+      message?: string;
+    };
+    if (!response.ok)
+      throw new Error(payload.message ?? "No se pudieron leer los inventarios");
+    return payload.inventories ?? [];
+  },
+  async createProductInventory(input: {
+    name: string;
+    scope: import("./odooTypes").InventoryScope;
+  }) {
+    const response = await fetch(inventoriesApi(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const payload =
+      (await readJson(response)) as import("./odooTypes").ProductInventory & {
+        message?: string;
+      };
+    if (!response.ok)
+      throw new Error(payload.message ?? "No se pudo crear el inventario");
+    return payload;
+  },
+  async getProductInventory(id: string) {
+    const response = await fetch(`${inventoriesApi()}/${encodeURIComponent(id)}`);
+    const payload = (await readJson(response)) as import("./odooTypes").ProductInventory & { message?: string };
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo leer el inventario");
+    return payload;
+  },
+  async inventoryAction(id: string, action: "start" | "review" | "validate", body: Record<string, unknown> = {}) {
+    const response = await fetch(`${inventoriesApi()}/${encodeURIComponent(id)}/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const payload = (await readJson(response)) as import("./odooTypes").ProductInventory & { message?: string };
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo actualizar el inventario");
+    return payload;
+  },
+  async saveInventoryCount(id: string, body: { productId: number; locationCode: string; quantity: number; operator: import("./odooTypes").InventoryOperator; revision?: number }) {
+    const response = await fetch(`${inventoriesApi()}/${encodeURIComponent(id)}/counts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const payload = (await readJson(response)) as import("./odooTypes").ProductInventory & { message?: string };
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo guardar el conteo");
+    return payload;
+  },
+  async startInventoryRecount(id: string, productIds: number[]) {
+    const response = await fetch(`${inventoriesApi()}/${encodeURIComponent(id)}/recount`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ productIds }) });
+    const payload = (await readJson(response)) as import("./odooTypes").ProductInventory & { message?: string };
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo iniciar el reconteo");
+    return payload;
+  },
+  async sendInventoryToOdoo(id: string, operator: import("./odooTypes").InventoryOperator) {
+    const response = await fetch(`${inventoriesApi()}/${encodeURIComponent(id)}/send-odoo`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operator }) });
+    const payload = (await readJson(response)) as import("./odooTypes").ProductInventory & { message?: string };
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo enviar el inventario a Odoo");
+    return payload;
+  },
   async getCurrentUser() {
     try {
       const response = await fetch("/api/auth/me");
       if (!response.ok) return { authenticated: false as const };
-      return (await response.json()) as {
+      return (await readJson(response)) as {
         authenticated: boolean;
         user?: AuthUser;
       };
@@ -114,7 +346,7 @@ export const odooClient = {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
       });
-      const payload = (await response.json()) as {
+      const payload = (await readJson(response)) as {
         authenticated: boolean;
         user?: AuthUser;
         message?: string;
@@ -135,7 +367,7 @@ export const odooClient = {
   async getDashboardUsers() {
     const response = await fetch("/api/dashboard-users");
     if (!response.ok) return [];
-    return (await response.json()) as DashboardUser[];
+    return (await readJson(response)) as DashboardUser[];
   },
   async createDashboardUser(input: {
     name: string;
@@ -149,7 +381,7 @@ export const odooClient = {
       body: JSON.stringify(input),
     });
     if (!response.ok) throw new Error("No se pudo crear el usuario");
-    return (await response.json()) as DashboardUser;
+    return (await readJson(response)) as DashboardUser;
   },
   async updateDashboardUser(
     userId: string,
@@ -163,7 +395,7 @@ export const odooClient = {
       body: JSON.stringify(patch),
     });
     if (!response.ok) throw new Error("No se pudo actualizar el usuario");
-    return (await response.json()) as DashboardUser;
+    return (await readJson(response)) as DashboardUser;
   },
   async deleteDashboardUser(userId: string) {
     const response = await fetch(`/api/dashboard-users/${userId}`, {
@@ -174,7 +406,7 @@ export const odooClient = {
   async getTasks() {
     const response = await fetch("/api/tasks");
     if (!response.ok) return [];
-    return (await response.json()) as DashboardTask[];
+    return (await readJson(response)) as DashboardTask[];
   },
   async createTask(input: {
     title: string;
@@ -190,7 +422,7 @@ export const odooClient = {
       body: JSON.stringify(input),
     });
     if (!response.ok) throw new Error("No se pudo crear la tarea");
-    return (await response.json()) as DashboardTask;
+    return (await readJson(response)) as DashboardTask;
   },
   async updateTask(taskId: string, patch: Partial<DashboardTask>) {
     const response = await fetch(`/api/tasks/${taskId}`, {
@@ -199,7 +431,7 @@ export const odooClient = {
       body: JSON.stringify(patch),
     });
     if (!response.ok) throw new Error("No se pudo actualizar la tarea");
-    return (await response.json()) as DashboardTask;
+    return (await readJson(response)) as DashboardTask;
   },
   async deleteTask(taskId: string) {
     const response = await fetch(`/api/tasks/${taskId}`, {
@@ -218,7 +450,7 @@ export const odooClient = {
         events: DashboardCalendarEvent[];
       };
     }
-    return (await response.json()) as {
+    return (await readJson(response)) as {
       accounts: CalendarAccount[];
       events: DashboardCalendarEvent[];
     };
@@ -237,7 +469,7 @@ export const odooClient = {
       body: JSON.stringify(input),
     });
     if (!response.ok) throw new Error("No se pudo crear el evento");
-    return (await response.json()) as DashboardCalendarEvent;
+    return (await readJson(response)) as DashboardCalendarEvent;
   },
   async deleteCalendarEvent(eventId: string) {
     const response = await fetch(`/api/calendar/${eventId}`, {
@@ -251,7 +483,7 @@ export const odooClient = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ orderRefs }),
     });
-    const payload = (await response.json()) as {
+    const payload = (await readJson(response)) as {
       ok?: boolean;
       updated?: number;
       message?: string;
@@ -270,7 +502,7 @@ export const odooClient = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ orderRefs, ...options }),
     });
-    const payload = (await response.json()) as {
+    const payload = (await readJson(response)) as {
       ok?: boolean;
       dryRun?: boolean;
       candidates?: number;
@@ -295,7 +527,7 @@ export const odooClient = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params ?? {}),
     });
-    const payload = (await response.json()) as {
+    const payload = (await readJson(response)) as {
       ok?: boolean;
       cache?: {
         updatedAt?: string;
@@ -320,7 +552,7 @@ export const odooClient = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params ?? {}),
     });
-    const payload = (await response.json()) as {
+    const payload = (await readJson(response)) as {
       ok?: boolean;
       cache?: {
         updatedAt?: string;
@@ -338,7 +570,7 @@ export const odooClient = {
     const query = new URLSearchParams({ orderRef });
     const response = await fetch(`/api/odoo/orders/detail?${query.toString()}`);
     if (!response.ok) throw new Error("No se pudo cargar detalle del pedido");
-    return (await response.json()) as {
+    return (await readJson(response)) as {
       mode: "live" | "demo";
       order: Order | null;
       message?: string;
@@ -351,7 +583,7 @@ export const odooClient = {
       body: JSON.stringify({ orderRefs }),
     });
     if (!response.ok) throw new Error("No se pudo cargar contexto de impresion");
-    return (await response.json()) as {
+    return (await readJson(response)) as {
       mode: "live" | "demo";
       orders: Order[];
       total: number;
@@ -361,7 +593,7 @@ export const odooClient = {
   async getDeliveryIncidents() {
     const response = await fetch("/api/odoo/orders/delivery-incidents");
     if (!response.ok) return [];
-    return (await response.json()) as Array<{
+    return (await readJson(response)) as Array<{
       id: string;
       orderId: number;
       orderName?: string;
@@ -376,11 +608,13 @@ export const odooClient = {
       resolvedAt?: string;
     }>;
   },
-  async retryDeliveryIncidents() {
+  async retryDeliveryIncidents(incidentIds?: string[]) {
     const response = await fetch("/api/odoo/orders/delivery-incidents/retry", {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ incidentIds }),
     });
-    const payload = await response.json();
+    const payload = await readJson(response);
     if (!response.ok) throw new Error(payload.message ?? "No se pudo reintentar incidencias");
     return payload as { ok: boolean; retried: number; validated: number; incidents: unknown[] };
   },
@@ -390,7 +624,7 @@ export const odooClient = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ incidentIds }),
     });
-    const payload = await response.json();
+    const payload = await readJson(response);
     if (!response.ok) throw new Error(payload.message ?? "No se pudo resolver incidencias");
     return payload as { ok: boolean; resolved: number };
   },
@@ -405,7 +639,7 @@ export const odooClient = {
         throw new Error(`Odoo API returned ${response.status}`);
       }
 
-      return (await response.json()) as DashboardSummary;
+      return (await readJson(response)) as DashboardSummary;
     } catch (error) {
       return {
         ...buildDashboardFromOrders(orders),
@@ -427,7 +661,7 @@ export const odooClient = {
       throw new Error(`Odoo V2 API returned ${response.status}`);
     }
 
-    return (await response.json()) as DashboardSummary & {
+    return (await readJson(response)) as DashboardSummary & {
       version?: "v2";
       metrics?: OrdersV2Performance;
     };
@@ -452,7 +686,7 @@ export const odooClient = {
         throw new Error(`Odoo API returned ${response.status}`);
       }
 
-      return (await response.json()) as {
+      return (await readJson(response)) as {
         mode: "live" | "demo";
         source?: "dashboard-cache";
         orders: Order[];
@@ -496,7 +730,7 @@ export const odooClient = {
       throw new Error(`Pedidos V2 API returned ${response.status}`);
     }
 
-    return (await response.json()) as {
+    return (await readJson(response)) as {
       mode: "live" | "demo";
       source?: "dashboard-cache";
       version?: "v2";
@@ -518,7 +752,7 @@ export const odooClient = {
     if (!response.ok) {
       throw new Error(`Metricas V2 API returned ${response.status}`);
     }
-    return (await response.json()) as OrdersV2Performance;
+    return (await readJson(response)) as OrdersV2Performance;
   },
   async getCustomerInvoices(params?: { from?: string; to?: string; limit?: number; offset?: number; sortKey?: string; sortDir?: string }) {
     try {
@@ -533,7 +767,7 @@ export const odooClient = {
         `/api/odoo/customer-invoices?${query.toString()}`,
       );
       if (!response.ok) throw new Error(`Odoo API returned ${response.status}`);
-      return (await response.json()) as InvoiceAnalytics;
+      return (await readJson(response)) as InvoiceAnalytics;
     } catch (error) {
       return buildInvoiceAnalyticsFromDemo(
         error instanceof Error ? error.message : "No se pudo leer facturacion",

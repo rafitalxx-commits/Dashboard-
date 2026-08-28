@@ -15,6 +15,31 @@ export function registerAmazonSpApiRoutes(
   const repository = createAmazonShipmentRepository({ dataDir: options.dataDir });
   const client = createAmazonSpApiClient(env);
 
+  if (env.AMAZON_SP_API_QUEUE_ENABLED === "true") {
+    const processQueue = async () => {
+      for (const record of repository.list()) {
+        if (!(["pending", "error"] as const).includes(record.status) || record.retries >= 5) continue;
+        try {
+          repository.updateResult(record.id, { status: "retrying", incrementRetries: true });
+          const result = await client.confirmShipment(record);
+          repository.updateResult(record.id, {
+            status: result.dryRun ? "pending" : "sent",
+            amazonResponse: result.response,
+            lastRequest: result.request,
+            dryRun: result.dryRun,
+          });
+        } catch (error) {
+          repository.updateResult(record.id, {
+            status: "error",
+            amazonResponse: (error as { result?: unknown }).result,
+            lastError: error instanceof Error ? error.message : "Amazon SP-API ha fallado",
+          });
+        }
+      }
+    };
+    setInterval(() => { void processQueue(); }, 60_000).unref();
+  }
+
   server.middlewares.use("/api/amazon-sp-api", async (request, response) => {
     const user = auth.getSessionUser(request.headers.cookie);
     if (!user) return sendJson(response, 401, { message: "Login requerido" });
@@ -31,6 +56,7 @@ export function registerAmazonSpApiRoutes(
       if (request.method === "POST" && path === "shipments/prepare") {
         const input = await readJsonBody<Record<string, unknown>>(request);
         const draft = await options.resolveShipmentDraft(input);
+        draft.orderItems = await client.getOrderItems(draft.amazonOrderId, draft.marketplaceId);
         const result = await client.confirmShipment(draft, { dryRun: true });
         const record = repository.upsertDraft(draft, {
           dryRun: true,
@@ -53,14 +79,23 @@ export function registerAmazonSpApiRoutes(
         const record = repository.get(sendMatch[1]);
         if (!record) return sendJson(response, 404, { message: "Expedicion Amazon no encontrada" });
         if (record.status === "sent") return sendJson(response, 200, { shipment: record, duplicate: true });
-        const result = await client.confirmShipment(record);
-        const updated = repository.updateResult(record.id, {
-          status: result.dryRun ? "pending" : "sent",
-          amazonResponse: result.response,
-          lastRequest: result.request,
-          dryRun: result.dryRun,
-        });
-        return sendJson(response, 200, { dryRun: result.dryRun, shipment: updated, response: result.response });
+        try {
+          const result = await client.confirmShipment(record);
+          const updated = repository.updateResult(record.id, {
+            status: result.dryRun ? "pending" : "sent",
+            amazonResponse: result.response,
+            lastRequest: result.request,
+            dryRun: result.dryRun,
+          });
+          return sendJson(response, 200, { dryRun: result.dryRun, shipment: updated, response: result.response });
+        } catch (error) {
+          const updated = repository.updateResult(record.id, {
+            status: "error",
+            amazonResponse: (error as { result?: unknown }).result,
+            lastError: error instanceof Error ? error.message : "Amazon SP-API ha fallado",
+          });
+          return sendJson(response, 502, { shipment: updated, message: updated.lastError });
+        }
       }
       const retryMatch = path.match(/^shipments\/([^/]+)\/retry$/);
       if (request.method === "POST" && retryMatch) {

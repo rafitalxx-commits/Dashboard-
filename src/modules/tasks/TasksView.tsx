@@ -37,6 +37,13 @@ export type TasksViewProps = {
     location?: string;
   }) => void;
   calendarEvents: CalendarEvent[];
+  quickNotes?: QuickNote[];
+  reminders?: Reminder[];
+  onCreateQuickNote?: (note: QuickNote) => void;
+  onDeleteQuickNote?: (id: string) => void;
+  onCreateReminder?: (reminder: Reminder) => void;
+  onUpdateReminder?: (id: string, patch: Partial<Reminder>) => void;
+  onDeleteReminder?: (id: string) => void;
 };
 
 /* ---------- datos estructurados ---------- */
@@ -86,6 +93,12 @@ type Reminder = {
   title: string;
   dueAt: string;
   postponed: number;
+};
+
+type QuickNote = {
+  id: string;
+  text: string;
+  createdAt: string;
 };
 
 const DEFAULT_ACCOUNTS: MailAccount[] = [
@@ -543,6 +556,7 @@ function QuickCreate({
   onClose: () => void;
   onSaveTask: (t: {
     title: string;
+    detail: string;
     dueDate: string;
     reminderAt: string;
     priority: DashboardTaskPriority;
@@ -550,6 +564,7 @@ function QuickCreate({
   }) => void;
 }) {
   const [title, setTitle] = useState("");
+  const [detail, setDetail] = useState("");
   const [dueDate, setDueDate] = useState(
     new Date().toISOString().slice(0, 10)
   );
@@ -561,6 +576,7 @@ function QuickCreate({
     if (!title.trim()) return;
     onSaveTask({
       title,
+      detail,
       dueDate,
       reminderAt: buildDateTime(dueDate, reminderTime),
       priority,
@@ -584,6 +600,12 @@ function QuickCreate({
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           autoFocus
+        />
+        <textarea
+          className="input textarea"
+          placeholder="Nota o contexto"
+          value={detail}
+          onChange={(e) => setDetail(e.target.value)}
         />
         <div className="row">
           <label className="label">
@@ -657,32 +679,119 @@ function MailCard({ account, onClick }: { account: MailAccount; onClick: () => v
         <span className="mail-unread">{account.unread} nuevos</span>
       </div>
       <div className="mail-email">{account.email}</div>
-      <div className="mail-preview" style={{ marginTop: 6 }}>
-        {account.messages.slice(0, 5).map((m, i) => (
-          <div
-            key={i}
-            style={{
-              fontSize: 13,
-              color: "#e2e8f0",
-              padding: "6px 0",
-              borderBottom: "1px solid rgba(255,255,255,0.06)",
-            }}
-          >
-            <div style={{ color: "#94a3b8", fontSize: 11 }}>
-              {new Date(m.date).toLocaleString("es-ES", {
-                day: "2-digit",
-                month: "short",
-                hour: "2-digit",
-                minute: "2-digit",
-              })}
-            </div>
-            <div style={{ color: "#94a3b8", fontSize: 12 }}>{m.from}</div>
-            <div style={{ fontWeight: 600 }}>{m.subject}</div>
-            <div style={{ color: "#94a3b8", fontSize: 12 }}>{m.snippet}</div>
-          </div>
-        ))}
-      </div>
     </button>
+  );
+}
+
+function QuickNotesPanel({
+  notes,
+  onAdd,
+  onDelete,
+}: {
+  notes: QuickNote[];
+  onAdd: (text: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [text, setText] = useState("");
+  const save = () => {
+    const value = text.trim();
+    if (!value) return;
+    onAdd(value);
+    setText("");
+  };
+  return (
+    <div className="section quick-notes-section">
+      <div className="section-title">Notas rápidas</div>
+      <div className="quick-note-entry">
+        <textarea
+          className="input quick-note-input"
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => {
+            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+              event.preventDefault();
+              save();
+            }
+          }}
+          placeholder="Apunta algo antes de que se pierda"
+          value={text}
+        />
+        <button className="button primary" onClick={save} type="button">
+          Añadir
+        </button>
+      </div>
+      {notes.length > 0 ? (
+        <div className="quick-notes-list">
+          {notes.map((note) => (
+            <article className="quick-note" key={note.id}>
+              <span>{note.text}</span>
+              <button
+                aria-label="Quitar nota"
+                className="ghost note-delete"
+                onClick={() => onDelete(note.id)}
+                type="button"
+              >
+                ×
+              </button>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state compact">Sin notas rápidas.</div>
+      )}
+    </div>
+  );
+}
+
+function MailSummaryPanel({
+  accounts,
+  googleAccounts,
+  expanded,
+  onToggle,
+  onOpen,
+  onConnect,
+  onDisconnect,
+}: {
+  accounts: MailAccount[];
+  googleAccounts: GoogleAccountStatus[];
+  expanded: boolean;
+  onToggle: () => void;
+  onOpen: (id: string) => void;
+  onConnect: (accountKey: GoogleAccountStatus["accountKey"]) => void;
+  onDisconnect: (accountKey: GoogleAccountStatus["accountKey"]) => void;
+}) {
+  const unread = accounts.reduce((total, account) => total + account.unread, 0);
+  const connected = googleAccounts.filter((account) => account.connected).length;
+  return (
+    <div className="section mail-compact-section">
+      <button className="mail-summary-row" onClick={onToggle} type="button">
+        <div>
+          <span className="section-title">Correo</span>
+          <small>
+            {connected}/{googleAccounts.length} conectadas
+          </small>
+        </div>
+        <strong>{unread} correos</strong>
+        <span className={`chevron ${expanded ? "open" : ""}`}>⌄</span>
+      </button>
+      {expanded && (
+        <div className="mail-expanded">
+          <GoogleAccountsPanel
+            accounts={googleAccounts}
+            onConnect={onConnect}
+            onDisconnect={onDisconnect}
+          />
+          <div className="mail-list">
+            {accounts.map((account) => (
+              <MailCard
+                account={account}
+                key={account.id}
+                onClick={() => onOpen(account.id)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1342,6 +1451,13 @@ export function TasksView({
   onDeleteTask,
   onAddCalendarEvent,
   calendarEvents,
+  quickNotes: sharedQuickNotes,
+  reminders: sharedReminders,
+  onCreateQuickNote,
+  onDeleteQuickNote,
+  onCreateReminder,
+  onUpdateReminder,
+  onDeleteReminder,
 }: TasksViewProps) {
   const [tab, setTab] = useState<"inicio" | "tareas" | "calendario" | "proyectos" | "equipo">(
     "inicio"
@@ -1353,7 +1469,16 @@ export function TasksView({
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const [openMailId, setOpenMailId] = useState<string | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
-  const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [localReminders, setLocalReminders] = useState<Reminder[]>([]);
+  const [mailExpanded, setMailExpanded] = useState(false);
+  const [localQuickNotes, setLocalQuickNotes] = useState<QuickNote[]>(() => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem("hermes.quickNotes") || "[]");
+      return Array.isArray(parsed) ? parsed.slice(0, 20) : [];
+    } catch {
+      return [];
+    }
+  });
   const [mailAccounts, setMailAccounts] = useState<MailAccount[]>(DEFAULT_ACCOUNTS);
   const [googleAccounts, setGoogleAccounts] = useState<GoogleAccountStatus[]>(
     DEFAULT_GOOGLE_ACCOUNTS,
@@ -1374,6 +1499,32 @@ export function TasksView({
   useEffect(() => {
     void refreshGoogleAccounts();
   }, []);
+
+  const quickNotes = sharedQuickNotes ?? localQuickNotes;
+  const reminders = sharedReminders ?? localReminders;
+  useEffect(() => {
+    if (!sharedQuickNotes) localStorage.setItem("hermes.quickNotes", JSON.stringify(localQuickNotes.slice(0, 20)));
+  }, [localQuickNotes, sharedQuickNotes]);
+  const addQuickNote = (note: QuickNote) => {
+    setLocalQuickNotes((current) => [note, ...current]);
+    onCreateQuickNote?.(note);
+  };
+  const removeQuickNote = (id: string) => {
+    setLocalQuickNotes((current) => current.filter((note) => note.id !== id));
+    onDeleteQuickNote?.(id);
+  };
+  const addReminder = (reminder: Reminder) => {
+    setLocalReminders((current) => [...current, reminder]);
+    onCreateReminder?.(reminder);
+  };
+  const removeReminder = (id: string) => {
+    setLocalReminders((current) => current.filter((reminder) => reminder.id !== id));
+    onDeleteReminder?.(id);
+  };
+  const updateReminder = (id: string, patch: Partial<Reminder>) => {
+    setLocalReminders((current) => current.map((reminder) => reminder.id === id ? { ...reminder, ...patch } : reminder));
+    onUpdateReminder?.(id, patch);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -1540,10 +1691,7 @@ export function TasksView({
       .replace(/\d{1,2}(?::|\.)\d{2}/, "")
       .replace(/\s+/g, " ")
       .trim();
-    setReminders((p) => [
-      ...p,
-      { id: `rem-${Date.now()}`, title: title || "Recordatorio", dueAt: dueAt.toISOString(), postponed: 0 },
-    ]);
+    addReminder({ id: `rem-${Date.now()}`, title: title || "Recordatorio", dueAt: dueAt.toISOString(), postponed: 0 });
   };
 
   useEffect(() => {
@@ -1580,23 +1728,21 @@ export function TasksView({
               </button>
             </div>
 
-            <div className="section">
-              <div className="section-title">📧 Correo</div>
-              <GoogleAccountsPanel
-                accounts={googleAccounts}
-                onConnect={connectGoogleAccount}
-                onDisconnect={(accountKey) => void disconnectGoogleAccount(accountKey)}
-              />
-              <div className="mail-list">
-                {mailAccounts.map((acc) => (
-                  <MailCard
-                    key={acc.id}
-                    account={acc}
-                    onClick={() => setOpenMailId(acc.id)}
-                  />
-                ))}
-              </div>
-            </div>
+            <QuickNotesPanel
+              notes={quickNotes}
+              onAdd={(text) => addQuickNote({ id: `note-${Date.now().toString(36)}`, text, createdAt: new Date().toISOString() })}
+              onDelete={removeQuickNote}
+            />
+
+            <MailSummaryPanel
+              accounts={mailAccounts}
+              expanded={mailExpanded}
+              googleAccounts={googleAccounts}
+              onConnect={connectGoogleAccount}
+              onDisconnect={(accountKey) => void disconnectGoogleAccount(accountKey)}
+              onOpen={setOpenMailId}
+              onToggle={() => setMailExpanded((current) => !current)}
+            />
 
             <div className="section">
               <div className="section-title">🔔 Avisos</div>
@@ -1605,19 +1751,11 @@ export function TasksView({
                   <ReminderCard
                     key={r.id}
                     reminder={r}
-                    onClose={() =>
-                      setReminders((p) => p.filter((x) => x.id !== r.id))
-                    }
+                    onClose={() => removeReminder(r.id)}
                     onSnooze={(minutes) => {
                       const next = new Date(r.dueAt);
                       next.setMinutes(next.getMinutes() + minutes);
-                      setReminders((p) =>
-                        p.map((x) =>
-                          x.id === r.id
-                            ? { ...x, dueAt: next.toISOString(), postponed: x.postponed + 1 }
-                            : x
-                        )
-                      );
+                      updateReminder(r.id, { dueAt: next.toISOString(), postponed: r.postponed + 1 });
                       alert(
                         `Recordatorio pospuesto a ${next.toLocaleString("es-ES")}`
                       );
@@ -2039,7 +2177,7 @@ export function TasksView({
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
                 title: titleWithoutDate || task.title,
-                detail: "",
+                detail: task.detail || "",
                 category: "Operaciones",
                 priority: task.priority,
                 status: "Pendiente",
@@ -2047,15 +2185,7 @@ export function TasksView({
                 assignee: task.assignee,
                 reminderAt: buildDateTime(dueDate, timeFromDateTime(task.reminderAt) || "09:00"),
               });
-              setReminders((p) => [
-                ...p,
-                {
-                  id: `rem-${Date.now().toString(36)}`,
-                  title: titleWithoutDate || task.title,
-                  dueAt: new Date(buildDateTime(dueDate, timeFromDateTime(task.reminderAt) || "09:00")).toISOString(),
-                  postponed: 0,
-                },
-              ]);
+              addReminder({ id: `rem-${Date.now().toString(36)}`, title: titleWithoutDate || task.title, dueAt: new Date(buildDateTime(dueDate, timeFromDateTime(task.reminderAt) || "09:00")).toISOString(), postponed: 0 });
               setFabOpen(false);
               return;
             }
@@ -2076,21 +2206,13 @@ export function TasksView({
               id: `task-${Date.now().toString(36)}`,
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
-              detail: "",
+              detail: task.detail || "",
               category: "Operaciones",
               status: "Pendiente",
               dueDate,
             });
             if (task.reminderAt) {
-              setReminders((p) => [
-                ...p,
-                {
-                  id: `rem-${Date.now().toString(36)}`,
-                  title: task.title,
-                  dueAt: new Date(task.reminderAt).toISOString(),
-                  postponed: 0,
-                },
-              ]);
+              addReminder({ id: `rem-${Date.now().toString(36)}`, title: task.title, dueAt: new Date(task.reminderAt).toISOString(), postponed: 0 });
             }
             setFabOpen(false);
           }}
@@ -2143,6 +2265,47 @@ const css = `
 .section { display: flex; flex-direction: column; gap: 10px; }
 .section-title { font-weight: 600; color: #e2e8f0; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .cal-go { font-size: 12px; }
+
+.quick-notes-section {
+  background: rgba(15,23,42,0.54);
+  border: 1px solid rgba(96,165,250,0.18);
+  border-radius: 14px;
+  padding: 12px;
+}
+.quick-note-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+.quick-note-input {
+  min-height: 58px;
+  resize: vertical;
+}
+.quick-notes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.quick-note {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding: 10px 11px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.04);
+  color: #e2e8f0;
+  line-height: 1.45;
+}
+.note-delete {
+  min-height: 28px;
+  padding: 2px 8px;
+  border: 0;
+  color: #94a3b8;
+}
+.empty-state.compact { padding: 2px 0 0; }
 
 /* calendario preview en inicio */
 .cal-preview {
@@ -2214,6 +2377,51 @@ const css = `
 .google-status.auth_error,
 .google-status.token_expired { color: #fecaca; background: rgba(239,68,68,0.16); }
 .google-status.config_missing { color: #fde68a; background: rgba(245,158,11,0.16); }
+.mail-compact-section {
+  gap: 8px;
+}
+.mail-summary-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+  color: inherit;
+  padding: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.mail-summary-row div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mail-summary-row .section-title {
+  display: block;
+}
+.mail-summary-row small {
+  color: #94a3b8;
+  font-size: 12px;
+}
+.mail-summary-row strong {
+  color: #e2e8f0;
+  white-space: nowrap;
+}
+.chevron {
+  color: #94a3b8;
+  transition: transform 0.16s ease;
+  font-size: 18px;
+}
+.chevron.open { transform: rotate(180deg); }
+.mail-expanded {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
 .mail-list { display: flex; flex-direction: column; gap: 10px; }
 .mail-card {
   text-align: left;
@@ -2359,7 +2567,7 @@ const css = `
 /* tareas rápidas con checkbox */
 .quick-list { display: flex; flex-direction: column; gap: 10px; }
 .quick-row { display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); padding: 12px 14px; border-radius: 12px; min-height: 48px; }
-.quick-row input[type="checkbox"] { width: 20px; height: 20px; accent-color: #1d4ed8; }
+.quick-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: #64748b; opacity: 0.72; }
 .quick-row-text { flex: 1; display: flex; justify-content: space-between; align-items: center; color: #e2e8f0; background: transparent; border: none; padding: 0; cursor: pointer; text-align: left; min-width: 0; }
 
 /* tareas */
@@ -2392,8 +2600,18 @@ const css = `
 .task-list { display: flex; flex-direction: column; gap: 10px; }
 .task-row { display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); padding: 12px 14px; border-radius: 12px; min-height: 56px; }
 .task-row.done { opacity: 0.7; }
-.check-cell { display: inline-flex; align-items: center; }
-.check-cell input { width: 22px; height: 22px; accent-color: #1d4ed8; }
+.check-cell { display: inline-flex; align-items: center; min-width: 18px; }
+.check-cell input {
+  width: 16px;
+  height: 16px;
+  accent-color: #64748b;
+  opacity: 0.72;
+}
+.task-row:hover .check-cell input,
+.quick-row:hover input[type="checkbox"] {
+  opacity: 1;
+  accent-color: #60a5fa;
+}
 .task-row-main { flex: 1; display: flex; flex-direction: column; gap: 6px; background: transparent; border: none; color: inherit; padding: 0; cursor: pointer; text-align: left; min-width: 0; }
 .task-row-title { font-weight: 600; color: #e2e8f0; word-break: break-word; }
 .task-row-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; color: #94a3b8; font-size: 12px; }

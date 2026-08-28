@@ -3,6 +3,18 @@ import { TasksView } from "./modules/tasks/TasksView";
 import type { CalendarEvent } from "./modules/tasks/TasksCalendarView";
 
 type Task = Parameters<typeof TasksView>[0]["tasks"][number];
+type QuickNote = NonNullable<Parameters<typeof TasksView>[0]["quickNotes"]>[number];
+type Reminder = NonNullable<Parameters<typeof TasksView>[0]["reminders"]>[number];
+type SyncOperation = { method: "POST" | "PATCH" | "DELETE"; path: string; body?: unknown };
+const syncQueueKey = "hermes-updated.sync-queue.v1";
+
+function readSyncQueue(): SyncOperation[] {
+  try { const value = JSON.parse(localStorage.getItem(syncQueueKey) || "[]"); return Array.isArray(value) ? value : []; } catch { return []; }
+}
+
+function writeSyncQueue(queue: SyncOperation[]) {
+  localStorage.setItem(syncQueueKey, JSON.stringify(queue.slice(-200)));
+}
 
 const today = new Date().toISOString().slice(0, 10);
 
@@ -84,44 +96,64 @@ const initialEvents: CalendarEvent[] = [
 
 export function HermesPreview() {
   const [tasks, setTasks] = useState<Task[]>(initialTasks);
+  const [quickNotes, setQuickNotes] = useState<QuickNote[]>([]);
+  const [reminders, setReminders] = useState<Reminder[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>(initialEvents);
   const [taskSection, setTaskSection] = useState<"Tareas" | "Calendario">("Tareas");
 
+  const sendOrQueue = async (operation: SyncOperation) => {
+    try {
+      const response = await fetch(`/hermes-updated/api${operation.path}`, {
+        method: operation.method,
+        headers: operation.body === undefined ? undefined : { "Content-Type": "application/json" },
+        body: operation.body === undefined ? undefined : JSON.stringify(operation.body),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return await response.json().catch(() => undefined);
+    } catch {
+      writeSyncQueue([...readSyncQueue(), operation]);
+      return undefined;
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
-    fetch("/hermes-updated/api/tasks")
-      .then((response) => (response.ok ? response.json() : Promise.reject(response.status)))
-      .then((payload) => {
-        if (cancelled) return;
-        const loaded = Array.isArray(payload) ? payload : payload?.tasks;
-        if (Array.isArray(loaded) && loaded.length > 0) {
-          setTasks(loaded);
-        }
-      })
-      .catch(() => {
-        /* Keep seeded v4 tasks if the isolated API is unavailable. */
-      });
-    return () => {
-      cancelled = true;
+    const load = async () => {
+      const [taskResult, noteResult, reminderResult] = await Promise.all([
+        fetch("/hermes-updated/api/tasks"), fetch("/hermes-updated/api/notes"), fetch("/hermes-updated/api/reminders"),
+      ]);
+      if (cancelled) return;
+      if (taskResult.ok) { const payload = await taskResult.json(); const loaded = Array.isArray(payload) ? payload : payload?.tasks; if (Array.isArray(loaded)) setTasks(loaded); }
+      if (noteResult.ok) { const payload = await noteResult.json(); if (Array.isArray(payload?.notes)) setQuickNotes(payload.notes); }
+      if (reminderResult.ok) { const payload = await reminderResult.json(); if (Array.isArray(payload?.reminders)) setReminders(payload.reminders); }
     };
+    const flush = async () => {
+      const pending = readSyncQueue();
+      if (!pending.length) return;
+      const remaining: SyncOperation[] = [];
+      for (const operation of pending) {
+        try {
+          const response = await fetch(`/hermes-updated/api${operation.path}`, { method: operation.method, headers: operation.body === undefined ? undefined : { "Content-Type": "application/json" }, body: operation.body === undefined ? undefined : JSON.stringify(operation.body) });
+          if (!response.ok) remaining.push(operation);
+        } catch { remaining.push(operation); }
+      }
+      writeSyncQueue(remaining);
+      if (!remaining.length) await load();
+    };
+    void load();
+    void flush();
+    window.addEventListener("online", flush);
+    const retry = window.setInterval(() => void flush(), 20_000);
+    return () => { cancelled = true; window.removeEventListener("online", flush); window.clearInterval(retry); };
   }, []);
 
   const createTask = async (task: Task) => {
     setTasks((current) => [task, ...current]);
-    try {
-      const response = await fetch("/hermes-updated/api/tasks", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(task),
-      });
-      if (response.ok) {
-        const saved = (await response.json()) as Task;
+    const saved = await sendOrQueue({ method: "POST", path: "/tasks", body: task }) as Task | undefined;
+    if (saved) {
         setTasks((current) =>
           current.map((item) => (item.id === task.id ? saved : item)),
         );
-      }
-    } catch {
-      /* Optimistic local state keeps mobile creation usable offline. */
     }
   };
 
@@ -133,26 +165,12 @@ export function HermesPreview() {
           : task,
       ),
     );
-    try {
-      await fetch(`/hermes-updated/api/tasks/${encodeURIComponent(id)}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
-      });
-    } catch {
-      /* Optimistic local state keeps mobile edits usable offline. */
-    }
+    await sendOrQueue({ method: "PATCH", path: `/tasks/${encodeURIComponent(id)}`, body: patch });
   };
 
   const deleteTask = async (id: string) => {
     setTasks((current) => current.filter((task) => task.id !== id));
-    try {
-      await fetch(`/hermes-updated/api/tasks/${encodeURIComponent(id)}`, {
-        method: "DELETE",
-      });
-    } catch {
-      /* Optimistic local state keeps mobile deletes usable offline. */
-    }
+    await sendOrQueue({ method: "DELETE", path: `/tasks/${encodeURIComponent(id)}` });
   };
 
   return (
@@ -174,6 +192,28 @@ export function HermesPreview() {
         onChangeTaskSection={setTaskSection}
         onDeleteTask={deleteTask}
         onUpdateTask={updateTask}
+        quickNotes={quickNotes}
+        reminders={reminders}
+        onCreateQuickNote={(note) => {
+          setQuickNotes((current) => [note, ...current]);
+          void sendOrQueue({ method: "POST", path: "/notes", body: note });
+        }}
+        onDeleteQuickNote={(id) => {
+          setQuickNotes((current) => current.filter((note) => note.id !== id));
+          void sendOrQueue({ method: "DELETE", path: `/notes/${encodeURIComponent(id)}` });
+        }}
+        onCreateReminder={(reminder) => {
+          setReminders((current) => [...current, reminder]);
+          void sendOrQueue({ method: "POST", path: "/reminders", body: reminder });
+        }}
+        onUpdateReminder={(id, patch) => {
+          setReminders((current) => current.map((reminder) => reminder.id === id ? { ...reminder, ...patch } : reminder));
+          void sendOrQueue({ method: "PATCH", path: `/reminders/${encodeURIComponent(id)}`, body: patch });
+        }}
+        onDeleteReminder={(id) => {
+          setReminders((current) => current.filter((reminder) => reminder.id !== id));
+          void sendOrQueue({ method: "DELETE", path: `/reminders/${encodeURIComponent(id)}` });
+        }}
         taskSection={taskSection}
         tasks={tasks}
       />

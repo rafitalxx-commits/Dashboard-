@@ -5,11 +5,14 @@ import {
   Boxes,
   CheckCircle2,
   CalendarDays,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ClipboardCheck,
   ClipboardList,
   FileText,
   Globe2,
+  History,
   Home,
   ListTodo,
   LogOut,
@@ -33,6 +36,11 @@ import {
 import { money, orders as demoOrders, statusTone } from "./data/demoData";
 import { AmazonMessagesView } from "./modules/amazonMessages";
 import { ExpeditionsView } from "./modules/expeditions/ExpeditionsView";
+import { WarehouseWorkersSettings } from "./modules/expeditions/WarehouseWorkersSettings";
+import { WarehouseStatisticsView } from "./modules/warehouseStats/WarehouseStatisticsView";
+import { ProductsCatalogView } from "./modules/products/ProductsCatalogView";
+import { ProductLabelsView } from "./modules/products/ProductLabelsView";
+import { InventoryView } from "./modules/products/InventoryView";
 import { odooClient } from "./services/odooClient";
 import type {
   InvoiceAnalytics,
@@ -48,17 +56,131 @@ import type {
 
 const navItems = [
   { label: "Inicio", icon: Home, view: "dashboard", permission: "dashboard" },
-  { label: "Inicio V2", icon: BarChart3, view: "dashboardV2", permission: "dashboard", productionNav: false },
-  { label: "Tareas", icon: ListTodo, view: "tasks", permission: "tasks", productionNav: false },
-  { label: "Pedidos", icon: ClipboardList, view: "orders", permission: "orders" },
-  { label: "Pedidos V2", icon: Truck, view: "ordersV2", permission: "orders", productionNav: false },
-  { label: "Expediciones", icon: Send, view: "expeditions", permission: "expeditions" },
-  { label: "Facturas cliente", icon: ReceiptText, view: "customerInvoices", permission: "billing" },
-  { label: "Facturas proveedor", icon: FileText, view: "supplierInvoices", permission: "supplierBilling" },
-  { label: "Compras", icon: ShoppingCart, view: "purchases", permission: "purchases" },
-  { label: "Productos / stock", icon: Boxes, view: "products", permission: "products" },
-  { label: "Amazon Messages", icon: MessagesSquare, view: "amazonMessages", permission: "orders", productionNav: false },
-  { label: "Configuracion", icon: Settings, view: "settings", permission: "settings" },
+  {
+    label: "Inicio V2",
+    icon: BarChart3,
+    view: "dashboardV2",
+    permission: "dashboard",
+    productionNav: false,
+  },
+  {
+    label: "Tareas",
+    icon: ListTodo,
+    view: "tasks",
+    permission: "tasks",
+    productionNav: false,
+  },
+  {
+    label: "Pedidos",
+    icon: ClipboardList,
+    view: "orders",
+    permission: "orders",
+  },
+  {
+    label: "Pedidos V2",
+    icon: Truck,
+    view: "ordersV2",
+    permission: "orders",
+    productionNav: false,
+  },
+  {
+    label: "Expediciones",
+    icon: Send,
+    view: "expeditions",
+    permission: "expeditions",
+  },
+  {
+    label: "Estadísticas",
+    icon: BarChart3,
+    view: "warehouseStatistics",
+    permission: "dashboard",
+  },
+  {
+    label: "Facturas cliente",
+    icon: ReceiptText,
+    view: "customerInvoices",
+    permission: "billing",
+  },
+  {
+    label: "Facturas proveedor",
+    icon: FileText,
+    view: "supplierInvoices",
+    permission: "supplierBilling",
+  },
+  {
+    label: "Compras",
+    icon: ShoppingCart,
+    view: "purchases",
+    permission: "purchases",
+  },
+  {
+    label: "Productos",
+    icon: Boxes,
+    view: "products",
+    permission: "products",
+  },
+  {
+    label: "Escanear",
+    icon: Search,
+    view: "productsScanner",
+    permission: "products",
+    navGroup: "products",
+  },
+  {
+    label: "Etiquetas",
+    icon: Printer,
+    view: "productsLabels",
+    permission: "products",
+    navGroup: "products",
+  },
+  {
+    label: "Nuevo inventario",
+    icon: Plus,
+    view: "productsInventoryNew",
+    permission: "products",
+    navGroup: "products",
+  },
+  {
+    label: "Inventarios en curso",
+    icon: ClipboardList,
+    view: "productsInventoryActive",
+    permission: "products",
+    navGroup: "products",
+  },
+  {
+    label: "Pendientes de revisión",
+    icon: ClipboardList,
+    view: "productsInventoryReview",
+    permission: "products",
+    navGroup: "products",
+  },
+  {
+    label: "Finalizados",
+    icon: ClipboardCheck,
+    view: "productsInventoryFinal",
+    permission: "products",
+    navGroup: "products",
+  },
+  {
+    label: "Historial",
+    icon: History,
+    view: "productsInventoryHistory",
+    permission: "products",
+    navGroup: "products",
+  },
+  {
+    label: "Amazon Messages",
+    icon: MessagesSquare,
+    view: "amazonMessages",
+    permission: "orders",
+    productionNav: false,
+  },
+  {
+    label: "Configuracion",
+    icon: Settings,
+    view: "settings",
+    permission: "settings",
+  },
 ] as const;
 type ActiveView = (typeof navItems)[number]["view"];
 const viewRoutes: Record<ActiveView, string> = {
@@ -68,10 +190,18 @@ const viewRoutes: Record<ActiveView, string> = {
   orders: "pedidos",
   ordersV2: "pedidos-v2",
   expeditions: "expediciones",
+  warehouseStatistics: "estadisticas",
   customerInvoices: "facturacion",
   supplierInvoices: "facturas-proveedor",
   purchases: "compras",
   products: "productos",
+  productsScanner: "productos/escanear",
+  productsLabels: "productos/etiquetas",
+  productsInventoryNew: "productos/inventario/nuevo",
+  productsInventoryActive: "productos/inventario/en-curso",
+  productsInventoryReview: "productos/inventario/revision",
+  productsInventoryFinal: "productos/inventario/finalizados",
+  productsInventoryHistory: "productos/inventario/historial",
   amazonMessages: "amazon-messages",
   settings: "configuracion",
 };
@@ -174,6 +304,7 @@ type PrintBatch = {
   orders: Array<Pick<Order, "id" | "odooRef">>;
 };
 type DeliveryIncident = Awaited<ReturnType<typeof odooClient.getDeliveryIncidents>>[number];
+const DELIVERY_INCIDENTS_VERSION = "2026.08.19.1005";
 
 const pageSizeOptions = [80, 200, 500];
 const deliveryOptions = ["Todos", "Entregados", "No entregados"];
@@ -307,26 +438,35 @@ function App() {
   const [customFrom, setCustomFrom] = useState(todayIso());
   const [customTo, setCustomTo] = useState(todayIso());
   const [page, setPage] = useState(1);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [activeView, setActiveView] = useState<ActiveView>(() => getViewFromHash());
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => window.innerWidth <= 720,
+  );
+  const [productsMenuOpen, setProductsMenuOpen] = useState(false);
+  const [inventoryMenuOpen, setInventoryMenuOpen] = useState(false);
+  const [activeView, setActiveView] = useState<ActiveView>(() =>
+    getViewFromHash(),
+  );
   const isV2View = activeView === "dashboardV2" || activeView === "ordersV2";
-  const isDashboardView = activeView === "dashboard" || activeView === "dashboardV2";
+  const isDashboardView =
+    activeView === "dashboard" || activeView === "dashboardV2";
   const isOrdersView = activeView === "orders" || activeView === "ordersV2";
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
-  const [orderDetailsById, setOrderDetailsById] = useState<Record<string, Order>>({});
+  const [orderDetailsById, setOrderDetailsById] = useState<
+    Record<string, Order>
+  >({});
   const [selectedPrintOrderIds, setSelectedPrintOrderIds] = useState<string[]>(
     [],
   );
-  const [printContextById, setPrintContextById] = useState<Record<string, Order>>({});
+  const [printContextById, setPrintContextById] = useState<
+    Record<string, Order>
+  >({});
   const [printContextLoading, setPrintContextLoading] = useState(false);
-  const [printView, setPrintView] = useState<"products" | "orders">(
-    "products",
-  );
+  const [printView, setPrintView] = useState<"products" | "orders">("products");
   const [pendingPrintBatch, setPendingPrintBatch] = useState<PrintBatch | null>(
     null,
   );
-  const [dashboardUsers, setDashboardUsers] = useState<DashboardUser[]>(() =>
-    [],
+  const [dashboardUsers, setDashboardUsers] = useState<DashboardUser[]>(
+    () => [],
   );
   const [tasks, setTasks] = useState<DashboardTask[]>([]);
   const [taskFilter, setTaskFilter] = useState<"Activas" | "Todas" | "Hechas">(
@@ -371,6 +511,9 @@ function App() {
 
   const navigateToView = (view: ActiveView) => {
     setActiveView(view);
+    if (window.matchMedia("(max-width: 720px)").matches) {
+      setSidebarCollapsed(true);
+    }
     const route = viewRoutes[view];
     if (window.location.hash !== `#/${route}`) {
       window.history.pushState(null, "", `#/${route}`);
@@ -397,6 +540,21 @@ function App() {
     }
     return () => window.removeEventListener("hashchange", syncFromHash);
   }, []);
+
+  // A deep link or a child click must never leave the active section hidden.
+  useEffect(() => {
+    if (
+      activeView === "products" ||
+      activeView === "productsScanner" ||
+      activeView === "productsLabels" ||
+      activeView.startsWith("productsInventory")
+    ) {
+      setProductsMenuOpen(true);
+      if (activeView.startsWith("productsInventory")) {
+        setInventoryMenuOpen(true);
+      }
+    }
+  }, [activeView]);
 
   useEffect(() => {
     setServerPage(1);
@@ -705,6 +863,7 @@ function App() {
         [
           order.id,
           order.odooRef,
+          order.externalRef,
           order.client,
           order.city,
           order.channel,
@@ -760,9 +919,10 @@ function App() {
   const selectedPrintOrders = sortedOrders
     .filter((order) => selectedPrintOrderIds.includes(order.id))
     .map((order) => printContextById[order.id] ?? orderDetailsById[order.id] ?? order);
-  const autoValidatableOrders = sortedOrders.filter(
-    (order) => order.odooDeliveryValidation?.status === "ready",
-  );
+  const printContextReady =
+    selectedPrintOrders.length > 0 &&
+    selectedPrintOrders.every((order) => order.items.length > 0);
+  const printActionLoading = printContextLoading || !printContextReady;
   const allVisibleSelected =
     visibleOrders.length > 0 &&
     visibleOrders.every((order) => selectedPrintOrderIds.includes(order.id));
@@ -995,17 +1155,6 @@ function App() {
   };
   const validateSelectedOdooDeliveries = () =>
     validateOdooDeliveryBatch(selectedPrintOrders);
-  const validateAutoValidatableOdooDeliveries = () => {
-    if (autoValidatableOrders.length === 0 || odooActionLoading) return;
-    const confirmed = window.confirm(
-      `Validar ${autoValidatableOrders.length} pedido(s) auto-validable(s) en Odoo?`,
-    );
-    if (!confirmed) return;
-    validateOdooDeliveryBatch(
-      autoValidatableOrders,
-      "Validacion auto-validables Odoo",
-    );
-  };
   const confirmPendingPrintBatch = () => {
     if (!pendingPrintBatch) return;
     markOrdersPrintedInOdoo(pendingPrintBatch.orders);
@@ -1013,12 +1162,31 @@ function App() {
   const can = (permission: DashboardPermission) =>
     Boolean(authUser?.permissions.includes(permission));
   const visibleNavItems = authUser
-    ? navItems.filter((item) => item.productionNav !== false && can(item.permission))
+    ? navItems.filter(
+        (item) =>
+          item.productionNav !== false &&
+          !item.navGroup &&
+          can(item.permission),
+      )
     : [];
+  const visibleProductNavItems = authUser
+    ? navItems.filter(
+        (item) => item.navGroup === "products" && can(item.permission),
+      )
+    : [];
+  const visibleInventoryNavItems = visibleProductNavItems.filter((item) =>
+    item.view.startsWith("productsInventory"),
+  );
+  const visibleProductsToolsNavItems = visibleProductNavItems.filter(
+    (item) => !item.view.startsWith("productsInventory"),
+  );
+  const isProductsView =
+    activeView === "products" ||
+    activeView === "productsScanner" ||
+    activeView === "productsLabels" ||
+    activeView.startsWith("productsInventory");
   const showOrderRange =
-    isDashboardView ||
-    isOrdersView ||
-    activeView === "customerInvoices";
+    isDashboardView || isOrdersView || activeView === "customerInvoices";
   const refreshOrders = async () => {
     if (!showOrderRange || ordersSyncLoading) return;
     setOrdersSyncLoading(true);
@@ -1065,12 +1233,12 @@ function App() {
       setDeliveryIncidentsLoading(false);
     }
   };
-  const retryDeliveryIncidents = async () => {
+  const retryDeliveryIncidents = async (incidentId?: string) => {
     if (deliveryIncidentsLoading) return;
     setDeliveryIncidentsLoading(true);
     setOdooActionMessage("Reintentando incidencias de entrega Odoo...");
     try {
-      const result = await odooClient.retryDeliveryIncidents();
+      const result = await odooClient.retryDeliveryIncidents(incidentId ? [incidentId] : undefined);
       setOdooActionMessage(
         `Reintento incidencias: ${result.validated} validada(s), ${result.incidents.length} siguen con incidencia.`,
       );
@@ -1268,20 +1436,101 @@ function App() {
           )}
         </button>
         <nav className="nav-list">
-          {visibleNavItems.map((item) => (
-            <button
-              className={item.view === activeView ? "active" : ""}
-              key={item.label}
-              onClick={() => navigateToView(item.view)}
-              title={item.label}
-              type="button"
-            >
-              <item.icon size={18} />
-              <span className="nav-label">{item.label}</span>
-            </button>
-          ))}
+          {visibleNavItems.map((item) =>
+            item.view === "products" ? (
+              <div
+                className={`nav-group ${isProductsView ? "active" : ""} ${productsMenuOpen ? "open" : ""}`}
+                key={item.label}
+              >
+                <div className="nav-group-heading">
+                  <button
+                    aria-expanded={productsMenuOpen}
+                    aria-label={
+                      productsMenuOpen
+                        ? "Cerrar submenú de productos"
+                        : "Abrir submenú de productos"
+                    }
+                    className={isProductsView ? "active" : ""}
+                    onClick={() => setProductsMenuOpen((value) => !value)}
+                    title="Abrir submenú de Productos e inventario"
+                    type="button"
+                  >
+                    <item.icon size={18} />
+                    <span className="nav-label">{item.label}</span>
+                    <ChevronDown className="nav-chevron" size={15} />
+                  </button>
+                </div>
+                <div className="nav-submenu">
+                  <button
+                    className={activeView === "products" ? "active" : ""}
+                    onClick={() => navigateToView("products")}
+                    type="button"
+                  >
+                    <Boxes size={16} />
+                    <span className="nav-label">Catálogo</span>
+                  </button>
+                  {visibleProductsToolsNavItems.map((child) => (
+                    <button
+                      className={child.view === activeView ? "active" : ""}
+                      key={child.view}
+                      onClick={() => navigateToView(child.view)}
+                      type="button"
+                    >
+                      <child.icon size={16} />
+                      <span className="nav-label">{child.label}</span>
+                    </button>
+                  ))}
+                  <div className={`nav-nested-group ${inventoryMenuOpen ? "open" : ""}`}>
+                    <button
+                      aria-expanded={inventoryMenuOpen}
+                      className={activeView.startsWith("productsInventory") ? "active" : ""}
+                      onClick={() => setInventoryMenuOpen((value) => !value)}
+                      type="button"
+                    >
+                      <Boxes size={16} />
+                      <span className="nav-label">Inventario</span>
+                      <ChevronDown className="nav-chevron" size={14} />
+                    </button>
+                    <div className="nav-nested-submenu">
+                      {visibleInventoryNavItems.map((child) => (
+                        <button
+                          className={child.view === activeView ? "active" : ""}
+                          key={child.view}
+                          onClick={() => navigateToView(child.view)}
+                          type="button"
+                        >
+                          <child.icon size={15} />
+                          <span className="nav-label">{child.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <button
+                className={item.view === activeView ? "active" : ""}
+                key={item.label}
+                onClick={() => navigateToView(item.view)}
+                title={item.label}
+                type="button"
+              >
+                <item.icon size={18} />
+                <span className="nav-label">{item.label}</span>
+              </button>
+            ),
+          )}
         </nav>
       </aside>
+
+      <button
+        aria-label="Abrir menú"
+        className="mobile-menu-trigger"
+        onClick={() => setSidebarCollapsed(false)}
+        type="button"
+      >
+        <PanelLeftOpen size={20} />
+      </button>
 
       <main className="main">
         <header className="topbar">
@@ -1305,6 +1554,8 @@ function App() {
                   ? "Pedidos V2"
                 : activeView === "expeditions"
                   ? "Expediciones"
+                : activeView === "warehouseStatistics"
+                  ? "Estadísticas"
                 : activeView === "amazonMessages"
                     ? "Amazon Messages"
                   : activeView === "settings"
@@ -1521,6 +1772,92 @@ function App() {
           <ExpeditionsView
             onRefreshOrders={() => setOrderRefreshKey((value) => value + 1)}
           />
+        ) : activeView === "warehouseStatistics" ? (
+          <WarehouseStatisticsView />
+        ) : activeView === "products" ? (
+          <ProductsCatalogView
+            key="catalog"
+            onSendToInventory={() => navigateToView("productsInventoryNew")}
+          />
+        ) : activeView === "productsScanner" ? (
+          <ProductsCatalogView key="scanner" startScanner />
+        ) : activeView === "productsLabels" ? (
+          <ProductLabelsView />
+        ) : activeView === "productsInventoryNew" ? (
+          <InventoryView
+            screen="new"
+            onNavigate={(screen) =>
+              navigateToView(
+                {
+                  new: "productsInventoryNew",
+                  active: "productsInventoryActive",
+                  review: "productsInventoryReview",
+                  final: "productsInventoryFinal",
+                  history: "productsInventoryHistory",
+                }[screen],
+              )
+            }
+          />
+        ) : activeView === "productsInventoryActive" ? (
+          <InventoryView
+            screen="active"
+            onNavigate={(screen) =>
+              navigateToView(
+                {
+                  new: "productsInventoryNew",
+                  active: "productsInventoryActive",
+                  review: "productsInventoryReview",
+                  final: "productsInventoryFinal",
+                  history: "productsInventoryHistory",
+                }[screen],
+              )
+            }
+          />
+        ) : activeView === "productsInventoryReview" ? (
+          <InventoryView
+            screen="review"
+            onNavigate={(screen) =>
+              navigateToView(
+                {
+                  new: "productsInventoryNew",
+                  active: "productsInventoryActive",
+                  review: "productsInventoryReview",
+                  final: "productsInventoryFinal",
+                  history: "productsInventoryHistory",
+                }[screen],
+              )
+            }
+          />
+        ) : activeView === "productsInventoryFinal" ? (
+          <InventoryView
+            screen="final"
+            onNavigate={(screen) =>
+              navigateToView(
+                {
+                  new: "productsInventoryNew",
+                  active: "productsInventoryActive",
+                  review: "productsInventoryReview",
+                  final: "productsInventoryFinal",
+                  history: "productsInventoryHistory",
+                }[screen],
+              )
+            }
+          />
+        ) : activeView === "productsInventoryHistory" ? (
+          <InventoryView
+            screen="history"
+            onNavigate={(screen) =>
+              navigateToView(
+                {
+                  new: "productsInventoryNew",
+                  active: "productsInventoryActive",
+                  review: "productsInventoryReview",
+                  final: "productsInventoryFinal",
+                  history: "productsInventoryHistory",
+                }[screen],
+              )
+            }
+          />
         ) : isOrdersView ? (
           <>
             {isV2View && (
@@ -1567,7 +1904,7 @@ function App() {
                       setPage(1);
                       setSelectedPrintOrderIds([]);
                     }}
-                    placeholder="Buscar por pedido, cliente, ciudad, canal o estado"
+                    placeholder="Buscar por pedido Odoo, Amazon, PrestaShop, cliente, ciudad, canal o estado"
                     value={query}
                   />
                 </label>
@@ -1601,17 +1938,6 @@ function App() {
                   options={odooDeliveryOptions}
                   value={odooDelivery}
                 />
-                {!isV2View && can("odooWrite") && (
-                  <button
-                    className="auto-validate-button"
-                    disabled={odooActionLoading || autoValidatableOrders.length === 0}
-                    onClick={validateAutoValidatableOdooDeliveries}
-                    type="button"
-                  >
-                    <Truck size={16} />
-                    Dry-run auto-validables ({autoValidatableOrders.length})
-                  </button>
-                )}
                 <button
                   className="clear-filters"
                   onClick={clearFilters}
@@ -1640,9 +1966,14 @@ function App() {
                     >
                       Por pedido
                     </button>
-                    <button onClick={printDeliveryNotes} type="button">
+                    <button
+                      aria-busy={printActionLoading}
+                      disabled={printActionLoading}
+                      onClick={printDeliveryNotes}
+                      type="button"
+                    >
                       <Printer size={16} />
-                      Imprimir
+                      {printActionLoading ? "Cargando…" : "Imprimir"}
                     </button>
                     {can("odooWrite") && (
                       <button
@@ -1708,7 +2039,12 @@ function App() {
               {odooActionMessage && (
                 <div className="odoo-action-message">{odooActionMessage}</div>
               )}
-              {odooDelivery === "Incidencia entrega Odoo" && (
+              <DeliveryIncidentsPanel
+                  incidents={deliveryIncidents}
+                  loading={deliveryIncidentsLoading}
+                  onRefresh={refreshDeliveryIncidents}
+                />
+              {false && odooDelivery === "Incidencia entrega Odoo" && (
                 <DeliveryIncidentsPanel
                   incidents={deliveryIncidents}
                   loading={deliveryIncidentsLoading}
@@ -2723,69 +3059,76 @@ function DeliveryIncidentsPanel({
   incidents,
   loading,
   onRefresh,
-  onResolve,
-  onRetry,
 }: {
   incidents: DeliveryIncident[];
   loading: boolean;
   onRefresh: () => void | Promise<void>;
-  onResolve: (incidentId: string) => void | Promise<void>;
-  onRetry: () => void | Promise<void>;
 }) {
   const activeIncidents = incidents.filter((incident) => !incident.resolvedAt);
+  const visibleIncidents = activeIncidents.slice(0, 100);
+  const [expanded, setExpanded] = useState(false);
+
+  // El panel debe llamar la atención cuando aparezca una incidencia, pero no
+  // reservar espacio en Pedidos cuando no haya nada que revisar.
+  useEffect(() => {
+    setExpanded(activeIncidents.length > 0);
+  }, [activeIncidents.length]);
+
+  const statusText = loading
+    ? "Actualizando incidencias..."
+    : activeIncidents.length === 0
+      ? "Sin incidencias de entrega Odoo"
+      : `${activeIncidents.length} pendiente(s) de revisar`;
 
   return (
-    <section className="incident-panel">
+    <section className={`incident-panel${activeIncidents.length === 0 ? " incident-panel-empty" : ""}`}>
       <div className="incident-panel-header">
         <div>
           <strong>Incidencia entrega Odoo</strong>
-          <small>
-            {loading
-              ? "Actualizando incidencias..."
-              : `${activeIncidents.length} pendiente(s) de revisar`}
-          </small>
+          <small>{statusText}</small>
+          <small>Versión {DELIVERY_INCIDENTS_VERSION}</small>
         </div>
-        <div className="incident-actions">
-          <button disabled={loading} onClick={onRefresh} type="button">
-            <RefreshCw size={15} />
-            Actualizar estado
+        {activeIncidents.length > 0 ? (
+          <button
+            aria-expanded={expanded}
+            className="incident-toggle"
+            onClick={() => setExpanded((value) => !value)}
+            type="button"
+          >
+            {expanded ? "Ocultar incidencias" : "Ver incidencias"}
           </button>
-          <button disabled={loading || activeIncidents.length === 0} onClick={onRetry} type="button">
-            <ShieldCheck size={15} />
-            Reintentar incidencias
+        ) : (
+          <button
+            aria-label="Actualizar incidencias de entrega Odoo"
+            className="incident-refresh-compact"
+            disabled={loading}
+            onClick={onRefresh}
+            type="button"
+          >
+            <RefreshCw size={14} />
+            Actualizar
           </button>
-        </div>
+        )}
       </div>
-      <div className="incident-table-wrap">
+      {expanded && activeIncidents.length > 0 && (
+        <>
+          <div className="incident-table-wrap">
         <table className="incident-table">
           <thead>
             <tr>
               <th>Pedido</th>
-              <th>Cliente</th>
-              <th>Canal</th>
-              <th>Tracking</th>
-              <th>Picking</th>
               <th>Motivo</th>
-              <th>Ultimo intento</th>
               <th>Acciones</th>
             </tr>
           </thead>
           <tbody>
-            {activeIncidents.map((incident) => (
+            {visibleIncidents.map((incident) => (
               <tr key={incident.id}>
                 <td>
                   <strong>{incident.orderName ?? `#${incident.orderId}`}</strong>
                   <small>#{incident.orderId}</small>
                 </td>
-                <td>{incident.client || "Sin dato"}</td>
-                <td>{incident.channel || "Sin dato"}</td>
-                <td>{incident.tracking || "Sin tracking"}</td>
-                <td>
-                  <strong>{incident.pickingId || "Sin picking"}</strong>
-                  <small>{incident.pickingState || "Sin estado"}</small>
-                </td>
                 <td>{incident.reason}</td>
-                <td>{formatSyncTime(incident.lastAttemptAt)}</td>
                 <td>
                   <div className="incident-row-actions">
                     <a
@@ -2793,29 +3136,40 @@ function DeliveryIncidentsPanel({
                       rel="noreferrer"
                       target="_blank"
                     >
-                      Abrir Odoo
+                      Pedido Odoo
                     </a>
-                    <button
-                      disabled={loading}
-                      onClick={() => onResolve(incident.id)}
-                      type="button"
-                    >
-                      Resuelta
-                    </button>
+                    {incident.pickingId ? (
+                      <a
+                        href={`/api/odoo/orders/open-picking?pickingId=${encodeURIComponent(incident.pickingId)}`}
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        Picking
+                      </a>
+                    ) : <span>Sin albarán</span>}
                   </div>
                 </td>
               </tr>
             ))}
             {!loading && activeIncidents.length === 0 && (
               <tr>
-                <td className="empty-state" colSpan={8}>
+                <td className="empty-state" colSpan={3}>
                   No hay incidencias de entrega Odoo pendientes.
+                </td>
+              </tr>
+            )}
+            {!loading && activeIncidents.length > visibleIncidents.length && (
+              <tr>
+                <td className="empty-state" colSpan={3}>
+                  Se muestran las primeras {visibleIncidents.length} incidencias. Usa los filtros de Pedidos para revisar el resto.
                 </td>
               </tr>
             )}
           </tbody>
         </table>
-      </div>
+          </div>
+        </>
+      )}
     </section>
   );
 }
@@ -2832,8 +3186,8 @@ function OrderDetailPanel({ loading, order }: { loading?: boolean; order: Order 
           <small>{order.odooRef}</small>
         </div>
         <div>
-          <span>Cliente</span>
-          <strong>{order.client}</strong>
+          <span>Destinatario de envío</span>
+          <strong>{order.shippingRecipient || order.client}</strong>
           <small>{order.shippingPhone || "Sin telefono registrado"}</small>
         </div>
         <div>
@@ -2984,6 +3338,8 @@ function SettingsView({
   users: DashboardUser[];
 }) {
   const [passwordDrafts, setPasswordDrafts] = useState<Record<string, string>>({});
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const selectedUser = users.find((user) => user.id === selectedUserId);
   const updateUser = async (
     userId: string,
     patch: Partial<DashboardUser> & { password?: string },
@@ -2997,10 +3353,13 @@ function SettingsView({
     await onRefreshUsers();
   };
   const deleteUser = async (userId: string) => {
+    const user = users.find((item) => item.id === userId);
+    if (!user || !window.confirm(`¿Eliminar al usuario ${user.name}?`)) return;
     const updatedUsers = users.filter((item) => item.id !== userId);
     onSaveUsers(updatedUsers);
     await odooClient.deleteDashboardUser(userId);
     await onRefreshUsers();
+    setSelectedUserId(null);
   };
 
   return (
@@ -3015,7 +3374,9 @@ function SettingsView({
           </p>
         </div>
 
-        <div className="user-create-row">
+        <details className="user-create-card">
+          <summary><span><strong>Añadir usuario</strong><small>Crea una cuenta y asigna su rol inicial.</small></span><Plus size={17} aria-hidden="true" /></summary>
+          <div className="user-create-row">
           <input
             aria-label="Nombre visible"
             onChange={(event) => onChangeNewUserName(event.target.value)}
@@ -3031,7 +3392,7 @@ function SettingsView({
           <input
             aria-label="Contrasena inicial"
             onChange={(event) => onChangeNewUserPassword(event.target.value)}
-            placeholder="Contrasena inicial"
+            placeholder="Contraseña inicial"
             type="password"
             value={newUserPassword}
           />
@@ -3046,10 +3407,9 @@ function SettingsView({
             <option value="printer">printer</option>
             <option value="admin">admin</option>
           </select>
-          <button onClick={onAddUser} type="button">
-            Anadir usuario
-          </button>
-        </div>
+          <button onClick={onAddUser} type="button">Crear usuario</button>
+          </div>
+        </details>
 
         <div className="dashboard-user-list">
           {users.map((user) => (
@@ -3060,104 +3420,16 @@ function SettingsView({
                   {user.username} · {user.active ? "Activo" : "Desactivado"}
                 </small>
               </span>
-              <select
-                aria-label={`Rol de ${user.name}`}
-                onChange={(event) =>
-                  updateUser(user.id, {
-                    role: event.target.value as DashboardUserRole,
-                    permissions: permissionsForRole(
-                      event.target.value as DashboardUserRole,
-                    ),
-                  })
-                }
-                value={user.role}
-              >
-                <option value="viewer">viewer</option>
-                <option value="printer">printer</option>
-                <option value="admin">admin</option>
-              </select>
-              <div className="permission-tags">
-                {editablePermissions.map((permission) => (
-                  <label key={permission}>
-                    <input
-                      checked={user.permissions.includes(permission)}
-                      disabled={
-                        user.id === currentUser.id && permission === "settings"
-                      }
-                      onChange={() => {
-                        const nextPermissions = user.permissions.includes(permission)
-                          ? user.permissions.filter((item) => item !== permission)
-                          : [...user.permissions, permission];
-                        updateUser(user.id, { permissions: nextPermissions });
-                      }}
-                      type="checkbox"
-                    />
-                    {permissionLabels[permission]}
-                  </label>
-                ))}
-              </div>
-              <button
-                disabled={user.id === currentUser.id}
-                onClick={() => updateUser(user.id, { active: !user.active })}
-                type="button"
-              >
-                {user.active ? "Desactivar" : "Activar"}
-              </button>
-              <input
-                aria-label={`Nueva contrasena para ${user.name}`}
-                onChange={(event) =>
-                  setPasswordDrafts((current) => ({
-                    ...current,
-                    [user.id]: event.target.value,
-                  }))
-                }
-                placeholder="Nueva contrasena"
-                type="password"
-                value={passwordDrafts[user.id] ?? ""}
-              />
-              <button
-                disabled={(passwordDrafts[user.id] ?? "").length < 8}
-                onClick={async () => {
-                  const password = passwordDrafts[user.id] ?? "";
-                  await updateUser(user.id, { password });
-                  setPasswordDrafts((current) => ({ ...current, [user.id]: "" }));
-                }}
-                type="button"
-              >
-                Cambiar contrasena
-              </button>
-              <button
-                disabled={user.id === currentUser.id}
-                onClick={() => deleteUser(user.id)}
-                type="button"
-              >
-                Eliminar
-              </button>
+              <span className={`user-role user-role-${user.role}`}>{user.role}</span>
+              <span className={user.active ? "user-status active" : "user-status inactive"}>{user.active ? "Activo" : "Desactivado"}</span>
+              <button onClick={() => setSelectedUserId(user.id)} type="button">Gestionar</button>
             </div>
           ))}
         </div>
       </article>
 
-      <article className="panel settings-panel">
-        <div className="section-heading">
-          <span>Roles</span>
-          <h2>Permisos previstos</h2>
-        </div>
-        <div className="role-list">
-          <div>
-            <strong>viewer</strong>
-            <small>Ver dashboard, pedidos y estados.</small>
-          </div>
-          <div>
-            <strong>printer</strong>
-            <small>Imprimir albaranes y, en el futuro, marcar impresos.</small>
-          </div>
-          <div>
-            <strong>admin</strong>
-            <small>Gestionar usuarios y autorizar acciones delicadas.</small>
-          </div>
-        </div>
-      </article>
+      {selectedUser && <><button aria-label="Cerrar gestión de usuario" className="drawer-backdrop" onClick={() => setSelectedUserId(null)} type="button" /><aside aria-label={`Gestionar ${selectedUser.name}`} className="user-management-drawer"><div className="user-drawer-heading"><div><span>Gestionar usuario</span><h2>{selectedUser.name}</h2><p>{selectedUser.username}</p></div><button aria-label="Cerrar gestión de usuario" onClick={() => setSelectedUserId(null)} type="button"><XCircle size={21} /></button></div><label className="settings-field">Rol<select aria-label={`Rol de ${selectedUser.name}`} onChange={(event) => updateUser(selectedUser.id, { role: event.target.value as DashboardUserRole, permissions: permissionsForRole(event.target.value as DashboardUserRole) })} value={selectedUser.role}><option value="viewer">viewer</option><option value="printer">printer</option><option value="admin">admin</option></select><small>Al cambiar el rol se aplica su conjunto de permisos previsto.</small></label><fieldset className="settings-permissions"><legend>Permisos</legend>{editablePermissions.map((permission) => (<label key={permission}><input checked={selectedUser.permissions.includes(permission)} disabled={selectedUser.id === currentUser.id && permission === "settings"} onChange={() => { const permissions = selectedUser.permissions.includes(permission) ? selectedUser.permissions.filter((item) => item !== permission) : [...selectedUser.permissions, permission]; updateUser(selectedUser.id, { permissions }); }} type="checkbox" />{permissionLabels[permission]}</label>))}</fieldset><label className="settings-field">Nueva contraseña<input aria-label={`Nueva contraseña para ${selectedUser.name}`} onChange={(event) => setPasswordDrafts((current) => ({ ...current, [selectedUser.id]: event.target.value }))} placeholder="Mínimo 8 caracteres" type="password" value={passwordDrafts[selectedUser.id] ?? ""} /></label><button className="settings-save-button" disabled={(passwordDrafts[selectedUser.id] ?? "").length < 8} onClick={async () => { const password = passwordDrafts[selectedUser.id] ?? ""; await updateUser(selectedUser.id, { password }); setPasswordDrafts((current) => ({ ...current, [selectedUser.id]: "" })); }} type="button">Guardar contraseña</button><div className="settings-danger-zone"><strong>Acciones de cuenta</strong><button disabled={selectedUser.id === currentUser.id} onClick={() => updateUser(selectedUser.id, { active: !selectedUser.active })} type="button">{selectedUser.active ? "Desactivar usuario" : "Activar usuario"}</button><button disabled={selectedUser.id === currentUser.id} onClick={() => deleteUser(selectedUser.id)} type="button">Eliminar usuario</button></div></aside></>}
+      <WarehouseWorkersSettings />
     </section>
   );
 }
@@ -3169,7 +3441,25 @@ function PrintPreview({
   orders: Order[];
   view: "products" | "orders";
 }) {
+  const [preferredLocations, setPreferredLocations] = useState<Record<string, string>>({});
   const orderGroups = useMemo(() => buildOrderGroupsByProduct(orders), [orders]);
+
+  useEffect(() => {
+    let mounted = true;
+    odooClient.getProductCatalog()
+      .then((catalog) => {
+        if (!mounted) return;
+        setPreferredLocations(Object.fromEntries(
+          catalog.products
+            .filter((product) => product.reference)
+            .map((product) => [product.reference, product.locationSummary?.preferredCode || ""]),
+        ));
+      })
+      .catch(() => {
+        if (mounted) setPreferredLocations({});
+      });
+    return () => { mounted = false; };
+  }, []);
 
   return (
     <section className="print-preview-panel print-area">
@@ -3179,7 +3469,7 @@ function PrintPreview({
             <section className="print-product-group" key={group.sku}>
               <div className="delivery-note-stack">
                 {group.orders.map(({ order }) => (
-                  <DeliveryNote order={order} key={`${group.sku}-${order.id}`} />
+                  <DeliveryNote order={order} key={`${group.sku}-${order.id}`} preferredLocations={preferredLocations} />
                 ))}
               </div>
             </section>
@@ -3188,7 +3478,7 @@ function PrintPreview({
       ) : (
         <div className="delivery-note-stack">
           {orders.map((order) => (
-            <DeliveryNote order={order} key={order.id} />
+            <DeliveryNote order={order} key={order.id} preferredLocations={preferredLocations} />
           ))}
         </div>
       )}
@@ -3207,29 +3497,44 @@ type ProductPrintGroupData = {
   }>;
 };
 
-function DeliveryNote({ order }: { order: Order }) {
+function DeliveryNote({ order, preferredLocations }: { order: Order; preferredLocations: Record<string, string> }) {
   const printableItems = order.items.filter((item) => !isServiceLine(item));
+  const shippingCountry = formatShippingCountry(order.shippingCountryCode);
+  const shippingLocality = [order.shippingPostalCode, order.city]
+    .map((value) => value?.trim())
+    .filter(Boolean)
+    .join(" ");
+  const shippingAddressLines = [
+    order.shippingAddress?.trim(),
+    shippingLocality,
+    shippingCountry,
+  ].filter((line, index, lines) =>
+    Boolean(line) && lines.findIndex((candidate) => candidate?.toLowerCase() === line?.toLowerCase()) === index,
+  );
 
   return (
     <article className="delivery-note">
       <header className="delivery-note-header">
-        <div>
-          <strong>Todoelectrico Sum e Ins SL</strong>
-          <span>C/Yunque 27 · 03690 Sant Vicent del Raspeig</span>
-          <span>CIF: ESB54685144 · +34 965 670 786</span>
+        <div className="delivery-note-title">
+          <strong>Albaran</strong>
         </div>
         <div className="delivery-note-refs">
           <strong>Pedido: {order.id}</strong>
+          <span>{formatShortDateTime(order.odooReceivedAt || order.date) || "Sin fecha"}</span>
           <span>{order.externalRef ? `Referencia: ${order.externalRef}` : "Sin referencia externa"}</span>
-          <span>{order.sendcloud?.trackingNumber ? `Tracking: ${order.sendcloud.trackingNumber}` : getEffectiveDeliveryStatus(order)}</span>
+          {order.sendcloud?.trackingNumber ? <span>{`Tracking: ${order.sendcloud.trackingNumber}`}</span> : null}
         </div>
       </header>
 
       <section className="delivery-note-customer">
         <div>
-          <span className="customer-label">Cliente</span>
-          <strong>{order.client}</strong>
-          <small>{order.shippingAddress || order.city || "Sin direccion"}</small>
+          <span className="customer-label">Destinatario de envío</span>
+          <strong>{order.shippingRecipient || order.client}</strong>
+          {shippingAddressLines.length > 0 ? (
+            shippingAddressLines.map((line) => <small key={line}>{line}</small>)
+          ) : (
+            <small>Sin dirección de envío registrada</small>
+          )}
           <small>{order.shippingPhone || "Sin telefono"}</small>
         </div>
         <div className="delivery-note-qr-list">
@@ -3266,7 +3571,7 @@ function DeliveryNote({ order }: { order: Order }) {
                   ) : (
                     <span className="product-thumb-placeholder" />
                   )}
-                  <strong>{component.sku}</strong>
+                  <strong>{component.sku}<small className="delivery-note-location">{preferredLocations[component.sku] || ""}</small></strong>
                   <span>{component.name}</span>
                 <strong>
                     <QuantityBadge
@@ -3285,7 +3590,7 @@ function DeliveryNote({ order }: { order: Order }) {
               ) : (
                 <span className="product-thumb-placeholder" />
               )}
-              <strong>{item.sku}</strong>
+              <strong>{item.sku}<small className="delivery-note-location">{preferredLocations[item.sku] || ""}</small></strong>
               <span>{item.name}</span>
               <strong>
                 <QuantityBadge quantity={item.quantity} />
@@ -3296,6 +3601,19 @@ function DeliveryNote({ order }: { order: Order }) {
       </div>
     </article>
   );
+}
+
+function formatShippingCountry(countryCode?: string) {
+  const normalizedCode = countryCode?.trim().toUpperCase();
+  if (!normalizedCode) return "";
+
+  try {
+    // El dato de Odoo es ISO-3166; en el documento imprimible debe aparecer
+    // el nombre del país para que no se muestre el código técnico.
+    return new Intl.DisplayNames(["es"], { type: "region" }).of(normalizedCode) ?? "";
+  } catch {
+    return "";
+  }
 }
 
 function QrBox({ value }: { value: string }) {
@@ -3766,7 +4084,9 @@ function DashboardView({
   const loading = dataMode === "loading" || !dashboard;
   const opsLoading = loading || controlOrdersLoading;
   const daily = (Array.isArray(dashboard?.daily) ? dashboard.daily : []).slice(-14);
-  const controlRange = lastDaysRange(4);
+  // Operational totals must reflect the selected day/range, never a rolling
+  // window that carries orders from previous days.
+  const controlRange = dateRange;
   const salesOrders = orders;
   const liveInvoiceAnalytics =
     invoiceAnalytics?.mode === "live" ? invoiceAnalytics : null;
@@ -4974,15 +5294,8 @@ function formatOrdersSyncSummary(sync: OrdersSyncStats) {
     `${formatInteger(sync.ordersUpdated)} actualizados`,
     `${formatInteger(sync.sendcloudStatuses ?? sync.sendcloudLabels)} estados Sendcloud`,
     `${formatInteger(sync.sendcloudTracking ?? sync.sendcloudLabels)} tracking`,
-    sync.dryRunCandidates !== undefined
-      ? `${formatInteger(sync.dryRunCandidates)} candidatos dry-run`
-      : `${formatInteger(sync.deliveriesValidated)} validados`,
-    sync.dryRunValidables !== undefined
-      ? `${formatInteger(sync.dryRunValidables)} validables`
-      : `${formatInteger(sync.incidents)} incidencias`,
-    sync.dryRunIncidents !== undefined
-      ? `${formatInteger(sync.dryRunIncidents)} incidencias`
-      : null,
+    `${formatInteger(sync.deliveriesValidated)} validados`,
+    `${formatInteger(sync.incidents)} incidencias`,
     `Odoo ${sync.odooCalls}`,
     `Sendcloud ${sync.sendcloudCalls}`,
   ].filter(Boolean).join(" · ");

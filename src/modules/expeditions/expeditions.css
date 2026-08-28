@@ -3,6 +3,84 @@
   gap: 18px;
 }
 
+.expeditions-progress-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  background: rgb(15 23 42 / 42%);
+  backdrop-filter: blur(2px);
+}
+
+.expeditions-progress-panel {
+  display: grid;
+  justify-items: center;
+  gap: 16px;
+  width: min(420px, calc(100vw - 32px));
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgb(15 23 42 / 24%);
+  padding: 28px;
+  text-align: center;
+}
+
+.expeditions-progress-panel h3 {
+  margin: 0 0 6px;
+  color: #111827;
+  font-size: 22px;
+}
+
+.expeditions-progress-panel p {
+  margin: 0;
+  color: #475569;
+  font-size: 15px;
+}
+
+.expeditions-progress-spinner {
+  width: 54px;
+  height: 54px;
+  border: 5px solid #dbeafe;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: expeditions-spin .85s linear infinite;
+}
+
+.expeditions-progress-bar {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: #e2e8f0;
+}
+
+.expeditions-progress-bar span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 45%;
+  border-radius: inherit;
+  background: #2563eb;
+  animation: expeditions-progress 1.2s ease-in-out infinite;
+}
+
+@keyframes expeditions-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes expeditions-progress {
+  0% {
+    transform: translateX(-110%);
+  }
+
+  100% {
+    transform: translateX(230%);
+  }
+}
+
 .expeditions-hero,
 .expeditions-toolbar,
 .scan-panel,
@@ -140,6 +218,26 @@
   align-items: center;
   gap: 7px;
   color: #475569;
+}
+
+.label-printer-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.label-printer-select select {
+  min-height: 36px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #fff;
+  color: #111827;
+  font: inherit;
+  padding: 0 10px;
 }
 
 .scan-icon {
@@ -373,4 +471,73 @@
   .parcel-row {
     grid-template-columns: 1fr 1fr;
   }
+}
+
+/* Operativa compacta: pedido y preparación, sin cuatro tarjetas iguales. */
+.expeditions-grid {
+  grid-template-columns: minmax(0, 1.45fr) minmax(320px, .9fr);
+  grid-template-areas: "order shipment" "order actions";
+  align-items: start;
+}
+.order-card { grid-area: order; }
+.quote-card { grid-area: shipment; }
+.action-card { grid-area: actions; gap: 10px; border-color: #bfdbfe; box-shadow: 0 12px 28px rgb(37 99 235 / 10%); }
+.parcels-card { display: none; }
+.order-summary { grid-template-columns: minmax(180px, .75fr) minmax(300px, 1.75fr); gap: 8px; }
+.order-summary > div { min-width: 0; border: 1px solid #edf1f6; border-radius: 8px; background: #f8fafc; padding: 10px; }
+.order-summary dd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.destination-editor { border-top: 1px solid #edf1f6; padding-top: 10px; }
+.destination-editor summary { cursor: pointer; color: #475569; font-size: 13px; font-weight: 700; }
+.destination-editor[open] summary { margin-bottom: 10px; }
+.destination-fields { grid-template-columns: 1fr; }
+.destination-field-full, .destination-inline-fields label { min-width: 0; }
+.destination-inline-fields { display: grid; grid-template-columns: minmax(90px, .45fr) minmax(170px, 1fr) minmax(80px, .32fr); gap: 10px; }
+.destination-inline-fields:last-child { grid-template-columns: minmax(150px, .55fr) minmax(260px, 1.45fr); }
+.destination-inline-fields label { display: grid; gap: 5px; color: #475569; font-size: 12px; font-weight: 700; }
+.parcel-summary-actions { display: flex; align-items: start; gap: 10px; border-top: 1px solid #edf1f6; padding-top: 10px; }
+.parcel-editor { flex: 1 1 auto; }
+.parcel-editor summary { display: flex; align-items: center; justify-content: space-between; cursor: pointer; color: #475569; font-size: 13px; list-style: none; }
+.parcel-editor summary::-webkit-details-marker { display: none; }
+.parcel-editor summary span { color: #64748b; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+.parcel-editor summary strong { color: #1e293b; }
+.parcel-editor-body { display: grid; gap: 8px; margin-top: 10px; }
+.parcel-summary-buttons { display: flex; flex: 0 0 auto; gap: 7px; }
+.parcel-summary-buttons .secondary-action { min-height: 34px; }
+.add-parcel-button { min-height: 34px; border: 1px dashed #60a5fa; border-radius: 7px; background: #eff6ff; color: #1d4ed8; font-weight: 700; padding: 0 11px; cursor: pointer; }
+.parcel-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.parcel-row > strong { grid-column: 1 / -1; }
+.parcel-row input { box-sizing: border-box; min-width: 0; }
+.parcel-row .remove-parcel { grid-column: 4; justify-self: end; }
+.refresh-corrected-action { min-height: 38px; border: 1px solid #bfdbfe; border-radius: 8px; background: #eff6ff; color: #1d4ed8; font-weight: 800; cursor: pointer; }
+.refresh-corrected-action:hover { background: #dbeafe; }
+.shipment-rule-card { display: flex; align-items: center; gap: 12px; border: 1px solid #bfdbfe; border-radius: 12px; background: linear-gradient(135deg, #eff6ff, #f8fbff); padding: 13px; }
+.shipment-rule-card > div { min-width: 0; }
+.shipment-rule-card > div > span { color: #2563eb; font-size: 12px; font-weight: 800; text-transform: uppercase; }
+.shipment-rule-card h3 { margin: 3px 0; font-size: 17px; }
+.shipment-rule-card p, .carrier-help { color: #64748b; font-size: 13px; }
+.controlled-reissue { display: flex; align-items: end; gap: 8px; border-left: 3px solid #f59e0b; padding-left: 10px; }
+.controlled-reissue label { display: grid; gap: 4px; color: #92400e; font-size: 12px; font-weight: 700; }
+.controlled-reissue input { min-width: 220px; border: 1px solid #fbbf24; border-radius: 6px; padding: 7px 8px; }
+.label-history { margin-top: 12px; border-top: 1px solid #e2e8f0; padding-top: 10px; display: grid; gap: 6px; }
+.label-history-row { display: grid; gap: 2px; color: #334155; font-size: 12px; }
+.label-history-row small { color: #92400e; }
+.shipment-rule-icon { display: grid; flex: 0 0 auto; place-items: center; width: 40px; height: 40px; border-radius: 12px; background: #2563eb; color: #fff; }
+.manual-rule-select { display: grid; gap: 6px; color: #334155; font-size: 12px; font-weight: 800; }
+.manual-rule-select select { min-height: 38px; border: 1px solid #cbd5e1; border-radius: 7px; background: #fff; color: #0f172a; font: inherit; padding: 0 9px; }
+.manual-rule-select small { color: #64748b; font-weight: 500; }
+.action-card > span { color: #64748b; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+.action-primary, .danger-action { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; border: 0; border-radius: 9px; font-weight: 800; cursor: pointer; }
+.action-primary { background: linear-gradient(135deg, #2563eb, #1d4ed8); box-shadow: 0 8px 16px rgb(37 99 235 / 24%); color: #fff; padding: 0 16px; }
+.action-primary:hover { background: linear-gradient(135deg, #1d4ed8, #1e40af); }
+.action-primary.full { width: 100%; }
+.danger-action { border: 1px solid #fecaca; background: #fff; color: #b91c1c; padding: 0 12px; }
+.cancel-unavailable { color: #92400e; font-size: 12px; font-weight: 700; }
+
+@media (max-width: 760px) {
+  .expeditions-grid { grid-template-columns: 1fr; grid-template-areas: "order" "shipment" "actions"; }
+  .order-summary, .destination-inline-fields, .destination-inline-fields:last-child { grid-template-columns: 1fr; }
+  .parcel-summary-actions { align-items: stretch; flex-direction: column; }
+  .parcel-summary-buttons { flex-wrap: wrap; }
+  .parcel-row { grid-template-columns: 1fr 1fr; }
+  .parcel-row .remove-parcel { grid-column: 2; }
 }

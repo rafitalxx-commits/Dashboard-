@@ -12,6 +12,8 @@ type AmazonSpApiConfig = {
   endpoint: string;
   dryRun: boolean;
   useAwsSigV4: boolean;
+  liveOrderAllowlist: string[];
+  requireLiveAllowlist: boolean;
 };
 
 type LwaToken = {
@@ -34,11 +36,32 @@ export function getAmazonSpApiConfig(env: Record<string, string>): AmazonSpApiCo
     endpoint: (env.AMAZON_SP_API_ENDPOINT || defaultEndpoint(region)).replace(/\/+$/, ""),
     dryRun: !isFalse(env.DRY_RUN) && !isFalse(env.AMAZON_SP_API_DRY_RUN),
     useAwsSigV4: env.AMAZON_SP_API_USE_AWS_SIGV4 === "true",
+    liveOrderAllowlist: parseList(env.AMAZON_SP_API_LIVE_ORDER_ALLOWLIST),
+    requireLiveAllowlist: env.AMAZON_SP_API_REQUIRE_LIVE_ALLOWLIST === "true",
   };
 }
 
 export function createAmazonSpApiClient(env: Record<string, string>) {
   const config = getAmazonSpApiConfig(env);
+
+  async function getOrderItems(amazonOrderId: string, marketplaceId = config.marketplaceId) {
+    if (!/^\d{3}-\d{7}-\d{7}$/.test(amazonOrderId)) throw new Error("Pedido Amazon no valido para consultar lineas");
+    requireLiveConfig(config);
+    const path = `/orders/v0/orders/${encodeURIComponent(amazonOrderId)}/orderItems?MarketplaceId=${encodeURIComponent(marketplaceId)}`;
+    const token = await getLwaAccessToken(config);
+    const headers: Record<string, string> = { "x-amz-access-token": token };
+    if (config.useAwsSigV4) Object.assign(headers, signAwsRequest(config, "GET", path, ""));
+    const response = await fetch(`${config.endpoint}${path}`, { method: "GET", headers });
+    const rawBody = await response.text();
+    const parsedBody = rawBody ? safeJson(rawBody) : null;
+    if (!response.ok) throw new Error(extractAmazonError(parsedBody, response.status));
+    const values = (parsedBody as { payload?: { OrderItems?: Array<{ OrderItemId?: string; QuantityOrdered?: number; QuantityShipped?: number }> } })?.payload?.OrderItems ?? [];
+    const orderItems = values
+      .map((item) => ({ orderItemId: String(item.OrderItemId || "").trim(), quantity: Math.max(1, Math.trunc(Number(item.QuantityOrdered ?? item.QuantityShipped ?? 1))) }))
+      .filter((item) => item.orderItemId);
+    if (!orderItems.length) throw new Error("Amazon no ha devuelto lineas validas para el pedido");
+    return orderItems;
+  }
 
   async function confirmShipment(draft: AmazonShipmentConfirmationDraft, options: { dryRun?: boolean } = {}) {
     const request = buildConfirmShipmentRequest(config, draft);
@@ -54,6 +77,7 @@ export function createAmazonSpApiClient(env: Record<string, string>) {
       };
     }
     requireLiveConfig(config);
+    requireLiveOrderAllowed(config, draft.amazonOrderId);
     const token = await getLwaAccessToken(config);
     const headers: Record<string, string> = {
       "content-type": "application/json",
@@ -86,7 +110,7 @@ export function createAmazonSpApiClient(env: Record<string, string>) {
     return result;
   }
 
-  return { confirmShipment, config };
+  return { confirmShipment, getOrderItems, config };
 }
 
 export function buildConfirmShipmentRequest(
@@ -202,6 +226,13 @@ function isFalse(value?: string) {
   return String(value || "").toLowerCase() === "false";
 }
 
+function parseList(value?: string) {
+  return String(value || "")
+    .split(/[,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function requireLiveConfig(config: AmazonSpApiConfig) {
   const missing = [
     ["AMAZON_CLIENT_ID", config.clientId],
@@ -211,6 +242,19 @@ function requireLiveConfig(config: AmazonSpApiConfig) {
   ].filter(([, value]) => !value);
   if (missing.length) throw new Error(`Faltan variables Amazon SP-API: ${missing.map(([key]) => key).join(", ")}`);
 }
+
+function requireLiveOrderAllowed(config: AmazonSpApiConfig, amazonOrderId: string) {
+  if (!config.liveOrderAllowlist.length) {
+    if (config.requireLiveAllowlist) {
+      throw new Error("Envio real Amazon bloqueado: falta AMAZON_SP_API_LIVE_ORDER_ALLOWLIST");
+    }
+    return;
+  }
+  if (!config.liveOrderAllowlist.includes(amazonOrderId)) {
+    throw new Error(`Envio real Amazon bloqueado: ${amazonOrderId} no esta autorizado en AMAZON_SP_API_LIVE_ORDER_ALLOWLIST`);
+  }
+}
+
 
 function safeJson(value: string) {
   try {
