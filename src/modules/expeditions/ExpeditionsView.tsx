@@ -862,6 +862,12 @@ function shippingServiceLabel(serviceId?: string) {
   return labels[serviceId || ""] || serviceId || "Servicio sin seleccionar";
 }
 
+function amazonShippingMethod(carrier: string, carrierStatus?: string) {
+  return String(carrierStatus || "").startsWith("cex-")
+    ? shippingServiceLabel(carrierStatus)
+    : carrier;
+}
+
 function resolveShippingRule(settings: ExpeditionsSettings, country: string) {
   const normalizedCountry = country.trim().toUpperCase();
   const rules = [...settings.rules].filter((rule) => rule.active).sort((left, right) => left.priority - right.priority);
@@ -2270,7 +2276,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
           trackingUrl,
           carrier,
           carrierCode: carrier,
-          shippingMethod: carrier,
+          shippingMethod: amazonShippingMethod(carrier, carrierStatus),
           shipmentDate: shipmentDate || new Date().toISOString(),
         }),
       });
@@ -2278,7 +2284,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       if (!response.ok || !payload.shipment) throw new Error(payload.message || "No se pudo preparar Amazon dry-run");
       setAmazonShipment(payload.shipment);
       void loadAmazonShipments();
-      if (!options.quiet) setNotice(`Amazon preparado: ${payload.shipment.amazonOrderId} · ${payload.shipment.carrier} · ${payload.shipment.tracking}.`);
+      if (!options.quiet) setNotice(`Amazon preparado: ${payload.shipment.amazonOrderId} · ${payload.shipment.shippingMethod || payload.shipment.carrier} · ${payload.shipment.tracking}.`);
       return payload.shipment;
     } catch (error) {
       if (!options.quiet) setNotice(error instanceof Error ? `Amazon pendiente: ${error.message}` : "Amazon pendiente: no se pudo preparar el tracking");
@@ -2350,7 +2356,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
           trackingUrl: label.trackingUrl,
           carrier,
           carrierCode: carrier,
-          shippingMethod: carrier,
+          shippingMethod: amazonShippingMethod(carrier, label.carrierStatus),
           shipmentDate: label.createdAt || new Date().toISOString(),
         }),
       });
