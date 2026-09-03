@@ -514,28 +514,30 @@ export function createProductCatalog(env: Record<string, string>) {
     withOdoo(async (kw) => {
       const id = Number(productId);
       const value = clean(barcode);
-      if (!Number.isInteger(id) || id <= 0 || !value)
-        throw new Error("Producto o EAN inválido");
+      if (!Number.isInteger(id) || id <= 0)
+        throw new Error("Producto inválido");
       const [product] = await kw("product.product", "read", [[id]], {
         fields: ["id", "display_name", "default_code", "barcode"],
       });
       if (!product) throw new Error("Producto no encontrado en Odoo");
-      const duplicates = await kw(
-        "product.product",
-        "search_read",
-        [
+      if (value) {
+        const duplicates = await kw(
+          "product.product",
+          "search_read",
           [
-            ["barcode", "=", value],
-            ["id", "!=", id],
+            [
+              ["barcode", "=", value],
+              ["id", "!=", id],
+            ],
           ],
-        ],
-        { fields: ["id", "display_name", "default_code"], limit: 1 },
-      );
-      if (duplicates.length)
-        throw new Error(
-          `El EAN ya está asignado a ${catalogName(duplicates[0]) || clean(duplicates[0].default_code) || `producto ${duplicates[0].id}`}`,
+          { fields: ["id", "display_name", "default_code"], limit: 1 },
         );
-      await kw("product.product", "write", [[id], { barcode: value }]);
+        if (duplicates.length)
+          throw new Error(
+            `El EAN ya está asignado a ${catalogName(duplicates[0]) || clean(duplicates[0].default_code) || `producto ${duplicates[0].id}`}`,
+          );
+      }
+      await kw("product.product", "write", [[id], { barcode: value || false }]);
       const store = read();
       const index = store.products.findIndex((item) => item.id === id);
       if (index >= 0) {

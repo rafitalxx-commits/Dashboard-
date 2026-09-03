@@ -422,6 +422,28 @@ export function ProductsCatalogView({
       setSaving(false);
     }
   };
+  const removeBarcode = async () => {
+    if (!selected || !detail?.barcode) return;
+    if (!window.confirm(`¿Eliminar el EAN ${detail.barcode} de ${detail.name}?`)) return;
+    setSaving(true);
+    try {
+      await odooClient.updateProductBarcode(selected.id, "");
+      setDetail((current) => (current ? { ...current, barcode: "" } : current));
+      setSelected((current) => (current ? { ...current, barcode: "" } : current));
+      setCatalog((current) => ({
+        ...current,
+        products: current.products.map((product) =>
+          product.id === selected.id ? { ...product, barcode: "" } : product,
+        ),
+      }));
+      setBarcodeEditor(null);
+      setMessage("EAN eliminado en Odoo y Dashboard");
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : "No se pudo eliminar el EAN");
+    } finally {
+      setSaving(false);
+    }
+  };
   const printLabel = async () => {
     if (!selected) return;
     setPrintingLabel(true);
@@ -755,6 +777,17 @@ export function ProductsCatalogView({
                         >
                           <Pencil size={13} />
                         </button>
+                        {detail.barcode ? (
+                          <button
+                            aria-label="Eliminar EAN"
+                            disabled={saving}
+                            onClick={() => void removeBarcode()}
+                            title="Eliminar EAN"
+                            type="button"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        ) : null}
                       </div>
                     ) : (
                       <div className="drawer-ean-editor">

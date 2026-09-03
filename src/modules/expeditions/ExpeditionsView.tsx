@@ -125,6 +125,7 @@ type DestinationOverride = { orderRef: string; destination: DestinationDraft; cr
 const automaticParcel: Parcel = { id: 1, weight: "1", length: "30", width: "20", height: "15" };
 const emptyDestination: DestinationDraft = { name: "", address: "", postalCode: "", town: "", country: "", phone: "", email: "" };
 const labelPrinterStorageKey = "expeditions.labelPrinter";
+const qzConnectAttemptTimeoutMs = 3_000;
 const labelPrinterTargets: LabelPrinterTarget[] = [
   { id: "portatilhp-zdesigner", label: "ZDesigner GC420d", printerName: "\\\\portatilhp\\ZDesigner GC420d (EPL)" },
   { id: "hpamd-honeywell", label: "Honeywell PC42d", printerName: "\\\\HPAMD\\Honeywell PC42d (203 dpi)" },
@@ -439,7 +440,7 @@ async function connectQzTray() {
           retries: 1,
           usingSecure: attempt.usingSecure,
         }),
-        12_000,
+        qzConnectAttemptTimeoutMs,
         `QZ no responde en modo ${attempt.label}`,
       );
       return qz;
@@ -1192,11 +1193,12 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
     }
     try {
       await printPdfWithQzTray(base64, shipmentCode, target.printerName);
+      setQzStatus(`Etiqueta ${shipmentCode} enviada a ${target.label}.`);
       return target.label;
     } catch (error) {
-      await printPdfInCurrentTab(base64, shipmentCode);
       const detail = error instanceof Error ? error.message : "QZ no conectado";
-      return `Dialogo navegador (QZ: ${detail})`;
+      setQzStatus(`Etiqueta ${shipmentCode} creada, pero no enviada: QZ no conecta con ${target.label}. Comprueba QZ Tray y pulsa «Imprimir etiqueta» para reintentar.`);
+      return `pendiente de imprimir (QZ: ${detail})`;
     }
   };
 
