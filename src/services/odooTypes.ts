@@ -1,5 +1,116 @@
 export type StatusTone = "ok" | "warning" | "danger" | "neutral" | "info";
 
+export type CatalogProduct = {
+  id: number;
+  templateId?: number;
+  name: string;
+  reference: string;
+  barcode: string;
+  uom: string;
+  type: string;
+  onHand: number;
+  reserved: number;
+  incoming: number;
+  forecast: number;
+  mto: boolean;
+  isKit: boolean;
+  componentCount: number;
+  physicalLocations: string[];
+  supplierNames: string[];
+  locationSummary?: {
+    preferredCode?: string;
+    preferredQuantity?: number;
+    replenishmentMin?: number;
+    needsReplenishment: boolean;
+  };
+  updatedAt?: string;
+};
+
+export type CatalogStore = {
+  updatedAt?: string;
+  products: CatalogProduct[];
+  sync: {
+    status: "never" | "running" | "ok" | "error";
+    lastFinishedAt?: string;
+    message?: string;
+    full: boolean;
+    scanned: number;
+    changed: number;
+  };
+};
+
+export type CatalogProductDetail = {
+  id: number;
+  name: string;
+  reference: string;
+  barcode: string;
+  image: string;
+  suppliers: Array<{
+    name: string;
+    productName: string;
+    productCode: string;
+    minQty: number;
+    delay: number;
+  }>;
+  components: Array<{
+    id: number;
+    name: string;
+    reference: string;
+    quantity: number;
+    uom: string;
+    locations: ProductLocation[];
+  }>;
+};
+
+export type ProductLocation = {
+  productId: number;
+  code: string;
+  row: string;
+  shelf: string;
+  height: string;
+  quantity: number;
+  preferred: boolean;
+  replenishmentMin?: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type InventoryScope = {
+  type: "general" | "products" | "supplier" | "locations";
+  productSelection: {
+    mode: "all" | "filtered" | "ids";
+    ids?: number[];
+    query?: string;
+    supplier?: string;
+    filter?: string;
+  };
+  allowedLocationCodes: string[];
+  plannedProductIdsByLocation?: Record<string, number[]>;
+};
+
+export type ProductInventory = {
+  id: string;
+  name: string;
+  status: "draft" | "in_progress" | "review" | "validated" | "finalized";
+  scope: InventoryScope;
+  plannedProductIds: number[];
+  createdAt: string;
+  updatedAt: string;
+  operator?: InventoryOperator;
+  startedAt?: string;
+  finishedAt?: string;
+  validatedAt?: string;
+  counts: InventoryCount[];
+  recountProductIds?: number[];
+  recountRevision?: number;
+  finalizedAt?: string;
+  sentAt?: string;
+  odooResults?: Array<{ productId: number; before: number; counted: number; changed: boolean; error?: string }>;
+};
+
+export type InventoryOperator = { id: string; code: string; name: string };
+export type InventoryCount = { id: string; productId: number; locationCode: string; quantity: number; operator: InventoryOperator; countedAt: string; revision: number };
+
 export type Order = {
   id: string;
   odooRef: string;

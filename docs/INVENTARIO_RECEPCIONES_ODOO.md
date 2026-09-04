@@ -14,6 +14,17 @@ El flujo completo previsto es:
 
 Recepciones pertenece al área de Productos para el operario de almacén. Los pedidos de compra todavía abiertos se consultan por separado en `Compras → Compras pendientes`.
 
+La navegación recuperada del Dashboard queda organizada así:
+
+- `Compras → Compras pendientes`;
+- `Productos → Catálogo`;
+- `Productos → Escanear`;
+- `Productos → Etiquetas`;
+- `Productos → Recepciones`;
+- `Productos → Inventario → Nuevo, En curso, Pendientes de revisión, Finalizados e Historial`.
+
+Las pantallas de Productos proceden de la rama `chore/clean-dashboard-github-20260828`, que estaba por delante de `main`. Se han portado sin incorporar los cambios no relacionados de expediciones y transportistas.
+
 ## Tipos de necesidad
 
 La clasificación debe admitir cantidades mixtas dentro de una misma línea de compra.

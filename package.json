@@ -26,6 +26,7 @@
   "dependencies": {
     "@vitejs/plugin-react": "^4.5.2",
     "lucide-react": "^0.513.0",
+    "qrcode": "^1.5.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "typescript": "^5.8.3",
