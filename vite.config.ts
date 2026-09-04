@@ -97,10 +97,35 @@ type OdooOrderLine = {
   price_subtotal?: number;
 };
 
+type OdooPurchaseOrderRecord = {
+  id: number;
+  name?: string;
+  partner_id?: false | [number, string];
+  date_order?: string | false;
+  date_planned?: string | false;
+  state?: string;
+  amount_total?: number;
+  currency_id?: false | [number, string];
+};
+
+type OdooPurchaseLineRecord = {
+  id: number;
+  order_id?: false | [number, string];
+  product_id?: false | [number, string];
+  name?: string;
+  product_qty?: number;
+  qty_received?: number;
+  date_planned?: string | false;
+};
+
 type ProductRecord = {
   id: number;
   product_tmpl_id?: false | [number, string];
   image_128?: string | false;
+  name?: string | false;
+  display_name?: string | false;
+  default_code?: string | false;
+  barcode?: string | false;
 };
 
 type BomRecord = {
@@ -357,6 +382,8 @@ const readOnlyModels = new Set([
   "sale.order.line",
   "stock.picking",
   "stock.move",
+  "purchase.order",
+  "purchase.order.line",
   "res.partner",
   "product.product",
   "mrp.bom",
@@ -704,6 +731,40 @@ function odooReadOnlyApi(env: Record<string, string>) {
                   error instanceof Error ? error.message : "Error leyendo Odoo",
               }),
             );
+          }
+        },
+      );
+
+      server.middlewares.use(
+        "/api/odoo/purchase-receptions",
+        async (request, response) => {
+          const user = auth.getSessionUser(request.headers.cookie);
+          if (
+            !user ||
+            (!user.permissions.includes("products") &&
+              !user.permissions.includes("purchases"))
+          ) {
+            sendJson(response, 401, { message: "Login requerido" });
+            return;
+          }
+          if (request.method !== "GET") {
+            sendJson(response, 405, { message: "Metodo no permitido" });
+            return;
+          }
+          try {
+            sendJson(response, 200, await getOdooPurchaseReceptions(env));
+          } catch (error) {
+            sendJson(response, 500, {
+              mode: "demo",
+              receptions: [],
+              total: 0,
+              pendingLines: 0,
+              pendingUnits: 0,
+              message:
+                error instanceof Error
+                  ? error.message
+                  : "Error leyendo recepciones de Odoo",
+            });
           }
         },
       );
@@ -5146,6 +5207,178 @@ async function getOdooDashboardFull(
         amount: row.price_subtotal ?? 0,
       }))
       .sort((left, right) => right.amount - left.amount),
+  };
+}
+
+async function getOdooPurchaseReceptions(env: Record<string, string>) {
+  const config = getOdooConfig(env);
+  if (!config.url || !config.database || !config.username || !config.apiKey) {
+    throw new Error(
+      "Faltan variables ODOO_URL, ODOO_DATABASE, ODOO_USERNAME u ODOO_API_KEY",
+    );
+  }
+
+  const uid = await authenticate(config);
+  const purchaseOrders = (await executeKw(
+    config,
+    uid,
+    "purchase.order",
+    "search_read",
+    [[['state', 'in', ['purchase', 'done']]]],
+    {
+      fields: [
+        "id",
+        "name",
+        "partner_id",
+        "date_order",
+        "date_planned",
+        "state",
+        "amount_total",
+        "currency_id",
+      ],
+      order: "date_planned asc, date_order desc, id desc",
+      limit: 400,
+    },
+  )) as OdooPurchaseOrderRecord[];
+
+  if (purchaseOrders.length === 0) {
+    return {
+      mode: "live" as const,
+      receptions: [],
+      total: 0,
+      pendingLines: 0,
+      pendingUnits: 0,
+    };
+  }
+
+  const purchaseLines = (await executeKw(
+    config,
+    uid,
+    "purchase.order.line",
+    "search_read",
+    [
+      [
+        ["order_id", "in", purchaseOrders.map((order) => order.id)],
+        ["display_type", "=", false],
+        ["product_qty", ">", 0],
+      ],
+    ],
+    {
+      fields: [
+        "id",
+        "order_id",
+        "product_id",
+        "name",
+        "product_qty",
+        "qty_received",
+        "date_planned",
+      ],
+      order: "order_id asc, sequence asc, id asc",
+    },
+  )) as OdooPurchaseLineRecord[];
+
+  const pendingLines = purchaseLines.filter(
+    (line) =>
+      Math.max(0, Number(line.product_qty ?? 0) - Number(line.qty_received ?? 0)) >
+      0.0001,
+  );
+  const productIds = Array.from(
+    new Set(
+      pendingLines
+        .map((line) => getRelationId(line.product_id))
+        .filter((id): id is number => typeof id === "number"),
+    ),
+  );
+  const products = productIds.length
+    ? ((await executeKw(config, uid, "product.product", "read", [productIds], {
+        fields: [
+          "id",
+          "name",
+          "display_name",
+          "default_code",
+          "barcode",
+          "image_128",
+        ],
+      })) as ProductRecord[])
+    : [];
+  const productsById = new Map(products.map((product) => [product.id, product]));
+  const linesByOrderId = new Map<number, OdooPurchaseLineRecord[]>();
+  pendingLines.forEach((line) => {
+    const orderId = getRelationId(line.order_id);
+    if (!orderId) return;
+    const current = linesByOrderId.get(orderId) ?? [];
+    current.push(line);
+    linesByOrderId.set(orderId, current);
+  });
+
+  const today = new Date().toISOString().slice(0, 10);
+  const receptions = purchaseOrders.flatMap((order) => {
+    const sourceLines = linesByOrderId.get(order.id) ?? [];
+    if (sourceLines.length === 0) return [];
+    const lines = sourceLines.map((line) => {
+      const productId = getRelationId(line.product_id);
+      const product = productId ? productsById.get(productId) : undefined;
+      const orderedQty = Number(line.product_qty ?? 0);
+      const receivedQty = Number(line.qty_received ?? 0);
+      const relationName = getRelationName(line.product_id);
+      return {
+        id: String(line.id),
+        productId: productId ? String(productId) : undefined,
+        name:
+          cleanText(product?.name) ||
+          stripProductCode(relationName) ||
+          cleanText(line.name) ||
+          "Producto sin nombre",
+        sku: cleanText(product?.default_code) || getProductCode(relationName),
+        barcode: cleanText(product?.barcode),
+        imageUrl: formatProductImage(product?.image_128),
+        orderedQty,
+        receivedQty,
+        pendingQty: Math.max(0, orderedQty - receivedQty),
+        uom: "uds",
+        expectedDate: cleanText(line.date_planned),
+      };
+    });
+    const expectedDates = lines
+      .map((line) => line.expectedDate.slice(0, 10))
+      .filter(Boolean)
+      .sort();
+    const expectedDate =
+      expectedDates[0] || cleanText(order.date_planned).slice(0, 10);
+    const receivedQty = lines.reduce((total, line) => total + line.receivedQty, 0);
+    const pendingQty = lines.reduce((total, line) => total + line.pendingQty, 0);
+    const isLate = Boolean(expectedDate && expectedDate < today);
+    return [
+      {
+        id: String(order.id),
+        ref: order.name || `PO #${order.id}`,
+        supplier: getRelationName(order.partner_id) || "Proveedor sin nombre",
+        orderDate: cleanText(order.date_order).slice(0, 10),
+        expectedDate,
+        state: order.state || "purchase",
+        status: isLate ? "Retrasado" : receivedQty > 0 ? "Parcial" : "Pendiente",
+        amountTotal: Number(order.amount_total ?? 0),
+        currency: getRelationName(order.currency_id) || "EUR",
+        lines,
+        orderedQty: lines.reduce((total, line) => total + line.orderedQty, 0),
+        receivedQty,
+        pendingQty,
+      },
+    ];
+  });
+
+  receptions.sort((left, right) => {
+    if (!left.expectedDate) return 1;
+    if (!right.expectedDate) return -1;
+    return left.expectedDate.localeCompare(right.expectedDate);
+  });
+
+  return {
+    mode: "live" as const,
+    receptions,
+    total: receptions.length,
+    pendingLines: receptions.reduce((total, reception) => total + reception.lines.length, 0),
+    pendingUnits: receptions.reduce((total, reception) => total + reception.pendingQty, 0),
   };
 }
 

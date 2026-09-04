@@ -241,6 +241,45 @@ export type Purchase = {
   status: string;
 };
 
+export type PurchaseReceptionLine = {
+  id: string;
+  productId?: string;
+  name: string;
+  sku: string;
+  barcode: string;
+  imageUrl?: string;
+  orderedQty: number;
+  receivedQty: number;
+  pendingQty: number;
+  uom: string;
+  expectedDate: string;
+};
+
+export type PurchaseReception = {
+  id: string;
+  ref: string;
+  supplier: string;
+  orderDate: string;
+  expectedDate: string;
+  state: string;
+  status: "Pendiente" | "Parcial" | "Retrasado";
+  amountTotal: number;
+  currency: string;
+  lines: PurchaseReceptionLine[];
+  orderedQty: number;
+  receivedQty: number;
+  pendingQty: number;
+};
+
+export type PurchaseReceptionsPayload = {
+  mode: "live" | "demo";
+  receptions: PurchaseReception[];
+  total: number;
+  pendingLines: number;
+  pendingUnits: number;
+  message?: string;
+};
+
 export type Product = {
   id: string;
   sku: string;

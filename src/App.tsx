@@ -15,6 +15,7 @@ import {
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
+  PackageOpen,
   Printer,
   ReceiptText,
   RefreshCw,
@@ -33,6 +34,7 @@ import {
 import { money, orders as demoOrders, statusTone } from "./data/demoData";
 import { AmazonMessagesView } from "./modules/amazonMessages";
 import { ExpeditionsView } from "./modules/expeditions/ExpeditionsView";
+import { ReceptionsView } from "./modules/receptions/ReceptionsView";
 import { odooClient } from "./services/odooClient";
 import type {
   InvoiceAnalytics,
@@ -57,6 +59,7 @@ const navItems = [
   { label: "Facturas proveedor", icon: FileText, view: "supplierInvoices", permission: "supplierBilling" },
   { label: "Compras", icon: ShoppingCart, view: "purchases", permission: "purchases" },
   { label: "Productos / stock", icon: Boxes, view: "products", permission: "products" },
+  { label: "Recepciones", icon: PackageOpen, view: "receptions", permission: "products" },
   { label: "Amazon Messages", icon: MessagesSquare, view: "amazonMessages", permission: "orders", productionNav: false },
   { label: "Configuracion", icon: Settings, view: "settings", permission: "settings" },
 ] as const;
@@ -72,6 +75,7 @@ const viewRoutes: Record<ActiveView, string> = {
   supplierInvoices: "facturas-proveedor",
   purchases: "compras",
   products: "productos",
+  receptions: "recepciones",
   amazonMessages: "amazon-messages",
   settings: "configuracion",
 };
@@ -1521,6 +1525,8 @@ function App() {
           <ExpeditionsView
             onRefreshOrders={() => setOrderRefreshKey((value) => value + 1)}
           />
+        ) : activeView === "receptions" ? (
+          <ReceptionsView />
         ) : isOrdersView ? (
           <>
             {isV2View && (
