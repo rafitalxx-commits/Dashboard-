@@ -112,6 +112,11 @@ select {
   align-content: start;
   gap: 18px;
   height: 100vh;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-color: rgba(203, 213, 225, 0.45) transparent;
   background: #132238;
   color: #f8fafc;
   padding: 22px 16px;
