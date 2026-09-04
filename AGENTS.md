@@ -11,6 +11,7 @@ Este repositorio controla una herramienta operativa real de Todoelectrico. Traba
 - Backend Vite: `vite.config.ts`.
 - Modulos backend: `backend/`.
 - Documentacion tecnica: `docs/`.
+- Antes de modificar Productos, Inventario, Compras o Recepciones, leer `docs/INVENTARIO_RECEPCIONES_ODOO.md`.
 
 ## Lineas rojas
 

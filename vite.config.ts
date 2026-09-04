@@ -23,6 +23,9 @@ import {
   type SendcloudStatus,
 } from "./backend/odooOrderContext";
 import { isSendcloudReadyToValidate } from "./backend/odooDeliveryStatus";
+import { createProductCatalog } from "./backend/products/catalog";
+import { createProductInventories } from "./backend/products/inventories";
+import { createProductLocations, parseLocationCode } from "./backend/products/locations";
 
 type OdooRecord = {
   id: number;
@@ -55,6 +58,10 @@ type OdooPickingRecord = {
   origin?: string;
   date_done?: string | false;
   move_ids_without_package?: number[];
+  picking_type_code?: string;
+  purchase_id?: false | [number, string];
+  partner_id?: false | [number, string];
+  location_dest_id?: false | [number, string];
 };
 
 type OdooMoveRecord = {
@@ -66,6 +73,8 @@ type OdooMoveRecord = {
   quantity?: number;
   picked?: boolean;
   scrapped?: boolean;
+  picking_id?: false | [number, string];
+  product_uom?: false | [number, string];
 };
 
 type OdooInvoiceRecord = {
@@ -97,10 +106,35 @@ type OdooOrderLine = {
   price_subtotal?: number;
 };
 
+type OdooPurchaseOrderRecord = {
+  id: number;
+  name?: string;
+  partner_id?: false | [number, string];
+  date_order?: string | false;
+  date_planned?: string | false;
+  state?: string;
+  amount_total?: number;
+  currency_id?: false | [number, string];
+};
+
+type OdooPurchaseLineRecord = {
+  id: number;
+  order_id?: false | [number, string];
+  product_id?: false | [number, string];
+  name?: string;
+  product_qty?: number;
+  qty_received?: number;
+  date_planned?: string | false;
+};
+
 type ProductRecord = {
   id: number;
   product_tmpl_id?: false | [number, string];
   image_128?: string | false;
+  name?: string | false;
+  display_name?: string | false;
+  default_code?: string | false;
+  barcode?: string | false;
 };
 
 type BomRecord = {
@@ -357,6 +391,8 @@ const readOnlyModels = new Set([
   "sale.order.line",
   "stock.picking",
   "stock.move",
+  "purchase.order",
+  "purchase.order.line",
   "res.partner",
   "product.product",
   "mrp.bom",
@@ -394,6 +430,22 @@ function odooReadOnlyApi(env: Record<string, string>) {
       const auth = createAuthRepository(env);
       const tasks = createTaskRepository(env);
       const calendar = createCalendarRepository(env);
+      const productCatalog = createProductCatalog(env);
+      const productLocations = createProductLocations({
+        dataDir: env.DASHBOARD_DATA_DIR,
+      });
+      const productInventories = createProductInventories({
+        dataDir: env.DASHBOARD_DATA_DIR,
+        catalog: () => {
+          const locations = productLocations.summary().locations;
+          return productCatalog.list().products.map((product) => ({
+            ...product,
+            physicalLocations: locations
+              .filter((location) => location.productId === product.id)
+              .map((location) => location.code),
+          }));
+        },
+      });
       registerGeneiRoutes(server, auth, env);
       registerExpeditionsSettingsRoutes(server, auth, { dataDir: env.DASHBOARD_DATA_DIR });
       registerAmazonMessagesRoutes(server, auth, {
@@ -416,7 +468,315 @@ function odooReadOnlyApi(env: Record<string, string>) {
         sendJson(response, 200, user ? { authenticated: true, user } : { authenticated: false });
       });
 
-      server.middlewares.use("/api/auth/login", async (request, response) => {
+      server.middlewares.use(
+        "/api/odoo/products",
+        async (request, response) => {
+          const user = auth.getSessionUser(request.headers.cookie);
+          if (!user || !user.permissions.includes("products")) {
+            sendJson(response, 401, { message: "Login requerido" });
+            return;
+          }
+          try {
+            const url = new URL(request.url ?? "/", "http://local");
+            if (request.method === "GET" && url.pathname === "/locations") {
+              sendJson(response, 200, {
+                locations: productLocations.forProduct(
+                  Number(url.searchParams.get("productId")),
+                ),
+              });
+              return;
+            }
+            if (request.method === "POST" && url.pathname === "/locations") {
+              sendJson(
+                response,
+                200,
+                productLocations.save(await readJsonBody(request)),
+              );
+              return;
+            }
+            if (request.method === "POST" && url.pathname === "/locations/adjust-odoo") {
+              if (env.ODOO_WRITE_ENABLED !== "true" || !user.permissions.includes("odooWrite")) {
+                sendJson(response, 403, { message: "La escritura en Odoo está desactivada" });
+                return;
+              }
+              const input = await readJsonBody<{ productId?: number; code?: string; quantity?: number; preferred?: boolean; replenishmentMin?: number }>(request);
+              const productId = Number(input.productId); const code = String(input.code || "").trim().toUpperCase().replace(/\s+/g, "");
+              const targetQuantity = Number(input.quantity);
+              if (!Number.isInteger(productId) || productId <= 0 || !Number.isFinite(targetQuantity) || targetQuantity < 0) throw new Error("Ajuste de ubicación inválido");
+              parseLocationCode(code);
+              if (!productLocations.summary().odooMovementSync) throw new Error("Primero finaliza un inventario para crear la base de ubicaciones");
+              const previousQuantity = productLocations.forProduct(productId).find((item) => item.code === code)?.quantity || 0;
+              const delta = targetQuantity - previousQuantity;
+              if (delta) {
+                const config = getOdooConfig(env); const uid = await authenticate(config);
+                const call = (model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) => rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
+                const roots = await call("stock.location", "search_read", [[["complete_name", "=", "ALM/Stock"]]], { fields: ["id"], limit: 1 });
+                const locationId = roots[0]?.id; if (!locationId) throw new Error("No se encontró ALM/Stock en Odoo");
+                const quants = await call("stock.quant", "search_read", [[["product_id", "=", productId], ["location_id", "=", locationId]]], { fields: ["id", "quantity"], limit: 1 });
+                const before = Number(quants[0]?.quantity || 0); const nextTotal = before + delta;
+                if (nextTotal < 0) throw new Error("El ajuste dejaría el stock de Odoo en negativo");
+                const quantId = quants[0]?.id || await call("stock.quant", "create", [{ product_id: productId, location_id: locationId, inventory_quantity: nextTotal }], { context: { inventory_mode: true } });
+                if (quants[0]?.id) await call("stock.quant", "write", [[quantId], { inventory_quantity: nextTotal }], { context: { inventory_mode: true } });
+                await call("stock.quant", "action_apply_inventory", [[quantId]], { context: { inventory_mode: true } });
+              }
+              const saved = productLocations.save(input);
+              // This direct adjustment has already been reflected locally. Set
+              // the watermark after its Odoo write so it is not replayed.
+              productLocations.applyOdooMovements({ moves: [], syncedAt: new Date().toISOString() });
+              sendJson(response, 200, saved);
+              return;
+            }
+            if (
+              request.method === "POST" &&
+              url.pathname === "/locations/transfer"
+            ) {
+              sendJson(
+                response,
+                200,
+                productLocations.transfer(await readJsonBody(request)),
+              );
+              return;
+            }
+            if (request.method === "POST" && url.pathname === "/locations/sync-odoo") {
+              const summary = productLocations.summary();
+              const syncState = summary.odooMovementSync;
+              if (!syncState) throw new Error("Primero finaliza un inventario para crear la base de ubicaciones");
+              const config = getOdooConfig(env); const uid = await authenticate(config);
+              const call = (model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) => rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
+              const roots = await call("stock.location", "search_read", [[["complete_name", "=", "ALM/Stock"]]], { fields: ["id"], limit: 1 });
+              const rootId = roots[0]?.id;
+              if (!rootId) throw new Error("No se encontró ALM/Stock en Odoo");
+              const warehouseLocations = await call("stock.location", "search_read", [[["id", "child_of", rootId]]], { fields: ["id"], limit: 2000 });
+              const warehouseIds = new Set<number>(warehouseLocations.map((location: { id?: number }) => Number(location.id)).filter(Number.isInteger));
+              const since = new Date(syncState.lastSyncedAt).toISOString().slice(0, 19).replace("T", " ");
+              const moves = await call("stock.move", "search_read", [[
+                "&", ["state", "=", "done"], "&", ["date", ">=", since],
+                "|", ["location_id", "child_of", rootId], ["location_dest_id", "child_of", rootId],
+              ]], { fields: ["id", "product_id", "quantity", "product_uom_qty", "location_id", "location_dest_id", "date"], order: "date asc, id asc", limit: 10000 });
+              const mapped = moves.flatMap((move: any) => {
+                const sourceId = Array.isArray(move.location_id) ? Number(move.location_id[0]) : 0;
+                const destinationId = Array.isArray(move.location_dest_id) ? Number(move.location_dest_id[0]) : 0;
+                const sourceIn = warehouseIds.has(sourceId); const destinationIn = warehouseIds.has(destinationId);
+                if (sourceIn === destinationIn) return [];
+                const productId = Array.isArray(move.product_id) ? Number(move.product_id[0]) : 0;
+                const quantity = Number(move.quantity ?? move.product_uom_qty ?? 0);
+                if (!Number.isInteger(move.id) || !Number.isInteger(productId) || !Number.isFinite(quantity) || quantity <= 0) return [];
+                return [{ id: move.id, productId, quantity, direction: destinationIn ? "in" as const : "out" as const }];
+              });
+              sendJson(response, 200, productLocations.applyOdooMovements({ moves: mapped, syncedAt: new Date().toISOString() }));
+              return;
+            }
+            if (request.method === "POST" && url.pathname === "/barcode") {
+              if (env.ODOO_WRITE_ENABLED !== "true" || !user.permissions.includes("odooWrite")) {
+                sendJson(response, 403, { message: "La escritura en Odoo está desactivada" });
+                return;
+              }
+              const input = await readJsonBody<{
+                productId?: number;
+                barcode?: string;
+              }>(request);
+              sendJson(
+                response,
+                200,
+                await productCatalog.updateBarcode(
+                  Number(input.productId),
+                  input.barcode,
+                ),
+              );
+              return;
+            }
+            if (request.method === "DELETE" && url.pathname === "/locations") {
+              const input = await readJsonBody<{
+                productId?: number;
+                code?: string;
+              }>(request);
+              sendJson(
+                response,
+                200,
+                productLocations.remove(Number(input.productId), input.code),
+              );
+              return;
+            }
+            if (request.method === "GET" && url.pathname === "/detail") {
+              const detail = await productCatalog.detail(
+                Number(url.searchParams.get("id")),
+              );
+              sendJson(
+                response,
+                200,
+                {
+                  ...detail,
+                  components: detail.components.map((component) => ({
+                    ...component,
+                    locations: productLocations.forProduct(component.id),
+                  })),
+                },
+              );
+              return;
+            }
+            if (request.method === "GET" && url.pathname === "/images") {
+              sendJson(
+                response,
+                200,
+                await productCatalog.images(
+                  (url.searchParams.get("ids") ?? "").split(",").map(Number),
+                ),
+              );
+              return;
+            }
+            if (request.method === "POST" && url.pathname === "/sync") {
+              sendJson(
+                response,
+                200,
+                await productCatalog.sync(
+                  url.searchParams.get("full") === "true",
+                ),
+              );
+              return;
+            }
+            if (request.method !== "GET") {
+              sendJson(response, 405, { message: "Metodo no permitido" });
+              return;
+            }
+            const catalog = productCatalog.list();
+            const locations = productLocations.summary().locations;
+            sendJson(response, 200, {
+              ...catalog,
+              products: catalog.products.map((product) => {
+                const productLocations = locations.filter(
+                  (item) => item.productId === product.id,
+                );
+                const preferred = productLocations.find(
+                  (item) => item.preferred,
+                );
+                return {
+                  ...product,
+                  physicalLocations: productLocations.map((item) => item.code),
+                  locationSummary: {
+                    preferredCode: preferred?.code,
+                    preferredQuantity: preferred?.quantity,
+                    replenishmentMin: preferred?.replenishmentMin,
+                    needsReplenishment: Boolean(
+                      preferred &&
+                      preferred.replenishmentMin !== undefined &&
+                      preferred.quantity <= preferred.replenishmentMin,
+                    ),
+                  },
+                };
+              }),
+            });
+          } catch (error) {
+            sendJson(response, 500, {
+              message:
+                error instanceof Error
+                  ? error.message
+                  : "Error leyendo catálogo de Productos",
+            });
+          }
+        },
+      );
+
+      server.middlewares.use(
+        "/api/odoo/inventories",
+        async (request, response) => {
+          const user = auth.getSessionUser(request.headers.cookie);
+          if (!user || !user.permissions.includes("products")) {
+            sendJson(response, 401, { message: "Login requerido" });
+            return;
+          }
+          try {
+            const url = new URL(request.url ?? "/", "http://local");
+            const parts = url.pathname.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
+            if (request.method === "GET") {
+              if (parts[0]) {
+                sendJson(response, 200, productInventories.find(parts[0]));
+                return;
+              }
+              sendJson(response, 200, {
+                inventories: productInventories.list(),
+              });
+              return;
+            }
+            if (request.method === "POST" && parts.length === 2 && parts[1] === "start") {
+              sendJson(response, 200, productInventories.start(parts[0], (await readJsonBody(request)).operator));
+              return;
+            }
+            if (request.method === "POST" && parts.length === 2 && parts[1] === "counts") {
+              sendJson(response, 200, productInventories.count(parts[0], await readJsonBody(request)));
+              return;
+            }
+            if (request.method === "POST" && parts.length === 2 && parts[1] === "recount") {
+              sendJson(response, 200, productInventories.recount(parts[0], (await readJsonBody<{ productIds?: number[] }>(request)).productIds || []));
+              return;
+            }
+            if (request.method === "POST" && parts.length === 2 && (parts[1] === "review" || parts[1] === "validate")) {
+              sendJson(response, 200, productInventories.status(parts[0], parts[1], (await readJsonBody<{ operator?: unknown }>(request)).operator as any));
+              return;
+            }
+            if (request.method === "POST" && parts.length === 2 && parts[1] === "send-odoo") {
+              if (env.ODOO_WRITE_ENABLED !== "true" || !user.permissions.includes("odooWrite")) {
+                sendJson(response, 403, { message: "La escritura en Odoo está desactivada" });
+                return;
+              }
+              const payload = await readJsonBody<{ operator?: { id: string; code: string; name: string } }>(request);
+              const inventory = productInventories.find(parts[0]);
+              if (inventory.status !== "validated") throw new Error("Primero valida el inventario");
+              if (!payload.operator?.name?.trim()) throw new Error("Indica el operario que envía a Odoo");
+              const config = getOdooConfig(env); const uid = await authenticate(config);
+              const call = (model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) => rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
+              const stockLocations = await call("stock.location", "search_read", [[['complete_name', '=', 'ALM/Stock']]], { fields: ['id'], limit: 1 });
+              const locationId = stockLocations[0]?.id; if (!locationId) throw new Error("No se encontró ALM/Stock en Odoo");
+              const effectiveCounts = new Map<string, typeof inventory.counts[number]>();
+              for (const count of inventory.counts) {
+                const key = `${count.productId}:${count.locationCode}`;
+                if (!effectiveCounts.has(key) || (effectiveCounts.get(key)?.revision || 1) <= (count.revision || 1)) effectiveCounts.set(key, count);
+              }
+              // A partial inventory replaces only its own locations. Odoo must
+              // receive the accumulated total from every zone already counted,
+              // not just the lines in this particular inventory.
+              const inventoryCounts = [...effectiveCounts.values()].map((count) => ({ productId: count.productId, locationCode: count.locationCode, quantity: count.quantity }));
+              const accumulatedTotals = productLocations.inventoryTotalsAfterReplace(inventoryCounts);
+              const results = [] as Array<{ productId: number; before: number; counted: number; changed: boolean; error?: string }>;
+              for (const productId of inventory.plannedProductIds) {
+                const entries = [...effectiveCounts.values()].filter((count) => count.productId === productId);
+                if (!entries.length) continue;
+                const counted = accumulatedTotals[productId];
+                try {
+                  const quants = await call("stock.quant", "search_read", [[['product_id', '=', productId], ['location_id', '=', locationId]]], { fields: ['id', 'quantity'], limit: 1 });
+                  const before = Number(quants[0]?.quantity || 0);
+                  if (before !== counted) {
+                    const quantId = quants[0]?.id || await call("stock.quant", "create", [{ product_id: productId, location_id: locationId, inventory_quantity: counted }], { context: { inventory_mode: true } });
+                    if (quants[0]?.id) await call("stock.quant", "write", [[quantId], { inventory_quantity: counted }], { context: { inventory_mode: true } });
+                    await call("stock.quant", "action_apply_inventory", [[quantId]], { context: { inventory_mode: true } });
+                  }
+                  results.push({ productId, before, counted, changed: before !== counted });
+                } catch (error) { results.push({ productId, before: 0, counted, changed: false, error: error instanceof Error ? error.message : "Error Odoo" }); }
+              }
+              if (!results.some((result) => result.error)) productLocations.replaceFromInventory(inventoryCounts);
+              sendJson(response, 200, productInventories.finalize(parts[0], payload.operator, results));
+              return;
+            }
+            if (request.method === "POST") {
+              sendJson(
+                response,
+                201,
+                productInventories.create(await readJsonBody(request)),
+              );
+              return;
+            }
+            sendJson(response, 405, { message: "Metodo no permitido" });
+          } catch (error) {
+            sendJson(response, 500, {
+              message:
+                error instanceof Error
+                  ? error.message
+                  : "Error gestionando inventarios",
+            });
+          }
+        },
+      );
+
++      server.middlewares.use("/api/auth/login", async (request, response) => {
         if (request.method !== "POST") {
           sendJson(response, 405, { message: "Metodo no permitido" });
           return;
@@ -704,6 +1064,71 @@ function odooReadOnlyApi(env: Record<string, string>) {
                   error instanceof Error ? error.message : "Error leyendo Odoo",
               }),
             );
+          }
+        },
+      );
+
+      server.middlewares.use(
+        "/api/odoo/pending-purchases",
+        async (request, response) => {
+          const user = auth.getSessionUser(request.headers.cookie);
+          if (
+            !user ||
+            (!user.permissions.includes("products") &&
+              !user.permissions.includes("purchases"))
+          ) {
+            sendJson(response, 401, { message: "Login requerido" });
+            return;
+          }
+          if (request.method !== "GET") {
+            sendJson(response, 405, { message: "Metodo no permitido" });
+            return;
+          }
+          try {
+            sendJson(response, 200, await getOdooPurchaseReceptions(env));
+          } catch (error) {
+            sendJson(response, 500, {
+              mode: "demo",
+              receptions: [],
+              total: 0,
+              pendingLines: 0,
+              pendingUnits: 0,
+              message:
+                error instanceof Error
+                  ? error.message
+                  : "Error leyendo recepciones de Odoo",
+            });
+          }
+        },
+      );
+
+      server.middlewares.use(
+        "/api/odoo/inventory-receptions",
+        async (request, response) => {
+          const user = auth.getSessionUser(request.headers.cookie);
+          if (!user || !user.permissions.includes("products")) {
+            sendJson(response, 401, { message: "Login requerido" });
+            return;
+          }
+          if (request.method !== "GET") {
+            sendJson(response, 405, { message: "Metodo no permitido" });
+            return;
+          }
+          try {
+            sendJson(response, 200, await getOdooInventoryReceptions(env));
+          } catch (error) {
+            sendJson(response, 500, {
+              mode: "demo",
+              receptions: [],
+              total: 0,
+              ready: 0,
+              waiting: 0,
+              pendingLines: 0,
+              message:
+                error instanceof Error
+                  ? error.message
+                  : "Error leyendo recepciones de Inventario",
+            });
           }
         },
       );
@@ -5146,6 +5571,330 @@ async function getOdooDashboardFull(
         amount: row.price_subtotal ?? 0,
       }))
       .sort((left, right) => right.amount - left.amount),
+  };
+}
+
+async function getOdooInventoryReceptions(env: Record<string, string>) {
+  const config = getOdooConfig(env);
+  if (!config.url || !config.database || !config.username || !config.apiKey) {
+    throw new Error(
+      "Faltan variables ODOO_URL, ODOO_DATABASE, ODOO_USERNAME u ODOO_API_KEY",
+    );
+  }
+
+  const uid = await authenticate(config);
+  const pickings = (await executeKw(
+    config,
+    uid,
+    "stock.picking",
+    "search_read",
+    [
+      [
+        ["picking_type_code", "=", "incoming"],
+        ["purchase_id", "!=", false],
+        ["state", "in", ["assigned", "confirmed", "waiting"]],
+      ],
+    ],
+    {
+      fields: [
+        "id",
+        "name",
+        "origin",
+        "partner_id",
+        "purchase_id",
+        "state",
+        "scheduled_date",
+        "location_dest_id",
+        "move_ids_without_package",
+      ],
+      order: "scheduled_date asc, id desc",
+      limit: 400,
+    },
+  )) as OdooPickingRecord[];
+
+  const moveIds = Array.from(
+    new Set(pickings.flatMap((picking) => picking.move_ids_without_package ?? [])),
+  );
+  const moves = moveIds.length
+    ? ((await executeKw(config, uid, "stock.move", "read", [moveIds], {
+        fields: [
+          "id",
+          "picking_id",
+          "product_id",
+          "name",
+          "product_uom_qty",
+          "quantity",
+          "picked",
+          "product_uom",
+          "state",
+        ],
+      })) as OdooMoveRecord[])
+    : [];
+  const activeMoves = moves.filter(
+    (move) => move.state !== "done" && move.state !== "cancel",
+  );
+  const productIds = Array.from(
+    new Set(
+      activeMoves
+        .map((move) => getRelationId(move.product_id))
+        .filter((id): id is number => typeof id === "number"),
+    ),
+  );
+  const products = productIds.length
+    ? ((await executeKw(config, uid, "product.product", "read", [productIds], {
+        fields: [
+          "id",
+          "name",
+          "display_name",
+          "default_code",
+          "barcode",
+          "image_128",
+        ],
+      })) as ProductRecord[])
+    : [];
+  const productsById = new Map(products.map((product) => [product.id, product]));
+  const movesByPickingId = new Map<number, OdooMoveRecord[]>();
+  activeMoves.forEach((move) => {
+    const pickingId = getRelationId(move.picking_id);
+    if (!pickingId) return;
+    const current = movesByPickingId.get(pickingId) ?? [];
+    current.push(move);
+    movesByPickingId.set(pickingId, current);
+  });
+
+  const receptions = pickings.map((picking) => {
+    const lines = (movesByPickingId.get(picking.id) ?? []).map((move) => {
+      const productId = getRelationId(move.product_id);
+      const product = productId ? productsById.get(productId) : undefined;
+      const relationName = getRelationName(move.product_id);
+      const expectedQty = Number(move.product_uom_qty ?? 0);
+      const processedQty = move.picked ? Number(move.quantity ?? 0) : 0;
+      return {
+        id: String(move.id),
+        productId: productId ? String(productId) : undefined,
+        name:
+          cleanText(product?.name) ||
+          stripProductCode(relationName) ||
+          cleanText(move.name) ||
+          "Producto sin nombre",
+        sku: cleanText(product?.default_code) || getProductCode(relationName),
+        barcode: cleanText(product?.barcode),
+        imageUrl: formatProductImage(product?.image_128),
+        expectedQty,
+        processedQty,
+        pendingQty: Math.max(0, expectedQty - processedQty),
+        uom: formatUom(getRelationName(move.product_uom)),
+      };
+    });
+    const state = picking.state || "draft";
+    const status =
+      state === "assigned"
+        ? "Preparada"
+        : state === "waiting" || state === "confirmed"
+          ? "Esperando"
+          : state === "draft"
+            ? "Borrador"
+            : "Otra";
+    return {
+      id: String(picking.id),
+      ref: picking.name || `Recepción #${picking.id}`,
+      purchaseRef:
+        getRelationName(picking.purchase_id) || cleanText(picking.origin),
+      supplier: getRelationName(picking.partner_id) || "Proveedor sin nombre",
+      scheduledDate: cleanText(picking.scheduled_date),
+      state,
+      status,
+      destination: getRelationName(picking.location_dest_id),
+      lines,
+      expectedQty: lines.reduce((total, line) => total + line.expectedQty, 0),
+      processedQty: lines.reduce((total, line) => total + line.processedQty, 0),
+      pendingQty: lines.reduce((total, line) => total + line.pendingQty, 0),
+    };
+  });
+
+  return {
+    mode: "live" as const,
+    receptions,
+    total: receptions.length,
+    ready: receptions.filter((reception) => reception.status === "Preparada").length,
+    waiting: receptions.filter((reception) => reception.status === "Esperando").length,
+    pendingLines: receptions.reduce(
+      (total, reception) =>
+        total + reception.lines.filter((line) => line.pendingQty > 0.0001).length,
+      0,
+    ),
+  };
+}
+
+async function getOdooPurchaseReceptions(env: Record<string, string>) {
+  const config = getOdooConfig(env);
+  if (!config.url || !config.database || !config.username || !config.apiKey) {
+    throw new Error(
+      "Faltan variables ODOO_URL, ODOO_DATABASE, ODOO_USERNAME u ODOO_API_KEY",
+    );
+  }
+
+  const uid = await authenticate(config);
+  const purchaseOrders = (await executeKw(
+    config,
+    uid,
+    "purchase.order",
+    "search_read",
+    [[['state', 'in', ['purchase', 'done']]]],
+    {
+      fields: [
+        "id",
+        "name",
+        "partner_id",
+        "date_order",
+        "date_planned",
+        "state",
+        "amount_total",
+        "currency_id",
+      ],
+      order: "date_planned asc, date_order desc, id desc",
+      limit: 400,
+    },
+  )) as OdooPurchaseOrderRecord[];
+
+  if (purchaseOrders.length === 0) {
+    return {
+      mode: "live" as const,
+      receptions: [],
+      total: 0,
+      pendingLines: 0,
+      pendingUnits: 0,
+    };
+  }
+
+  const purchaseLines = (await executeKw(
+    config,
+    uid,
+    "purchase.order.line",
+    "search_read",
+    [
+      [
+        ["order_id", "in", purchaseOrders.map((order) => order.id)],
+        ["display_type", "=", false],
+        ["product_qty", ">", 0],
+      ],
+    ],
+    {
+      fields: [
+        "id",
+        "order_id",
+        "product_id",
+        "name",
+        "product_qty",
+        "qty_received",
+        "date_planned",
+      ],
+      order: "order_id asc, sequence asc, id asc",
+    },
+  )) as OdooPurchaseLineRecord[];
+
+  const pendingLines = purchaseLines.filter(
+    (line) =>
+      Math.max(0, Number(line.product_qty ?? 0) - Number(line.qty_received ?? 0)) >
+      0.0001,
+  );
+  const productIds = Array.from(
+    new Set(
+      pendingLines
+        .map((line) => getRelationId(line.product_id))
+        .filter((id): id is number => typeof id === "number"),
+    ),
+  );
+  const products = productIds.length
+    ? ((await executeKw(config, uid, "product.product", "read", [productIds], {
+        fields: [
+          "id",
+          "name",
+          "display_name",
+          "default_code",
+          "barcode",
+          "image_128",
+        ],
+      })) as ProductRecord[])
+    : [];
+  const productsById = new Map(products.map((product) => [product.id, product]));
+  const linesByOrderId = new Map<number, OdooPurchaseLineRecord[]>();
+  pendingLines.forEach((line) => {
+    const orderId = getRelationId(line.order_id);
+    if (!orderId) return;
+    const current = linesByOrderId.get(orderId) ?? [];
+    current.push(line);
+    linesByOrderId.set(orderId, current);
+  });
+
+  const today = new Date().toISOString().slice(0, 10);
+  const receptions = purchaseOrders.flatMap((order) => {
+    const sourceLines = linesByOrderId.get(order.id) ?? [];
+    if (sourceLines.length === 0) return [];
+    const lines = sourceLines.map((line) => {
+      const productId = getRelationId(line.product_id);
+      const product = productId ? productsById.get(productId) : undefined;
+      const orderedQty = Number(line.product_qty ?? 0);
+      const receivedQty = Number(line.qty_received ?? 0);
+      const relationName = getRelationName(line.product_id);
+      return {
+        id: String(line.id),
+        productId: productId ? String(productId) : undefined,
+        name:
+          cleanText(product?.name) ||
+          stripProductCode(relationName) ||
+          cleanText(line.name) ||
+          "Producto sin nombre",
+        sku: cleanText(product?.default_code) || getProductCode(relationName),
+        barcode: cleanText(product?.barcode),
+        imageUrl: formatProductImage(product?.image_128),
+        orderedQty,
+        receivedQty,
+        pendingQty: Math.max(0, orderedQty - receivedQty),
+        uom: "uds",
+        expectedDate: cleanText(line.date_planned),
+      };
+    });
+    const expectedDates = lines
+      .map((line) => line.expectedDate.slice(0, 10))
+      .filter(Boolean)
+      .sort();
+    const expectedDate =
+      expectedDates[0] || cleanText(order.date_planned).slice(0, 10);
+    const receivedQty = lines.reduce((total, line) => total + line.receivedQty, 0);
+    const pendingQty = lines.reduce((total, line) => total + line.pendingQty, 0);
+    const isLate = Boolean(expectedDate && expectedDate < today);
+    return [
+      {
+        id: String(order.id),
+        ref: order.name || `PO #${order.id}`,
+        supplier: getRelationName(order.partner_id) || "Proveedor sin nombre",
+        orderDate: cleanText(order.date_order).slice(0, 10),
+        expectedDate,
+        state: order.state || "purchase",
+        status: isLate ? "Retrasado" : receivedQty > 0 ? "Parcial" : "Pendiente",
+        amountTotal: Number(order.amount_total ?? 0),
+        currency: getRelationName(order.currency_id) || "EUR",
+        lines,
+        orderedQty: lines.reduce((total, line) => total + line.orderedQty, 0),
+        receivedQty,
+        pendingQty,
+      },
+    ];
+  });
+
+  receptions.sort((left, right) => {
+    if (!left.expectedDate) return 1;
+    if (!right.expectedDate) return -1;
+    return left.expectedDate.localeCompare(right.expectedDate);
+  });
+
+  return {
+    mode: "live" as const,
+    receptions,
+    total: receptions.length,
+    pendingLines: receptions.reduce((total, reception) => total + reception.lines.length, 0),
+    pendingUnits: receptions.reduce((total, reception) => total + reception.pendingQty, 0),
   };
 }
 

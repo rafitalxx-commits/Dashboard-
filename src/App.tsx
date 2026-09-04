@@ -5,16 +5,20 @@ import {
   Boxes,
   CheckCircle2,
   CalendarDays,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ClipboardCheck,
   ClipboardList,
   FileText,
   Globe2,
+  History,
   Home,
   ListTodo,
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
+  PackageOpen,
   Printer,
   ReceiptText,
   RefreshCw,
@@ -33,6 +37,11 @@ import {
 import { money, orders as demoOrders, statusTone } from "./data/demoData";
 import { AmazonMessagesView } from "./modules/amazonMessages";
 import { ExpeditionsView } from "./modules/expeditions/ExpeditionsView";
+import { InventoryView } from "./modules/products/InventoryView";
+import { ProductLabelsView } from "./modules/products/ProductLabelsView";
+import { ProductsCatalogView } from "./modules/products/ProductsCatalogView";
+import { InventoryReceptionsView } from "./modules/receptions/InventoryReceptionsView";
+import { PendingPurchasesView } from "./modules/receptions/ReceptionsView";
 import { odooClient } from "./services/odooClient";
 import type {
   InvoiceAnalytics,
@@ -56,7 +65,16 @@ const navItems = [
   { label: "Facturas cliente", icon: ReceiptText, view: "customerInvoices", permission: "billing" },
   { label: "Facturas proveedor", icon: FileText, view: "supplierInvoices", permission: "supplierBilling" },
   { label: "Compras", icon: ShoppingCart, view: "purchases", permission: "purchases" },
-  { label: "Productos / stock", icon: Boxes, view: "products", permission: "products" },
+  { label: "Compras pendientes", icon: ClipboardList, view: "pendingPurchases", permission: "purchases", navGroup: "purchases" },
+  { label: "Productos", icon: Boxes, view: "products", permission: "products" },
+  { label: "Escanear", icon: Search, view: "productsScanner", permission: "products", navGroup: "products" },
+  { label: "Etiquetas", icon: Printer, view: "productsLabels", permission: "products", navGroup: "products" },
+  { label: "Recepciones", icon: PackageOpen, view: "receptions", permission: "products", navGroup: "products" },
+  { label: "Nuevo inventario", icon: Plus, view: "productsInventoryNew", permission: "products", navGroup: "products" },
+  { label: "Inventarios en curso", icon: ClipboardList, view: "productsInventoryActive", permission: "products", navGroup: "products" },
+  { label: "Pendientes de revisión", icon: ClipboardList, view: "productsInventoryReview", permission: "products", navGroup: "products" },
+  { label: "Finalizados", icon: ClipboardCheck, view: "productsInventoryFinal", permission: "products", navGroup: "products" },
+  { label: "Historial", icon: History, view: "productsInventoryHistory", permission: "products", navGroup: "products" },
   { label: "Amazon Messages", icon: MessagesSquare, view: "amazonMessages", permission: "orders", productionNav: false },
   { label: "Configuracion", icon: Settings, view: "settings", permission: "settings" },
 ] as const;
@@ -71,13 +89,30 @@ const viewRoutes: Record<ActiveView, string> = {
   customerInvoices: "facturacion",
   supplierInvoices: "facturas-proveedor",
   purchases: "compras",
+  pendingPurchases: "compras-pendientes",
   products: "productos",
+  productsScanner: "productos/escanear",
+  productsLabels: "productos/etiquetas",
+  receptions: "recepciones",
+  productsInventoryNew: "productos/inventario/nuevo",
+  productsInventoryActive: "productos/inventario/en-curso",
+  productsInventoryReview: "productos/inventario/revision",
+  productsInventoryFinal: "productos/inventario/finalizados",
+  productsInventoryHistory: "productos/inventario/historial",
   amazonMessages: "amazon-messages",
   settings: "configuracion",
 };
 const routeViews = Object.fromEntries(
   Object.entries(viewRoutes).map(([view, route]) => [route, view]),
 ) as Record<string, ActiveView>;
+
+const inventoryScreenViews = {
+  new: "productsInventoryNew",
+  active: "productsInventoryActive",
+  review: "productsInventoryReview",
+  final: "productsInventoryFinal",
+  history: "productsInventoryHistory",
+} as const satisfies Record<string, ActiveView>;
 
 type DashboardUserRole = "viewer" | "printer" | "admin";
 type DashboardPermission =
@@ -309,6 +344,9 @@ function App() {
   const [page, setPage] = useState(1);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeView, setActiveView] = useState<ActiveView>(() => getViewFromHash());
+  const [purchasesMenuOpen, setPurchasesMenuOpen] = useState(true);
+  const [productsMenuOpen, setProductsMenuOpen] = useState(true);
+  const [inventoryMenuOpen, setInventoryMenuOpen] = useState(false);
   const isV2View = activeView === "dashboardV2" || activeView === "ordersV2";
   const isDashboardView = activeView === "dashboard" || activeView === "dashboardV2";
   const isOrdersView = activeView === "orders" || activeView === "ordersV2";
@@ -371,6 +409,9 @@ function App() {
 
   const navigateToView = (view: ActiveView) => {
     setActiveView(view);
+    if (window.matchMedia("(max-width: 720px)").matches) {
+      setSidebarCollapsed(true);
+    }
     const route = viewRoutes[view];
     if (window.location.hash !== `#/${route}`) {
       window.history.pushState(null, "", `#/${route}`);
@@ -1013,8 +1054,18 @@ function App() {
   const can = (permission: DashboardPermission) =>
     Boolean(authUser?.permissions.includes(permission));
   const visibleNavItems = authUser
-    ? navItems.filter((item) => item.productionNav !== false && can(item.permission))
+    ? navItems.filter((item) => item.productionNav !== false && !("navGroup" in item) && can(item.permission))
     : [];
+  const visiblePurchaseNavItems = authUser
+    ? navItems.filter((item) => "navGroup" in item && item.navGroup === "purchases" && can(item.permission))
+    : [];
+  const visibleProductNavItems = authUser
+    ? navItems.filter((item) => "navGroup" in item && item.navGroup === "products" && can(item.permission))
+    : [];
+  const visibleInventoryNavItems = visibleProductNavItems.filter((item) => item.view.startsWith("productsInventory"));
+  const visibleProductsToolsNavItems = visibleProductNavItems.filter((item) => !item.view.startsWith("productsInventory") && item.view !== "receptions");
+  const isPurchasesView = activeView === "purchases" || activeView === "pendingPurchases";
+  const isProductsView = activeView === "products" || activeView === "productsScanner" || activeView === "productsLabels" || activeView === "receptions" || activeView.startsWith("productsInventory");
   const showOrderRange =
     isDashboardView ||
     isOrdersView ||
@@ -1268,31 +1319,101 @@ function App() {
           )}
         </button>
         <nav className="nav-list">
-          {visibleNavItems.map((item) => (
-            <button
-              className={item.view === activeView ? "active" : ""}
-              key={item.label}
-              onClick={() => navigateToView(item.view)}
-              title={item.label}
-              type="button"
-            >
-              <item.icon size={18} />
-              <span className="nav-label">{item.label}</span>
-            </button>
-          ))}
+          {visibleNavItems.map((item) =>
+            item.view === "purchases" ? (
+              <div className={`nav-group ${isPurchasesView ? "active" : ""} ${purchasesMenuOpen ? "open" : ""}`} key={item.view}>
+                <div className="nav-group-heading">
+                  <button aria-expanded={purchasesMenuOpen} className={isPurchasesView ? "active" : ""} onClick={() => setPurchasesMenuOpen((value) => !value)} type="button">
+                    <item.icon size={18} />
+                    <span className="nav-label">Compras</span>
+                    <ChevronDown className="nav-chevron" size={15} />
+                  </button>
+                </div>
+                <div className="nav-submenu">
+                  <button className={activeView === "purchases" ? "active" : ""} onClick={() => navigateToView("purchases")} type="button">
+                    <ShoppingCart size={16} />
+                    <span className="nav-label">Compras</span>
+                  </button>
+                  {visiblePurchaseNavItems.map((child) => (
+                    <button className={child.view === activeView ? "active" : ""} key={child.view} onClick={() => navigateToView(child.view)} type="button">
+                      <child.icon size={16} />
+                      <span className="nav-label">{child.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : item.view === "products" ? (
+              <div className={`nav-group ${isProductsView ? "active" : ""} ${productsMenuOpen ? "open" : ""}`} key={item.view}>
+                <div className="nav-group-heading">
+                  <button aria-expanded={productsMenuOpen} className={isProductsView ? "active" : ""} onClick={() => setProductsMenuOpen((value) => !value)} type="button">
+                    <item.icon size={18} />
+                    <span className="nav-label">Productos</span>
+                    <ChevronDown className="nav-chevron" size={15} />
+                  </button>
+                </div>
+                <div className="nav-submenu">
+                  <button className={activeView === "products" ? "active" : ""} onClick={() => navigateToView("products")} type="button">
+                    <Boxes size={16} />
+                    <span className="nav-label">Catálogo</span>
+                  </button>
+                  {visibleProductsToolsNavItems.map((child) => (
+                    <button className={child.view === activeView ? "active" : ""} key={child.view} onClick={() => navigateToView(child.view)} type="button">
+                      <child.icon size={16} />
+                      <span className="nav-label">{child.label}</span>
+                    </button>
+                  ))}
+                  <button className={activeView === "receptions" ? "active" : ""} onClick={() => navigateToView("receptions")} type="button">
+                    <PackageOpen size={16} />
+                    <span className="nav-label">Recepciones</span>
+                  </button>
+                  <div className={`nav-nested-group ${inventoryMenuOpen ? "open" : ""}`}>
+                    <button aria-expanded={inventoryMenuOpen} className={activeView.startsWith("productsInventory") ? "active" : ""} onClick={() => setInventoryMenuOpen((value) => !value)} type="button">
+                      <Boxes size={16} />
+                      <span className="nav-label">Inventario</span>
+                      <ChevronDown className="nav-chevron" size={14} />
+                    </button>
+                    <div className="nav-nested-submenu">
+                      {visibleInventoryNavItems.map((child) => (
+                        <button className={child.view === activeView ? "active" : ""} key={child.view} onClick={() => navigateToView(child.view)} type="button">
+                          <child.icon size={15} />
+                          <span className="nav-label">{child.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <button className={item.view === activeView ? "active" : ""} key={item.view} onClick={() => navigateToView(item.view)} title={item.label} type="button">
+                <item.icon size={18} />
+                <span className="nav-label">{item.label}</span>
+              </button>
+            ),
+          )}
         </nav>
       </aside>
+
+      <button aria-label="Abrir menú" className="mobile-menu-trigger" onClick={() => setSidebarCollapsed(false)} type="button">
+        <PanelLeftOpen size={20} />
+      </button>
 
       <main className="main">
         <header className="topbar">
           <div>
             <p className="eyebrow">
-              Pedidos de venta ·{" "}
-              {isV2View
-                ? "Laboratorio V2"
-                : dataMode === "live"
-                  ? "Odoo real"
-                  : "datos demo Odoo"}
+              {activeView === "receptions"
+                ? "Inventario · Odoo real"
+                : activeView === "pendingPurchases"
+                  ? "Compras · Odoo real"
+                  : isProductsView
+                    ? "Productos e inventario · Odoo real"
+                  : `Pedidos de venta · ${
+                      isV2View
+                        ? "Laboratorio V2"
+                        : dataMode === "live"
+                          ? "Odoo real"
+                          : "datos demo Odoo"
+                    }`}
             </p>
             <h1>
               {activeView === "dashboard"
@@ -1325,9 +1446,13 @@ function App() {
                 {ordersSyncLoading ? "Sincronizando" : "Actualizar"}
               </button>
             )}
-            <div className={`connection-pill ${dataMode}`}>
+            <div className={`connection-pill ${isProductsView || isPurchasesView ? "live" : dataMode}`}>
               <span />
-              {connectionMessage}
+              {activeView === "receptions" || activeView === "pendingPurchases"
+                ? "Odoo real · solo lectura"
+                : isProductsView
+                  ? "Odoo real · escritura desactivada"
+                : connectionMessage}
             </div>
             <div className="session-pill">
               <User size={16} />
@@ -1521,6 +1646,26 @@ function App() {
           <ExpeditionsView
             onRefreshOrders={() => setOrderRefreshKey((value) => value + 1)}
           />
+        ) : activeView === "products" ? (
+          <ProductsCatalogView key="catalog" onSendToInventory={() => navigateToView("productsInventoryNew")} />
+        ) : activeView === "productsScanner" ? (
+          <ProductsCatalogView key="scanner" startScanner />
+        ) : activeView === "productsLabels" ? (
+          <ProductLabelsView />
+        ) : activeView === "productsInventoryNew" ? (
+          <InventoryView screen="new" onNavigate={(screen) => navigateToView(inventoryScreenViews[screen])} />
+        ) : activeView === "productsInventoryActive" ? (
+          <InventoryView screen="active" onNavigate={(screen) => navigateToView(inventoryScreenViews[screen])} />
+        ) : activeView === "productsInventoryReview" ? (
+          <InventoryView screen="review" onNavigate={(screen) => navigateToView(inventoryScreenViews[screen])} />
+        ) : activeView === "productsInventoryFinal" ? (
+          <InventoryView screen="final" onNavigate={(screen) => navigateToView(inventoryScreenViews[screen])} />
+        ) : activeView === "productsInventoryHistory" ? (
+          <InventoryView screen="history" onNavigate={(screen) => navigateToView(inventoryScreenViews[screen])} />
+        ) : activeView === "pendingPurchases" ? (
+          <PendingPurchasesView />
+        ) : activeView === "receptions" ? (
+          <InventoryReceptionsView />
         ) : isOrdersView ? (
           <>
             {isV2View && (

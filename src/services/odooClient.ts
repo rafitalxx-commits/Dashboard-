@@ -6,6 +6,8 @@ import {
   supplierInvoices,
 } from "../data/demoData";
 import type {
+  CatalogProductDetail,
+  CatalogStore,
   DashboardRow,
   DashboardSummary,
   InvoiceAnalytics,
@@ -13,6 +15,9 @@ import type {
   Order,
   OrdersSyncStats,
   OrdersV2Performance,
+  InventoryReceptionsPayload,
+  PurchaseReceptionsPayload,
+  ProductLocation,
 } from "./odooTypes";
 
 type DashboardUserRole = "viewer" | "printer" | "admin";
@@ -72,6 +77,23 @@ type CalendarAccount = {
   connected: boolean;
   status: string;
 };
+
+async function readJson<T = unknown>(response: Response): Promise<T> {
+  const body = await response.text();
+  try {
+    return JSON.parse(body) as T;
+  } catch {
+    const contentType = response.headers.get("content-type") || "desconocido";
+    throw new Error(
+      `El servidor devolvió una respuesta no válida (${response.status}, ${contentType}). Reintenta en unos segundos.`,
+    );
+  }
+}
+
+const productsApi = (path = "") =>
+  `${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/odoo/products${path}`;
+const inventoriesApi = () =>
+  `${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/odoo/inventories`;
 type DashboardCalendarEvent = {
   id: string;
   source: CalendarAccountId;
@@ -95,6 +117,170 @@ export type OdooConnectionConfig = {
 
 export const odooClient = {
   mode: "demo",
+  async getProductCatalog() {
+    const response = await fetch(productsApi());
+    if (!response.ok) throw new Error("No se pudo leer el catálogo de Productos");
+    return readJson<CatalogStore>(response);
+  },
+  async syncProductCatalog(full = false) {
+    const response = await fetch(productsApi(`/sync${full ? "?full=true" : ""}`), {
+      method: "POST",
+    });
+    const payload = await readJson<CatalogStore & { message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo sincronizar Productos");
+    return payload;
+  },
+  async updateProductBarcode(productId: number, barcode: string) {
+    const response = await fetch(productsApi("/barcode"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ productId, barcode }),
+    });
+    const payload = await readJson<{ id?: number; name?: string; reference?: string; barcode?: string; message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo guardar el EAN en Odoo");
+    return payload;
+  },
+  async getProductCatalogDetail(id: number) {
+    const response = await fetch(productsApi(`/detail?id=${id}`));
+    const payload = await readJson<CatalogProductDetail & { message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo leer el detalle del producto");
+    return payload;
+  },
+  async getProductCatalogImages(ids: number[]) {
+    const response = await fetch(productsApi(`/images?ids=${ids.join(",")}`));
+    if (!response.ok) throw new Error("No se pudieron cargar las imágenes");
+    const images = await readJson<Record<string, string>>(response);
+    return Object.fromEntries(
+      Object.entries(images).map(([id, image]) => [
+        id,
+        /^(data:|https?:)/.test(image) ? image : `data:image/png;base64,${image}`,
+      ]),
+    );
+  },
+  async getProductLocations(productId: number) {
+    const response = await fetch(productsApi(`/locations?productId=${productId}`));
+    const payload = await readJson<{ locations?: ProductLocation[]; message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudieron leer las ubicaciones");
+    return payload.locations ?? [];
+  },
+  async saveProductLocation(
+    input: Pick<ProductLocation, "productId" | "code" | "quantity"> & {
+      preferred?: boolean;
+      replenishmentMin?: number;
+    },
+  ) {
+    const response = await fetch(productsApi("/locations"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const payload = await readJson<{ locations?: ProductLocation[]; message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo guardar la ubicación");
+    return payload.locations ?? [];
+  },
+  async adjustProductLocationAndOdoo(
+    input: Pick<ProductLocation, "productId" | "code" | "quantity"> & {
+      preferred?: boolean;
+      replenishmentMin?: number;
+    },
+  ) {
+    const response = await fetch(productsApi("/locations/adjust-odoo"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const payload = await readJson<{ locations?: ProductLocation[]; message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo ajustar el stock en Odoo");
+    return payload.locations ?? [];
+  },
+  async removeProductLocation(productId: number, code: string) {
+    const response = await fetch(productsApi("/locations"), {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ productId, code }),
+    });
+    const payload = await readJson<{ locations?: ProductLocation[]; message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo eliminar la ubicación");
+    return payload.locations ?? [];
+  },
+  async transferProductLocation(productId: number, fromCode: string, toCode: string, quantity: number) {
+    const response = await fetch(productsApi("/locations/transfer"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ productId, fromCode, toCode, quantity }),
+    });
+    const payload = await readJson<{ locations?: ProductLocation[]; message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo registrar la reposición");
+    return payload.locations ?? [];
+  },
+  async syncProductLocationMovements() {
+    const response = await fetch(productsApi("/locations/sync-odoo"), { method: "POST" });
+    const payload = await readJson<{ processed?: number; applied?: number; skipped?: number; warnings?: string[]; message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudieron sincronizar los movimientos de Odoo");
+    return payload;
+  },
+  async getProductInventories() {
+    const response = await fetch(inventoriesApi());
+    const payload = await readJson<{ inventories?: import("./odooTypes").ProductInventory[]; message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudieron leer los inventarios");
+    return payload.inventories ?? [];
+  },
+  async createProductInventory(input: { name: string; scope: import("./odooTypes").InventoryScope }) {
+    const response = await fetch(inventoriesApi(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const payload = await readJson<import("./odooTypes").ProductInventory & { message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo crear el inventario");
+    return payload;
+  },
+  async getProductInventory(id: string) {
+    const response = await fetch(`${inventoriesApi()}/${encodeURIComponent(id)}`);
+    const payload = await readJson<import("./odooTypes").ProductInventory & { message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo leer el inventario");
+    return payload;
+  },
+  async inventoryAction(id: string, action: "start" | "review" | "validate", body: Record<string, unknown> = {}) {
+    const response = await fetch(`${inventoriesApi()}/${encodeURIComponent(id)}/${action}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = await readJson<import("./odooTypes").ProductInventory & { message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo actualizar el inventario");
+    return payload;
+  },
+  async saveInventoryCount(id: string, body: { productId: number; locationCode: string; quantity: number; operator: import("./odooTypes").InventoryOperator; revision?: number }) {
+    const response = await fetch(`${inventoriesApi()}/${encodeURIComponent(id)}/counts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = await readJson<import("./odooTypes").ProductInventory & { message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo guardar el conteo");
+    return payload;
+  },
+  async startInventoryRecount(id: string, productIds: number[]) {
+    const response = await fetch(`${inventoriesApi()}/${encodeURIComponent(id)}/recount`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ productIds }),
+    });
+    const payload = await readJson<import("./odooTypes").ProductInventory & { message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo iniciar el reconteo");
+    return payload;
+  },
+  async sendInventoryToOdoo(id: string, operator: import("./odooTypes").InventoryOperator) {
+    const response = await fetch(`${inventoriesApi()}/${encodeURIComponent(id)}/send-odoo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operator }),
+    });
+    const payload = await readJson<import("./odooTypes").ProductInventory & { message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo enviar el inventario a Odoo");
+    return payload;
+  },
   async getCurrentUser() {
     try {
       const response = await fetch("/api/auth/me");
@@ -545,6 +731,22 @@ export const odooClient = {
   },
   async getPurchases() {
     return purchases;
+  },
+  async getPendingPurchases() {
+    const response = await fetch("/api/odoo/pending-purchases");
+    const payload = (await response.json()) as PurchaseReceptionsPayload;
+    if (!response.ok) {
+      throw new Error(payload.message ?? "No se pudieron leer las recepciones de Odoo");
+    }
+    return payload;
+  },
+  async getInventoryReceptions() {
+    const response = await fetch("/api/odoo/inventory-receptions");
+    const payload = (await response.json()) as InventoryReceptionsPayload;
+    if (!response.ok) {
+      throw new Error(payload.message ?? "No se pudieron leer las recepciones de Inventario");
+    }
+    return payload;
   },
   async getProducts() {
     return products;
