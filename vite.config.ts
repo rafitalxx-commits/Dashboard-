@@ -55,6 +55,10 @@ type OdooPickingRecord = {
   origin?: string;
   date_done?: string | false;
   move_ids_without_package?: number[];
+  picking_type_code?: string;
+  purchase_id?: false | [number, string];
+  partner_id?: false | [number, string];
+  location_dest_id?: false | [number, string];
 };
 
 type OdooMoveRecord = {
@@ -66,6 +70,8 @@ type OdooMoveRecord = {
   quantity?: number;
   picked?: boolean;
   scrapped?: boolean;
+  picking_id?: false | [number, string];
+  product_uom?: false | [number, string];
 };
 
 type OdooInvoiceRecord = {
@@ -736,7 +742,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
       );
 
       server.middlewares.use(
-        "/api/odoo/purchase-receptions",
+        "/api/odoo/pending-purchases",
         async (request, response) => {
           const user = auth.getSessionUser(request.headers.cookie);
           if (
@@ -764,6 +770,37 @@ function odooReadOnlyApi(env: Record<string, string>) {
                 error instanceof Error
                   ? error.message
                   : "Error leyendo recepciones de Odoo",
+            });
+          }
+        },
+      );
+
+      server.middlewares.use(
+        "/api/odoo/inventory-receptions",
+        async (request, response) => {
+          const user = auth.getSessionUser(request.headers.cookie);
+          if (!user || !user.permissions.includes("products")) {
+            sendJson(response, 401, { message: "Login requerido" });
+            return;
+          }
+          if (request.method !== "GET") {
+            sendJson(response, 405, { message: "Metodo no permitido" });
+            return;
+          }
+          try {
+            sendJson(response, 200, await getOdooInventoryReceptions(env));
+          } catch (error) {
+            sendJson(response, 500, {
+              mode: "demo",
+              receptions: [],
+              total: 0,
+              ready: 0,
+              waiting: 0,
+              pendingLines: 0,
+              message:
+                error instanceof Error
+                  ? error.message
+                  : "Error leyendo recepciones de Inventario",
             });
           }
         },
@@ -5207,6 +5244,158 @@ async function getOdooDashboardFull(
         amount: row.price_subtotal ?? 0,
       }))
       .sort((left, right) => right.amount - left.amount),
+  };
+}
+
+async function getOdooInventoryReceptions(env: Record<string, string>) {
+  const config = getOdooConfig(env);
+  if (!config.url || !config.database || !config.username || !config.apiKey) {
+    throw new Error(
+      "Faltan variables ODOO_URL, ODOO_DATABASE, ODOO_USERNAME u ODOO_API_KEY",
+    );
+  }
+
+  const uid = await authenticate(config);
+  const pickings = (await executeKw(
+    config,
+    uid,
+    "stock.picking",
+    "search_read",
+    [
+      [
+        ["picking_type_code", "=", "incoming"],
+        ["purchase_id", "!=", false],
+        ["state", "in", ["assigned", "confirmed", "waiting"]],
+      ],
+    ],
+    {
+      fields: [
+        "id",
+        "name",
+        "origin",
+        "partner_id",
+        "purchase_id",
+        "state",
+        "scheduled_date",
+        "location_dest_id",
+        "move_ids_without_package",
+      ],
+      order: "scheduled_date asc, id desc",
+      limit: 400,
+    },
+  )) as OdooPickingRecord[];
+
+  const moveIds = Array.from(
+    new Set(pickings.flatMap((picking) => picking.move_ids_without_package ?? [])),
+  );
+  const moves = moveIds.length
+    ? ((await executeKw(config, uid, "stock.move", "read", [moveIds], {
+        fields: [
+          "id",
+          "picking_id",
+          "product_id",
+          "name",
+          "product_uom_qty",
+          "quantity",
+          "picked",
+          "product_uom",
+          "state",
+        ],
+      })) as OdooMoveRecord[])
+    : [];
+  const activeMoves = moves.filter(
+    (move) => move.state !== "done" && move.state !== "cancel",
+  );
+  const productIds = Array.from(
+    new Set(
+      activeMoves
+        .map((move) => getRelationId(move.product_id))
+        .filter((id): id is number => typeof id === "number"),
+    ),
+  );
+  const products = productIds.length
+    ? ((await executeKw(config, uid, "product.product", "read", [productIds], {
+        fields: [
+          "id",
+          "name",
+          "display_name",
+          "default_code",
+          "barcode",
+          "image_128",
+        ],
+      })) as ProductRecord[])
+    : [];
+  const productsById = new Map(products.map((product) => [product.id, product]));
+  const movesByPickingId = new Map<number, OdooMoveRecord[]>();
+  activeMoves.forEach((move) => {
+    const pickingId = getRelationId(move.picking_id);
+    if (!pickingId) return;
+    const current = movesByPickingId.get(pickingId) ?? [];
+    current.push(move);
+    movesByPickingId.set(pickingId, current);
+  });
+
+  const receptions = pickings.map((picking) => {
+    const lines = (movesByPickingId.get(picking.id) ?? []).map((move) => {
+      const productId = getRelationId(move.product_id);
+      const product = productId ? productsById.get(productId) : undefined;
+      const relationName = getRelationName(move.product_id);
+      const expectedQty = Number(move.product_uom_qty ?? 0);
+      const processedQty = move.picked ? Number(move.quantity ?? 0) : 0;
+      return {
+        id: String(move.id),
+        productId: productId ? String(productId) : undefined,
+        name:
+          cleanText(product?.name) ||
+          stripProductCode(relationName) ||
+          cleanText(move.name) ||
+          "Producto sin nombre",
+        sku: cleanText(product?.default_code) || getProductCode(relationName),
+        barcode: cleanText(product?.barcode),
+        imageUrl: formatProductImage(product?.image_128),
+        expectedQty,
+        processedQty,
+        pendingQty: Math.max(0, expectedQty - processedQty),
+        uom: formatUom(getRelationName(move.product_uom)),
+      };
+    });
+    const state = picking.state || "draft";
+    const status =
+      state === "assigned"
+        ? "Preparada"
+        : state === "waiting" || state === "confirmed"
+          ? "Esperando"
+          : state === "draft"
+            ? "Borrador"
+            : "Otra";
+    return {
+      id: String(picking.id),
+      ref: picking.name || `Recepción #${picking.id}`,
+      purchaseRef:
+        getRelationName(picking.purchase_id) || cleanText(picking.origin),
+      supplier: getRelationName(picking.partner_id) || "Proveedor sin nombre",
+      scheduledDate: cleanText(picking.scheduled_date),
+      state,
+      status,
+      destination: getRelationName(picking.location_dest_id),
+      lines,
+      expectedQty: lines.reduce((total, line) => total + line.expectedQty, 0),
+      processedQty: lines.reduce((total, line) => total + line.processedQty, 0),
+      pendingQty: lines.reduce((total, line) => total + line.pendingQty, 0),
+    };
+  });
+
+  return {
+    mode: "live" as const,
+    receptions,
+    total: receptions.length,
+    ready: receptions.filter((reception) => reception.status === "Preparada").length,
+    waiting: receptions.filter((reception) => reception.status === "Esperando").length,
+    pendingLines: receptions.reduce(
+      (total, reception) =>
+        total + reception.lines.filter((line) => line.pendingQty > 0.0001).length,
+      0,
+    ),
   };
 }
 

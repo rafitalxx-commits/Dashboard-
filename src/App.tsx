@@ -34,7 +34,8 @@ import {
 import { money, orders as demoOrders, statusTone } from "./data/demoData";
 import { AmazonMessagesView } from "./modules/amazonMessages";
 import { ExpeditionsView } from "./modules/expeditions/ExpeditionsView";
-import { ReceptionsView } from "./modules/receptions/ReceptionsView";
+import { InventoryReceptionsView } from "./modules/receptions/InventoryReceptionsView";
+import { PendingPurchasesView } from "./modules/receptions/ReceptionsView";
 import { odooClient } from "./services/odooClient";
 import type {
   InvoiceAnalytics,
@@ -58,6 +59,7 @@ const navItems = [
   { label: "Facturas cliente", icon: ReceiptText, view: "customerInvoices", permission: "billing" },
   { label: "Facturas proveedor", icon: FileText, view: "supplierInvoices", permission: "supplierBilling" },
   { label: "Compras", icon: ShoppingCart, view: "purchases", permission: "purchases" },
+  { label: "Compras pendientes", icon: ClipboardList, view: "pendingPurchases", permission: "purchases" },
   { label: "Productos / stock", icon: Boxes, view: "products", permission: "products" },
   { label: "Recepciones", icon: PackageOpen, view: "receptions", permission: "products" },
   { label: "Amazon Messages", icon: MessagesSquare, view: "amazonMessages", permission: "orders", productionNav: false },
@@ -74,6 +76,7 @@ const viewRoutes: Record<ActiveView, string> = {
   customerInvoices: "facturacion",
   supplierInvoices: "facturas-proveedor",
   purchases: "compras",
+  pendingPurchases: "compras-pendientes",
   products: "productos",
   receptions: "recepciones",
   amazonMessages: "amazon-messages",
@@ -1291,12 +1294,17 @@ function App() {
         <header className="topbar">
           <div>
             <p className="eyebrow">
-              Pedidos de venta ·{" "}
-              {isV2View
-                ? "Laboratorio V2"
-                : dataMode === "live"
-                  ? "Odoo real"
-                  : "datos demo Odoo"}
+              {activeView === "receptions"
+                ? "Inventario · Odoo real"
+                : activeView === "pendingPurchases"
+                  ? "Compras · Odoo real"
+                  : `Pedidos de venta · ${
+                      isV2View
+                        ? "Laboratorio V2"
+                        : dataMode === "live"
+                          ? "Odoo real"
+                          : "datos demo Odoo"
+                    }`}
             </p>
             <h1>
               {activeView === "dashboard"
@@ -1329,9 +1337,11 @@ function App() {
                 {ordersSyncLoading ? "Sincronizando" : "Actualizar"}
               </button>
             )}
-            <div className={`connection-pill ${dataMode}`}>
+            <div className={`connection-pill ${activeView === "receptions" || activeView === "pendingPurchases" ? "live" : dataMode}`}>
               <span />
-              {connectionMessage}
+              {activeView === "receptions" || activeView === "pendingPurchases"
+                ? "Odoo real · solo lectura"
+                : connectionMessage}
             </div>
             <div className="session-pill">
               <User size={16} />
@@ -1525,8 +1535,10 @@ function App() {
           <ExpeditionsView
             onRefreshOrders={() => setOrderRefreshKey((value) => value + 1)}
           />
+        ) : activeView === "pendingPurchases" ? (
+          <PendingPurchasesView />
         ) : activeView === "receptions" ? (
-          <ReceptionsView />
+          <InventoryReceptionsView />
         ) : isOrdersView ? (
           <>
             {isV2View && (

@@ -18,7 +18,7 @@ import "./receptions.css";
 
 type StatusFilter = "Todas" | PurchaseReception["status"];
 
-export function ReceptionsView() {
+export function PendingPurchasesView() {
   const [payload, setPayload] = useState<PurchaseReceptionsPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -30,14 +30,14 @@ export function ReceptionsView() {
     setLoading(true);
     setError("");
     try {
-      const result = await odooClient.getPurchaseReceptions();
+      const result = await odooClient.getPendingPurchases();
       setPayload(result);
       setExpanded((current) => current ?? result.receptions[0]?.id ?? null);
     } catch (loadError) {
       setError(
         loadError instanceof Error
           ? loadError.message
-          : "No se pudieron leer las recepciones",
+          : "No se pudieron leer las compras pendientes",
       );
     } finally {
       setLoading(false);
@@ -65,9 +65,9 @@ export function ReceptionsView() {
     <section className="receptions-view">
       <header className="receptions-intro">
         <div>
-          <span className="receptions-kicker">Productos · Solo lectura Odoo</span>
-          <h2>Recepciones pendientes</h2>
-          <p>Pedidos de compra confirmados con mercancía todavía por recibir.</p>
+          <span className="receptions-kicker">Compras · Solo lectura Odoo</span>
+          <h2>Compras pendientes</h2>
+          <p>Pedidos de compra confirmados con cantidades todavía pendientes.</p>
         </div>
         <button className="receptions-refresh" disabled={loading} onClick={() => void load()} type="button">
           <RefreshCw className={loading ? "spin" : ""} size={17} />
@@ -108,12 +108,12 @@ export function ReceptionsView() {
       {error && (
         <div className="receptions-message error">
           <AlertTriangle size={19} />
-          <div><strong>No se pudo conectar con Recepciones</strong><span>{error}</span></div>
+          <div><strong>No se pudieron leer las compras pendientes</strong><span>{error}</span></div>
         </div>
       )}
 
       {loading && !payload && (
-        <div className="receptions-message"><RefreshCw className="spin" size={19} /> Leyendo compras pendientes en Odoo…</div>
+        <div className="receptions-message"><RefreshCw className="spin" size={19} /> Leyendo pedidos de compra en Odoo…</div>
       )}
 
       {!loading && !error && receptions.length === 0 && (

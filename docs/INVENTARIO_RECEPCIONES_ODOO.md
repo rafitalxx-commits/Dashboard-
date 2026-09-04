@@ -12,7 +12,7 @@ El flujo completo previsto es:
 
 `Necesidad → compra → pedido Odoo → recepción → conteo → ubicación → revisión → validación → stock Odoo`
 
-Recepciones pertenece al área de Productos para el operario de almacén. El futuro módulo Compras cubrirá necesidades, pedidos de compra y proveedores.
+Recepciones pertenece al área de Productos para el operario de almacén. Los pedidos de compra todavía abiertos se consultan por separado en `Compras → Compras pendientes`.
 
 ## Tipos de necesidad
 
@@ -24,11 +24,9 @@ La clasificación debe admitir cantidades mixtas dentro de una misma línea de c
 
 No se debe guardar un único tipo obligatorio en `purchase.order`. Una cantidad puede repartirse entre varios tipos o pedidos de venta.
 
-## Punto 1: Recepciones en solo lectura
+## Compras pendientes
 
-Estado: implementado en `feature/odoo-mobile-receptions`.
-
-La pantalla `Productos → Recepciones` consulta pedidos de compra confirmados de Odoo y conserva únicamente las líneas con cantidad pendiente.
+La pantalla `Compras → Compras pendientes` consulta pedidos de compra confirmados y conserva únicamente las líneas con cantidad pendiente.
 
 Datos visibles:
 
@@ -40,19 +38,37 @@ Datos visibles:
 - imagen, nombre, SKU y EAN del producto;
 - cantidad pedida, recibida y pendiente.
 
-La pantalla permite buscar por PO, proveedor, SKU o EAN y filtrar por estado. No contiene botones de validación ni endpoints de escritura.
+La pantalla permite buscar por PO, proveedor, SKU o EAN y filtrar por estado. Se apoya en `purchase.order`, `purchase.order.line` y `product.product`.
+
+La primera lectura real devolvió pedidos antiguos todavía abiertos en Odoo. No se ocultan por fecha porque pueden representar pendientes reales o datos que deben cerrarse.
+
+## Punto 1: Recepciones de Inventario en solo lectura
+
+Estado: implementado en `feature/odoo-mobile-receptions`.
+
+La pantalla `Productos → Recepciones` consulta operaciones de entrada de Inventario vinculadas a pedidos de compra. La fuente principal es `stock.picking`, no el pedido de compra.
+
+Datos visibles:
+
+- referencia de la recepción y del PO de origen;
+- proveedor;
+- fecha prevista, estado y ubicación de destino;
+- imagen, nombre, SKU y EAN del producto;
+- cantidad esperada, procesada y pendiente por movimiento.
+
+La pantalla permite buscar por recepción, PO, proveedor, SKU o EAN y filtrar entre preparada y esperando. Solo incluye entradas con pedido de compra en estado `assigned`, `confirmed` o `waiting`. Excluye borradores, devoluciones, operaciones terminadas y canceladas. No contiene botones de validación ni endpoints de escritura.
 
 ### Cálculo actual
 
-`cantidad pendiente = max(cantidad pedida - cantidad recibida, 0)`
+`cantidad pendiente = max(cantidad esperada - cantidad procesada, 0)`
 
 Se consultan estos modelos mediante métodos de lectura:
 
-- `purchase.order`;
-- `purchase.order.line`;
+- `stock.picking`;
+- `stock.move`;
 - `product.product`.
 
-La primera lectura real devolvió pedidos antiguos todavía abiertos en Odoo. No se ocultan por fecha porque pueden representar pendientes reales o datos que deben cerrarse. Cualquier regla para excluirlos debe decidirse con casos comprobados.
+La comprobación real confirmó recepciones y líneas de movimiento activas. Los totales cambian cuando almacén procesa entradas, por lo que no se fijan en esta documentación. Las cantidades reservadas no se cuentan como procesadas mientras el movimiento no esté marcado como realizado.
 
 ## Punto 2: trazabilidad real
 
@@ -76,7 +92,7 @@ No se implementarán supuestos sobre rutas MTO, grupos de aprovisionamiento u or
 8. Revisión de diferencias e incidencias.
 9. Validación mediante movimientos de recepción de Odoo.
 10. Recepciones parciales y backorders.
-11. Listado administrativo de pedidos de compra.
+11. Ampliación administrativa de Compras pendientes.
 12. Edición de borradores de PO.
 13. Creación de PO en Odoo.
 14. Confirmación, cierre y cancelación respetando el workflow.

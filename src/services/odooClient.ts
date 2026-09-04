@@ -13,6 +13,7 @@ import type {
   Order,
   OrdersSyncStats,
   OrdersV2Performance,
+  InventoryReceptionsPayload,
   PurchaseReceptionsPayload,
 } from "./odooTypes";
 
@@ -547,11 +548,19 @@ export const odooClient = {
   async getPurchases() {
     return purchases;
   },
-  async getPurchaseReceptions() {
-    const response = await fetch("/api/odoo/purchase-receptions");
+  async getPendingPurchases() {
+    const response = await fetch("/api/odoo/pending-purchases");
     const payload = (await response.json()) as PurchaseReceptionsPayload;
     if (!response.ok) {
       throw new Error(payload.message ?? "No se pudieron leer las recepciones de Odoo");
+    }
+    return payload;
+  },
+  async getInventoryReceptions() {
+    const response = await fetch("/api/odoo/inventory-receptions");
+    const payload = (await response.json()) as InventoryReceptionsPayload;
+    if (!response.ok) {
+      throw new Error(payload.message ?? "No se pudieron leer las recepciones de Inventario");
     }
     return payload;
   },
