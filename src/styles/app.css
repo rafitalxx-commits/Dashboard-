@@ -2957,7 +2957,13 @@ th {
   }
 
   .main {
+    max-width: 100vw;
+    overflow-x: hidden;
     padding: 14px 12px;
+  }
+
+  .topbar {
+    padding-left: 48px;
   }
 
   .tasks-tabs {

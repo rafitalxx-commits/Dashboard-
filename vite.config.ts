@@ -34,6 +34,12 @@ import { formatOdooMadrid } from "./backend/odooDateTime";
 import { createProductCatalog } from "./backend/products/catalog";
 import { createProductInventories } from "./backend/products/inventories";
 import { createProductLocations, parseLocationCode } from "./backend/products/locations";
+import { createReceptionSessions } from "./backend/receptions/sessions";
+import {
+  buildSaleOrderRefsByReceptionMove,
+  type ReceptionPurchaseLineTrace,
+  type ReceptionSaleLineTrace,
+} from "./backend/receptions/traceability";
 import {
   getExternalOrderRef,
   getFulfillmentBy,
@@ -89,6 +95,9 @@ type OdooMoveRecord = {
   scrapped?: boolean;
   picking_id?: false | [number, string];
   product_uom?: false | [number, string];
+  move_dest_ids?: number[];
+  purchase_line_id?: false | [number, string];
+  sale_line_id?: false | [number, string];
 };
 
 type OdooInvoiceRecord = {
@@ -463,6 +472,9 @@ function odooReadOnlyApi(env: Record<string, string>) {
       const calendar = createCalendarRepository(env);
       const productCatalog = createProductCatalog(env);
       const productLocations = createProductLocations({
+        dataDir: env.DASHBOARD_DATA_DIR,
+      });
+      const receptionSessions = createReceptionSessions({
         dataDir: env.DASHBOARD_DATA_DIR,
       });
       const productInventories = createProductInventories({
@@ -1145,6 +1157,44 @@ function odooReadOnlyApi(env: Record<string, string>) {
       );
 
       server.middlewares.use(
+        "/api/odoo/reception-sessions",
+        async (request, response) => {
+          const user = auth.getSessionUser(request.headers.cookie);
+          if (!user || !user.permissions.includes("products")) {
+            sendJson(response, 401, { message: "Login requerido" });
+            return;
+          }
+          try {
+            if (request.method === "GET") {
+              sendJson(response, 200, { sessions: receptionSessions.list() });
+              return;
+            }
+            if (request.method === "POST") {
+              sendJson(response, 201, receptionSessions.start(await readJsonBody(request)));
+              return;
+            }
+            if (request.method === "PATCH") {
+              const input = await readJsonBody<{ receptionId?: string }>(request);
+              sendJson(
+                response,
+                200,
+                receptionSessions.complete(String(input.receptionId ?? "").trim()),
+              );
+              return;
+            }
+            sendJson(response, 405, { message: "Metodo no permitido" });
+          } catch (error) {
+            sendJson(response, 400, {
+              message:
+                error instanceof Error
+                  ? error.message
+                  : "No se pudo iniciar la recepción",
+            });
+          }
+        },
+      );
+
+      server.middlewares.use(
         "/api/odoo/inventory-receptions",
         async (request, response) => {
           const user = auth.getSessionUser(request.headers.cookie);
@@ -1157,7 +1207,18 @@ function odooReadOnlyApi(env: Record<string, string>) {
             return;
           }
           try {
-            sendJson(response, 200, await getOdooInventoryReceptions(env));
+            const preferredLocations = new Map(
+              productLocations
+                .summary()
+                .locations
+                .filter((location) => location.preferred)
+                .map((location) => [location.productId, location.code]),
+            );
+            sendJson(
+              response,
+              200,
+              await getOdooInventoryReceptions(env, preferredLocations),
+            );
           } catch (error) {
             sendJson(response, 500, {
               mode: "demo",
@@ -5925,7 +5986,10 @@ async function getOdooDashboardFull(
   };
 }
 
-async function getOdooInventoryReceptions(env: Record<string, string>) {
+async function getOdooInventoryReceptions(
+  env: Record<string, string>,
+  preferredLocations = new Map<number, string>(),
+) {
   const config = getOdooConfig(env);
   if (!config.url || !config.database || !config.username || !config.apiKey) {
     throw new Error(
@@ -5978,11 +6042,81 @@ async function getOdooInventoryReceptions(env: Record<string, string>) {
           "picked",
           "product_uom",
           "state",
+          "move_dest_ids",
+          "purchase_line_id",
+          "sale_line_id",
         ],
       })) as OdooMoveRecord[])
     : [];
   const activeMoves = moves.filter(
     (move) => move.state !== "done" && move.state !== "cancel",
+  );
+  const traceMovesById = new Map(moves.map((move) => [move.id, move]));
+  let traceMoveIds = Array.from(
+    new Set(activeMoves.flatMap((move) => move.move_dest_ids ?? [])),
+  ).filter((id) => !traceMovesById.has(id));
+  while (traceMoveIds.length && traceMovesById.size < 10_000) {
+    const batch = traceMoveIds.slice(0, 500);
+    traceMoveIds = traceMoveIds.slice(500);
+    const tracedMoves = (await executeKw(
+      config,
+      uid,
+      "stock.move",
+      "read",
+      [batch],
+      { fields: ["id", "move_dest_ids", "sale_line_id"] },
+    )) as OdooMoveRecord[];
+    tracedMoves.forEach((move) => traceMovesById.set(move.id, move));
+    traceMoveIds.push(
+      ...Array.from(
+        new Set(tracedMoves.flatMap((move) => move.move_dest_ids ?? [])),
+      ).filter(
+        (id) => !traceMovesById.has(id) && !traceMoveIds.includes(id),
+      ),
+    );
+  }
+  const purchaseLineIds = Array.from(
+    new Set(
+      activeMoves
+        .map((move) => getRelationId(move.purchase_line_id))
+        .filter((id): id is number => typeof id === "number"),
+    ),
+  );
+  const purchaseLines = purchaseLineIds.length
+    ? ((await executeKw(
+        config,
+        uid,
+        "purchase.order.line",
+        "read",
+        [purchaseLineIds],
+        { fields: ["id", "sale_order_id", "sale_line_id"] },
+      )) as ReceptionPurchaseLineTrace[])
+    : [];
+  const saleLineIds = Array.from(
+    new Set([
+      ...Array.from(traceMovesById.values())
+        .map((move) => getRelationId(move.sale_line_id))
+        .filter((id): id is number => typeof id === "number"),
+      ...purchaseLines
+        .map((line) => getRelationId(line.sale_line_id))
+        .filter((id): id is number => typeof id === "number"),
+    ]),
+  );
+  const saleLines = saleLineIds.length
+    ? ((await executeKw(
+        config,
+        uid,
+        "sale.order.line",
+        "read",
+        [saleLineIds],
+        { fields: ["id", "order_id"] },
+      )) as ReceptionSaleLineTrace[])
+    : [];
+  const saleOrdersByMoveId = buildSaleOrderRefsByReceptionMove(
+    activeMoves.map((move) => move.id),
+    Array.from(traceMovesById.values()),
+    purchaseLines,
+    saleLines,
   );
   const productIds = Array.from(
     new Set(
@@ -6020,6 +6154,7 @@ async function getOdooInventoryReceptions(env: Record<string, string>) {
       const relationName = getRelationName(move.product_id);
       const expectedQty = Number(move.product_uom_qty ?? 0);
       const processedQty = move.picked ? Number(move.quantity ?? 0) : 0;
+      const saleOrderRefs = saleOrdersByMoveId.get(move.id) ?? [];
       return {
         id: String(move.id),
         productId: productId ? String(productId) : undefined,
@@ -6035,6 +6170,11 @@ async function getOdooInventoryReceptions(env: Record<string, string>) {
         processedQty,
         pendingQty: Math.max(0, expectedQty - processedQty),
         uom: formatUom(getRelationName(move.product_uom)),
+        classification: saleOrderRefs.length ? "under_order" : "replenishment",
+        saleOrderRefs,
+        preferredLocation: productId
+          ? preferredLocations.get(productId) || undefined
+          : undefined,
       };
     });
     const state = picking.state || "draft";

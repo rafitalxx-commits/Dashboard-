@@ -90,6 +90,7 @@
 .inventory-plan-saved { color: #176d58; font-size: 12px; font-weight: 750; margin: -4px 0 0; }
 .inventory-receptions-notice, .inventory-receptions-empty { align-items: center; background: #fff; border: 1px solid #dfe7ec; border-radius: 14px; color: #50616a; display: flex; gap: 10px; padding: 22px; }
 .inventory-receptions-notice.error { background: #fff4f2; border-color: #f2c7c1; color: #8e3028; }
+.inventory-receptions-notice.success { background: #e8f7ef; border-color: #b8e2cb; color: #12684e; }
 .inventory-receptions-notice > div, .inventory-receptions-empty { display: grid; }
 .inventory-receptions-empty { justify-items: center; padding: 42px; text-align: center; }
 .inventory-spin { animation: inventory-spin 1s linear infinite; }

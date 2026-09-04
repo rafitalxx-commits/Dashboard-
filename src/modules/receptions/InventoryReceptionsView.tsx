@@ -14,6 +14,8 @@ import {
 import "./inventory-receptions.css";
 
 type ReceptionFilter = "Todas" | InventoryReception["status"];
+type WarehouseWorker = { id: string; code: string; name: string; active: boolean };
+const plansStorageKey = "dashboard.reception-location-plans.v1";
 
 export function InventoryReceptionsView() {
   const [payload, setPayload] = useState<InventoryReceptionsPayload | null>(null);
@@ -23,11 +25,19 @@ export function InventoryReceptionsView() {
   const [filter, setFilter] = useState<ReceptionFilter>("Todas");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [openPlan, setOpenPlan] = useState<string | null>(null);
-  const [plans, setPlans] = useState<Record<string, ReceptionLocationPlan>>({});
+  const [plans, setPlans] = useState<Record<string, ReceptionLocationPlan>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(plansStorageKey) || "{}") as Record<string, ReceptionLocationPlan>;
+    } catch {
+      return {};
+    }
+  });
   const [sessions, setSessions] = useState<ReceptionSession[]>([]);
   const [startingReception, setStartingReception] = useState<string | null>(null);
-  const [operatorName, setOperatorName] = useState("");
+  const [operatorCode, setOperatorCode] = useState("");
   const [starting, setStarting] = useState(false);
+  const [completing, setCompleting] = useState<string | null>(null);
+  const [message, setMessage] = useState("");
 
   const load = async () => {
     setLoading(true);
@@ -48,6 +58,9 @@ export function InventoryReceptionsView() {
   };
 
   useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    localStorage.setItem(plansStorageKey, JSON.stringify(plans));
+  }, [plans]);
 
   const receptions = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase("es");
@@ -64,7 +77,7 @@ export function InventoryReceptionsView() {
   }, [filter, payload, query]);
 
   const sessionsByReceptionId = useMemo(
-    () => new Map(sessions.map((session) => [session.receptionId, session])),
+    () => new Map(sessions.filter((session) => session.status === "in_progress").map((session) => [session.receptionId, session])),
     [sessions],
   );
 
@@ -78,26 +91,49 @@ export function InventoryReceptionsView() {
   };
 
   const beginReception = async (reception: InventoryReception) => {
-    if (!operatorName.trim()) {
-      setError("Indica el operario antes de iniciar la recepción");
+    const normalizedCode = operatorCode.trim().toUpperCase();
+    if (!normalizedCode) {
+      setError("Escanea el QR del operario antes de iniciar la recepción");
       return;
     }
     setStarting(true);
     setError("");
+    setMessage("");
     try {
+      const workerResponse = await fetch(`/api/warehouse-workers/resolve/${encodeURIComponent(normalizedCode)}`);
+      const workerPayload = await workerResponse.json() as { worker?: WarehouseWorker; message?: string };
+      if (!workerResponse.ok || !workerPayload.worker) {
+        throw new Error(workerPayload.message || "QR de operario no válido o inactivo");
+      }
       const session = await odooClient.startReceptionSession({
         receptionId: reception.id,
         receptionRef: reception.ref,
         purchaseRef: reception.purchaseRef,
-        operator: { id: "", code: "MANUAL", name: operatorName.trim() },
+        operator: workerPayload.worker,
       });
       setSessions((current) => [session, ...current.filter((item) => item.receptionId !== session.receptionId)]);
       setStartingReception(null);
-      setOperatorName("");
+      setOperatorCode("");
+      setMessage(`Recepción iniciada por ${session.operator.name}`);
     } catch (startError) {
       setError(startError instanceof Error ? startError.message : "No se pudo iniciar la recepción");
     } finally {
       setStarting(false);
+    }
+  };
+
+  const completeReception = async (receptionId: string) => {
+    setCompleting(receptionId);
+    setError("");
+    setMessage("");
+    try {
+      const session = await odooClient.completeReceptionSession(receptionId);
+      setSessions((current) => current.map((item) => item.receptionId === receptionId ? session : item));
+      setMessage(`Sesión de ${session.receptionRef} finalizada correctamente`);
+    } catch (completeError) {
+      setError(completeError instanceof Error ? completeError.message : "No se pudo finalizar la recepción");
+    } finally {
+      setCompleting(null);
     }
   };
 
@@ -135,6 +171,7 @@ export function InventoryReceptionsView() {
       </div>
 
       {error && <div className="inventory-receptions-notice error"><AlertTriangle size={19} /><div><strong>No se pudieron leer las recepciones</strong><span>{error}</span></div></div>}
+      {message && <div aria-live="polite" className="inventory-receptions-notice success"><CheckCircle2 size={19} /><span>{message}</span></div>}
       {loading && !payload && <div className="inventory-receptions-notice"><RefreshCw className="inventory-spin" size={19} />Leyendo operaciones de entrada en Odoo…</div>}
       {!loading && !error && receptions.length === 0 && <div className="inventory-receptions-empty"><Warehouse size={36} /><strong>No hay recepciones con estos filtros</strong><span>Cambia la búsqueda o el estado seleccionado.</span></div>}
 
@@ -159,18 +196,18 @@ export function InventoryReceptionsView() {
                     <span><MapPin size={16} /><small>Destino Odoo</small><strong>{reception.destination || "Sin ubicación destino"}</strong></span>
                     <span><PackageCheck size={16} /><small>Estado Odoo</small><strong>{translateState(reception.state)}</strong></span>
                     {session ? (
-                      <span className="inventory-active-session"><UserRound size={16} /><small>Recepción en curso</small><strong>{session.operator.name} · {formatTime(session.startedAt)}</strong></span>
+                      <><span className="inventory-active-session"><UserRound size={16} /><small>Recepción en curso</small><strong>{session.operator.name} · {formatTime(session.startedAt)}</strong></span><button disabled={completing === reception.id} onClick={() => void completeReception(reception.id)} type="button"><CheckCircle2 size={16} /> {completing === reception.id ? "Finalizando…" : "Finalizar sesión"}</button></>
                     ) : (
-                      <button className="inventory-start-button" onClick={() => { setStartingReception(reception.id); setOperatorName(""); }} type="button"><Play size={16} /> Iniciar recepción</button>
+                      <button className="inventory-start-button" onClick={() => { setStartingReception(reception.id); setOperatorCode(""); }} type="button"><Play size={16} /> Iniciar recepción</button>
                     )}
                     <em>Sesión local; no modifica Odoo</em>
                   </div>
                   {startingReception === reception.id && !session && (
                     <div className="inventory-start-panel">
-                      <div><strong>Identificar al operario</strong><span>Quedará asociado a toda esta recepción.</span></div>
-                      <label>Nombre del operario<input autoFocus onChange={(event) => setOperatorName(event.target.value)} placeholder="Operario de almacén" value={operatorName} /></label>
-                      <button disabled={starting || !operatorName.trim()} onClick={() => void beginReception(reception)} type="button"><Play size={16} /> {starting ? "Iniciando…" : "Empezar recepción"}</button>
-                      <button className="inventory-start-cancel" disabled={starting} onClick={() => { setStartingReception(null); setOperatorName(""); }} type="button">Cancelar</button>
+                      <div><strong>Identificar al operario</strong><span>Escanea su QR OP; quedará asociado a toda la recepción.</span></div>
+                      <label>Código QR del operario<input autoFocus onChange={(event) => setOperatorCode(event.target.value)} placeholder="OP001" value={operatorCode} /></label>
+                      <button disabled={starting || !operatorCode.trim()} onClick={() => void beginReception(reception)} type="button"><Play size={16} /> {starting ? "Validando operario…" : "Empezar recepción"}</button>
+                      <button className="inventory-start-cancel" disabled={starting} onClick={() => { setStartingReception(null); setOperatorCode(""); }} type="button">Cancelar</button>
                     </div>
                   )}
                   <div className="inventory-reception-lines">
@@ -244,7 +281,7 @@ function LocationPlanEditor({ line, onChange, onReady, plan }: { line: Inventory
         <div><strong>{formatQty(total)} de {formatQty(plan.receivedQty)} uds. repartidas</strong><span>{balanced ? "La suma coincide." : `${difference > 0 ? "Faltan" : "Sobran"} ${formatQty(Math.abs(difference))} uds.`}</span></div>
         <button disabled={!balanced} onClick={onReady} type="button"><CheckCircle2 size={17} /> {plan.ready ? "Reparto listo" : "Marcar reparto listo"}</button>
       </footer>
-      {plan.ready && <p className="inventory-plan-saved">Propuesta preparada en esta pantalla. No se ha enviado ni validado en Odoo.</p>}
+      {plan.ready && <p className="inventory-plan-saved">Propuesta guardada en este dispositivo. No se ha enviado ni validado en Odoo.</p>}
     </div>
   );
 }

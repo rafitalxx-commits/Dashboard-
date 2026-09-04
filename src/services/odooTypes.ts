@@ -400,6 +400,37 @@ export type InventoryReceptionLine = {
   processedQty: number;
   pendingQty: number;
   uom: string;
+  classification: "under_order" | "replenishment";
+  saleOrderRefs: string[];
+  preferredLocation?: string;
+};
+
+export type ReceptionLocationAllocation = {
+  id: string;
+  location: string;
+  quantity: number;
+};
+
+export type ReceptionLocationPlan = {
+  receivedQty: number;
+  allocations: ReceptionLocationAllocation[];
+  ready: boolean;
+};
+
+export type ReceptionOperator = {
+  id: string;
+  code: string;
+  name: string;
+};
+
+export type ReceptionSession = {
+  receptionId: string;
+  receptionRef: string;
+  purchaseRef: string;
+  operator: ReceptionOperator;
+  status: "in_progress" | "completed";
+  startedAt: string;
+  updatedAt: string;
 };
 
 export type InventoryReception = {

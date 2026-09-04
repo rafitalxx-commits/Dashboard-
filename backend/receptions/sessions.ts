@@ -12,7 +12,7 @@ export type ReceptionSession = {
   receptionRef: string;
   purchaseRef: string;
   operator: ReceptionOperator;
-  status: "in_progress";
+  status: "in_progress" | "completed";
   startedAt: string;
   updatedAt: string;
 };
@@ -79,5 +79,21 @@ export function createReceptionSessions(options: { dataDir?: string } = {}) {
     return session;
   };
 
-  return { list, start };
+  const complete = (receptionId: string) => {
+    const store = read();
+    const index = store.sessions.findIndex(
+      (session) => session.receptionId === receptionId,
+    );
+    if (index < 0) throw new Error("Sesión de recepción no encontrada");
+    const now = new Date().toISOString();
+    store.sessions[index] = {
+      ...store.sessions[index],
+      status: "completed",
+      updatedAt: now,
+    };
+    write(store);
+    return store.sessions[index];
+  };
+
+  return { list, start, complete };
 }

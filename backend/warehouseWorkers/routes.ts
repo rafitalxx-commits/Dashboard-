@@ -20,7 +20,9 @@ export function registerWarehouseWorkersRoutes(server: Server, auth: Auth, optio
     const path = new URL(request.url ?? "/", "http://local").pathname.replace(/^\/+|\/+$/g, "");
     const isOperationalRoute = /^resolve\//.test(path) || /^activity\/order\//.test(path) || (request.method === "POST" && path === "activity");
     const isStatisticsRoute = request.method === "GET" && (path === "statistics" || path === "statistics/workers");
-    if (isStatisticsRoute ? !user.permissions.includes("dashboard") : isOperationalRoute ? !user.permissions.includes("expeditions") : !user.permissions.includes("settings")) return send(response, 403, { message: isStatisticsRoute ? "Sin permiso para ver estadísticas" : isOperationalRoute ? "Sin permiso de expediciones" : "La gestión de operarios está restringida a Configuración" });
+    const canResolveWorker = /^resolve\//.test(path)
+      && (user.permissions.includes("expeditions") || user.permissions.includes("products"));
+    if (isStatisticsRoute ? !user.permissions.includes("dashboard") : isOperationalRoute ? !canResolveWorker && !user.permissions.includes("expeditions") : !user.permissions.includes("settings")) return send(response, 403, { message: isStatisticsRoute ? "Sin permiso para ver estadísticas" : isOperationalRoute ? "Sin permiso operativo" : "La gestión de operarios está restringida a Configuración" });
     try {
       if (isStatisticsRoute) {
         if (path === "statistics/workers") return send(response, 200, { workers: read().filter((worker) => worker.active).sort((left, right) => left.name.localeCompare(right.name)) });

@@ -121,6 +121,7 @@ const navItems = [
     icon: ClipboardList,
     view: "pendingPurchases",
     permission: "purchases",
+    navGroup: "purchases",
   },
   {
     label: "Productos",
@@ -459,6 +460,7 @@ function App() {
     () => window.innerWidth <= 720,
   );
   const [productsMenuOpen, setProductsMenuOpen] = useState(false);
+  const [purchasesMenuOpen, setPurchasesMenuOpen] = useState(false);
   const [inventoryMenuOpen, setInventoryMenuOpen] = useState(false);
   const [activeView, setActiveView] = useState<ActiveView>(() =>
     getViewFromHash(),
@@ -1191,6 +1193,11 @@ function App() {
         (item) => item.navGroup === "products" && can(item.permission),
       )
     : [];
+  const visiblePurchaseNavItems = authUser
+    ? navItems.filter(
+        (item) => item.navGroup === "purchases" && can(item.permission),
+      )
+    : [];
   const visibleInventoryNavItems = visibleProductNavItems.filter((item) =>
     item.view.startsWith("productsInventory"),
   );
@@ -1202,6 +1209,8 @@ function App() {
     activeView === "productsScanner" ||
     activeView === "productsLabels" ||
     activeView.startsWith("productsInventory");
+  const isPurchasesView =
+    activeView === "purchases" || activeView === "pendingPurchases";
   const showOrderRange =
     isDashboardView || isOrdersView || activeView === "customerInvoices";
   const refreshOrders = async () => {
@@ -1454,7 +1463,46 @@ function App() {
         </button>
         <nav className="nav-list">
           {visibleNavItems.map((item) =>
-            item.view === "products" ? (
+            item.view === "purchases" ? (
+              <div
+                className={`nav-group ${isPurchasesView ? "active" : ""} ${purchasesMenuOpen ? "open" : ""}`}
+                key={item.label}
+              >
+                <div className="nav-group-heading">
+                  <button
+                    aria-expanded={purchasesMenuOpen}
+                    className={isPurchasesView ? "active" : ""}
+                    onClick={() => setPurchasesMenuOpen((value) => !value)}
+                    type="button"
+                  >
+                    <item.icon size={18} />
+                    <span className="nav-label">{item.label}</span>
+                    <ChevronDown className="nav-chevron" size={15} />
+                  </button>
+                </div>
+                <div className="nav-submenu">
+                  <button
+                    className={activeView === "purchases" ? "active" : ""}
+                    onClick={() => navigateToView("purchases")}
+                    type="button"
+                  >
+                    <ShoppingCart size={16} />
+                    <span className="nav-label">Compras</span>
+                  </button>
+                  {visiblePurchaseNavItems.map((child) => (
+                    <button
+                      className={child.view === activeView ? "active" : ""}
+                      key={child.view}
+                      onClick={() => navigateToView(child.view)}
+                      type="button"
+                    >
+                      <child.icon size={16} />
+                      <span className="nav-label">{child.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : item.view === "products" ? (
               <div
                 className={`nav-group ${isProductsView ? "active" : ""} ${productsMenuOpen ? "open" : ""}`}
                 key={item.label}

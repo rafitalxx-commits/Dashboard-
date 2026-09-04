@@ -33,10 +33,16 @@ try {
     "starting twice keeps the original operator and timestamp",
   );
   assert.equal(sessions.list().length, 1);
+  const completed = sessions.complete("123");
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.operator.code, "R01");
+  assert.equal(sessions.list()[0].status, "completed");
+  assert.throws(() => sessions.complete("missing"), /no encontrada/);
   const stored = JSON.parse(readFileSync(join(testDir, "reception-sessions.json"), "utf8"));
   assert.equal(stored.sessions[0].receptionId, "123");
+  assert.equal(stored.sessions[0].status, "completed");
 } finally {
   rmSync(testDir, { recursive: true, force: true });
 }
 
-console.log("Recepciones Fase 3: inicio e identificación de operario verificados");
+console.log("Recepciones Fase 3: inicio, operario y cierre verificados");

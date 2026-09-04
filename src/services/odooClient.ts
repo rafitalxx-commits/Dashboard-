@@ -15,6 +15,8 @@ import type {
   OrdersV2Performance,
   InventoryReceptionsPayload,
   PurchaseReceptionsPayload,
+  ReceptionOperator,
+  ReceptionSession,
 } from "./odooTypes";
 
 type DashboardUserRole = "viewer" | "printer" | "admin";
@@ -797,6 +799,43 @@ export const odooClient = {
     const payload = (await response.json()) as InventoryReceptionsPayload;
     if (!response.ok) {
       throw new Error(payload.message ?? "No se pudieron leer las recepciones de Inventario");
+    }
+    return payload;
+  },
+  async getReceptionSessions() {
+    const response = await fetch("/api/odoo/reception-sessions");
+    const payload = await readJson<{ sessions?: ReceptionSession[]; message?: string }>(response);
+    if (!response.ok) {
+      throw new Error(payload.message ?? "No se pudieron leer las sesiones de recepción");
+    }
+    return payload.sessions ?? [];
+  },
+  async startReceptionSession(input: {
+    receptionId: string;
+    receptionRef: string;
+    purchaseRef: string;
+    operator: ReceptionOperator;
+  }) {
+    const response = await fetch("/api/odoo/reception-sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const payload = await readJson<ReceptionSession & { message?: string }>(response);
+    if (!response.ok) {
+      throw new Error(payload.message ?? "No se pudo iniciar la recepción");
+    }
+    return payload;
+  },
+  async completeReceptionSession(receptionId: string) {
+    const response = await fetch("/api/odoo/reception-sessions", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ receptionId }),
+    });
+    const payload = await readJson<ReceptionSession & { message?: string }>(response);
+    if (!response.ok) {
+      throw new Error(payload.message ?? "No se pudo finalizar la recepción");
     }
     return payload;
   },
