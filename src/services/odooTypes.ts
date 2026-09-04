@@ -389,6 +389,44 @@ export type PurchaseReceptionsPayload = {
   message?: string;
 };
 
+export type InventoryReceptionLine = {
+  id: string;
+  productId?: string;
+  name: string;
+  sku: string;
+  barcode: string;
+  imageUrl?: string;
+  expectedQty: number;
+  processedQty: number;
+  pendingQty: number;
+  uom: string;
+};
+
+export type InventoryReception = {
+  id: string;
+  ref: string;
+  purchaseRef: string;
+  supplier: string;
+  scheduledDate: string;
+  state: string;
+  status: "Preparada" | "Esperando" | "Borrador" | "Otra";
+  destination: string;
+  lines: InventoryReceptionLine[];
+  expectedQty: number;
+  processedQty: number;
+  pendingQty: number;
+};
+
+export type InventoryReceptionsPayload = {
+  mode: "live" | "demo";
+  receptions: InventoryReception[];
+  total: number;
+  ready: number;
+  waiting: number;
+  pendingLines: number;
+  message?: string;
+};
+
 export type Product = {
   id: string;
   sku: string;
