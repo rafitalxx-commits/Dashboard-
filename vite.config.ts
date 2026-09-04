@@ -26,6 +26,10 @@ import { registerPublicTrackingRoutes } from "./backend/publicTracking/routes";
 import { registerWarehouseWorkersRoutes } from "./backend/warehouseWorkers/routes";
 import { registerExpeditionDestinationOverridesRoutes } from "./backend/expeditionDestinationOverrides/routes";
 import { isDeliveryIncidentStillPending, isServiceOnlyOrder } from "./backend/odooDeliveryIncidentRules";
+import {
+  buildExactExpeditionOrderDomain,
+  isCompleteExpeditionOrderReference,
+} from "./backend/expeditionOrderReference";
 import { formatOdooMadrid } from "./backend/odooDateTime";
 import { createProductCatalog } from "./backend/products/catalog";
 import { createProductInventories } from "./backend/products/inventories";
@@ -1302,16 +1306,27 @@ function odooReadOnlyApi(env: Record<string, string>) {
 
             if (url.pathname === "/detail") {
               const orderRef = cleanText(url.searchParams.get("orderRef"));
-              if (!orderRef) {
-                sendJson(response, 400, { message: "Falta orderRef" });
+              if (!isCompleteExpeditionOrderReference(orderRef)) {
+                sendJson(response, 400, { message: "Referencia incompleta o no valida. Escanea el numero completo del pedido." });
                 return;
               }
               const profiler = createDemandProfiler("detail");
               const payload = await getOdooOrdersFull(env, {
                 search: orderRef,
-                limit: 1,
+                limit: 2,
                 offset: 0,
+                exactSearch: true,
               }, profiler);
+              if (payload.total !== 1 || payload.orders.length !== 1) {
+                sendProfiledJson(response, 409, {
+                  mode: payload.mode,
+                  order: null,
+                  message: payload.total > 1
+                    ? "La referencia coincide con varios pedidos. No se selecciona ninguno."
+                    : "La referencia no coincide exactamente con ningun pedido de Odoo.",
+                }, profiler);
+                return;
+              }
               sendProfiledJson(response, 200, {
                 mode: payload.mode,
                 order: payload.orders[0] ?? null,
@@ -3599,6 +3614,7 @@ async function getOdooOrdersFull(
     limit?: number;
     offset?: number;
     search?: string;
+    exactSearch?: boolean;
   },
   profiler?: DemandProfiler,
 ) {
@@ -3615,7 +3631,9 @@ async function getOdooOrdersFull(
   const uid = await measureDemandPhase(profiler, "odoo", 1, () =>
     authenticate(config),
   );
-  const domain = buildOrderDomain(range);
+  const domain = range.exactSearch && range.search
+    ? [["state", "in", ["sale", "done"]], ...buildExactExpeditionOrderDomain(range.search)]
+    : buildOrderDomain(range);
   const limit = clampNumber(range.limit ?? 80, 1, 500);
   const offset = Math.max(
     0,

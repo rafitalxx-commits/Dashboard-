@@ -14,6 +14,11 @@ import { odooClient } from "../../services/odooClient";
 import type { Order } from "../../services/odooTypes";
 import { ShippingRulesManager } from "./ShippingRulesManager";
 import { downloadWorkerQr as downloadWorkerQrFile } from "./workerQr";
+import {
+  isCompleteExpeditionOrderReference,
+  matchesExpeditionOrder,
+  normalizeExpeditionOrderReference,
+} from "../../../backend/expeditionOrderReference";
 
 type Mode = "automatic" | "manual";
 type Parcel = { id: number; weight: string; length: string; width: string; height: string };
@@ -173,10 +178,7 @@ function normalizeReference(value?: string) {
 }
 
 function normalizeScanReference(value?: string) {
-  const compact = (value || "").trim().replace(/[‘’'`´]/g, "-").replace(/\s+/g, "");
-  return /^\d{17}$/.test(compact)
-    ? `${compact.slice(0, 3)}-${compact.slice(3, 10)}-${compact.slice(10)}`
-    : compact;
+  return normalizeExpeditionOrderReference(value);
 }
 
 function isSameOrderReference(reference: string, order: Order) {
@@ -771,10 +773,23 @@ async function recordGeneratedShippingLabel(
       ...details,
     }),
   });
+  const payload = await response.json().catch(() => ({})) as {
+    label?: GeneratedShippingLabelRecord;
+    message?: string;
+  };
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({})) as { message?: string };
     throw new Error(payload.message || "No se pudo registrar la etiqueta generada");
   }
+  if (
+    !payload.label ||
+    payload.label.shipmentCode !== shipmentCode ||
+    !payload.label.orderRefs.some((reference) => matchesExpeditionOrder(reference, order))
+  ) {
+    throw new Error(
+      `Seguridad: la etiqueta ${shipmentCode} no ha quedado asociada exactamente al pedido ${order.id}. No se imprime.`,
+    );
+  }
+  return payload.label;
 }
 
 async function removeGeneratedShippingLabel(shipmentCode: string, order?: Order) {
@@ -954,6 +969,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
   const scannerBufferRef = useRef("");
   const scannerResetRef = useRef<number | null>(null);
   const scanInputRef = useRef<HTMLInputElement | null>(null);
+  const operationLockRef = useRef(false);
 
   const totalWeight = useMemo(
     () => parcels.reduce((total, parcel) => total + Number(parcel.weight.replace(",", ".") || 0), 0),
@@ -1033,7 +1049,11 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
 
   const recordWarehouseActivity = async (targetOrder: Order, carrier: string, tracking: string, result: "label-created" | "simulated-label" = "label-created") => {
     if (!activeWarehouseWorker) return;
-    await apiFetch("/api/warehouse-workers/activity", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workerId: activeWarehouseWorker.id, workerCode: activeWarehouseWorker.code, workerName: activeWarehouseWorker.name, orderRef: targetOrder.odooRef || targetOrder.id, carrier, tracking, result }) });
+    const response = await apiFetch("/api/warehouse-workers/activity", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workerId: activeWarehouseWorker.id, workerCode: activeWarehouseWorker.code, workerName: activeWarehouseWorker.name, orderRef: targetOrder.odooRef || targetOrder.id, carrier, tracking, result }) });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({})) as { message?: string };
+      throw new Error(payload.message || "No se pudo registrar el operario de la etiqueta");
+    }
   };
   const recordScanAudit = async (rawReference: string, targetOrder: Order, result: "scan-accepted" | "scan-blocked-unprinted") => {
     if (!activeWarehouseWorker) return;
@@ -1221,6 +1241,12 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
   const findOrder = async (value = scan) => {
     const reference = normalizeScanReference(value);
     if (!reference) return;
+    if (operationLockRef.current) {
+      setNotice("Ya hay un escaneo en curso. Espera a que termine antes de leer otro pedido.");
+      return;
+    }
+    operationLockRef.current = true;
+    try {
     const isWorkerQr = /^OP\d+$/i.test(reference);
     if (isWorkerQr && !orderFound) {
       await identifyWarehouseWorker(reference);
@@ -1234,6 +1260,12 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
     }
     if (!activeWarehouseWorker) {
       await identifyWarehouseWorker(reference);
+      return;
+    }
+    if (!isCompleteExpeditionOrderReference(reference)) {
+      setScan("");
+      setNotice(`Lectura bloqueada: "${reference}" no es una referencia completa de pedido.`);
+      focusScanInput();
       return;
     }
     if (workerExpiryRef.current) { window.clearTimeout(workerExpiryRef.current); workerExpiryRef.current = null; }
@@ -1263,6 +1295,9 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       const result = reference.toUpperCase() === testOrder.odooRef ? null : await odooClient.getOrderDetail(reference);
       const found = result?.order ?? (reference.toUpperCase() === testOrder.odooRef ? testOrder : null);
       if (!found) throw new Error("No se ha encontrado ese pedido en Odoo");
+      if (!matchesExpeditionOrder(reference, found)) {
+        throw new Error(`Seguridad: la referencia ${reference} no coincide exactamente con el pedido ${found.id}. No se crea ni imprime etiqueta.`);
+      }
       foundForManualFallback = found;
       if (!found.deliveryPrinted) {
         void recordScanAudit(reference, found, "scan-blocked-unprinted");
@@ -1422,6 +1457,9 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       } else setNotice(error instanceof Error ? error.message : "No se pudo preparar el pedido");
     }
     finally { setLoading(false); setOperationProgress(null); focusScanInput(); }
+    } finally {
+      operationLockRef.current = false;
+    }
   };
 
   useEffect(() => {
@@ -1699,6 +1737,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
         new Date().toISOString(),
         { source: "mrw-label-created", tracking: shipmentNumber, shipper: "MRW", carrierStatus: service, operator: activeWarehouseWorker?.name, reissuedFrom: reissueContext?.shipmentCode, reissueReason: reissueContext?.reason },
       );
+      void loadGeneratedShippingLabels();
       setReissueContext(null);
       setReissueReason("");
       await recordWarehouseActivity(targetOrder, "MRW", shipmentNumber);
@@ -1785,6 +1824,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
         new Date().toISOString(),
         { source: "correos-express-label-created", tracking: shipmentNumber, shipper: "Correos Express", carrierStatus: service, operator: activeWarehouseWorker?.name, reissuedFrom: reissueContext?.shipmentCode, reissueReason: reissueContext?.reason },
       );
+      void loadGeneratedShippingLabels();
       setReissueContext(null);
       setReissueReason("");
       await recordWarehouseActivity(targetOrder, "Correos Express", shipmentNumber);
@@ -1862,6 +1902,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       setExistingShipmentCarrier("dhl");
       setExistingShipmentCreatedAt(formatExistingLabelDate(payload.shipment?.createdAt || new Date().toISOString()));
       await recordGeneratedShippingLabel(targetOrder, shipmentNumber, reference, new Date().toISOString(), { source: "dhl-label-created", tracking: shipmentNumber, shipper: "DHL", carrierStatus: "DHL Connect B2C", operator: activeWarehouseWorker?.name, reissuedFrom: reissueContext?.shipmentCode, reissueReason: reissueContext?.reason });
+      void loadGeneratedShippingLabels();
       setReissueContext(null);
       setReissueReason("");
       await recordWarehouseActivity(targetOrder, "DHL", shipmentNumber);

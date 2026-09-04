@@ -569,12 +569,13 @@ export const odooClient = {
   async getOrderDetail(orderRef: string) {
     const query = new URLSearchParams({ orderRef });
     const response = await fetch(`/api/odoo/orders/detail?${query.toString()}`);
-    if (!response.ok) throw new Error("No se pudo cargar detalle del pedido");
-    return (await readJson(response)) as {
+    const payload = (await readJson(response)) as {
       mode: "live" | "demo";
       order: Order | null;
       message?: string;
     };
+    if (!response.ok) throw new Error(payload.message || "No se pudo cargar detalle del pedido");
+    return payload;
   },
   async getOrdersPrintContext(orderRefs: string[]) {
     const response = await fetch("/api/odoo/orders/print-context", {
