@@ -13,6 +13,7 @@ import type {
   Order,
   OrdersSyncStats,
   OrdersV2Performance,
+  PurchaseReceptionsPayload,
 } from "./odooTypes";
 
 type DashboardUserRole = "viewer" | "printer" | "admin";
@@ -781,6 +782,14 @@ export const odooClient = {
   },
   async getPurchases() {
     return purchases;
+  },
+  async getPurchaseReceptions() {
+    const response = await fetch("/api/odoo/purchase-receptions");
+    const payload = (await response.json()) as PurchaseReceptionsPayload;
+    if (!response.ok) {
+      throw new Error(payload.message ?? "No se pudieron leer las recepciones de Odoo");
+    }
+    return payload;
   },
   async getProducts() {
     return products;

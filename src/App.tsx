@@ -18,6 +18,7 @@ import {
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
+  PackageOpen,
   Printer,
   ReceiptText,
   RefreshCw,
@@ -41,6 +42,7 @@ import { WarehouseStatisticsView } from "./modules/warehouseStats/WarehouseStati
 import { ProductsCatalogView } from "./modules/products/ProductsCatalogView";
 import { ProductLabelsView } from "./modules/products/ProductLabelsView";
 import { InventoryView } from "./modules/products/InventoryView";
+import { ReceptionsView } from "./modules/receptions/ReceptionsView";
 import { odooClient } from "./services/odooClient";
 import type {
   InvoiceAnalytics,
@@ -169,6 +171,13 @@ const navItems = [
     navGroup: "products",
   },
   {
+    label: "Recepciones",
+    icon: PackageOpen,
+    view: "receptions",
+    permission: "products",
+    navGroup: "products",
+  },
+  {
     label: "Amazon Messages",
     icon: MessagesSquare,
     view: "amazonMessages",
@@ -202,6 +211,7 @@ const viewRoutes: Record<ActiveView, string> = {
   productsInventoryReview: "productos/inventario/revision",
   productsInventoryFinal: "productos/inventario/finalizados",
   productsInventoryHistory: "productos/inventario/historial",
+  receptions: "productos/recepciones",
   amazonMessages: "amazon-messages",
   settings: "configuracion",
 };
@@ -1857,6 +1867,8 @@ function App() {
               )
             }
           />
+        ) : activeView === "receptions" ? (
+          <ReceptionsView />
         ) : isOrdersView ? (
           <>
             {isV2View && (
