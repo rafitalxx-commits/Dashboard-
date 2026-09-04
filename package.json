@@ -9,6 +9,8 @@
     "preview": "vite preview --host 0.0.0.0",
     "test:amazon-parser": "node --experimental-strip-types scripts/test-amazon-email-parser.ts",
     "test:odoo-delivery-status": "node --experimental-strip-types scripts/test-odoo-delivery-status.ts",
+    "test:receptions-phase-2": "node --experimental-strip-types scripts/test-reception-phase-2.ts",
+    "test:receptions-phase-3": "node --experimental-strip-types scripts/test-reception-phase-3.ts",
     "test:v2-phase-1-1-equivalence": "node --experimental-strip-types scripts/v2-phase-1-1-equivalence.ts",
     "test:v2-hito-b3-batch-context": "node scripts/v2-hito-b3-batch-context-validation.mjs",
     "diagnose:v2-hito-b4-orders-payload": "node scripts/v2-hito-b4-orders-v2-payload-diagnostic.mjs",
