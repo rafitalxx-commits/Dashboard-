@@ -16,6 +16,10 @@ import "./inventory-receptions.css";
 type ReceptionFilter = "Todas" | InventoryReception["status"];
 type WarehouseWorker = { id: string; code: string; name: string; active: boolean };
 const plansStorageKey = "dashboard.reception-location-plans.v1";
+const receptionApiPath = (path: string) =>
+  window.location.pathname.startsWith("/inventory-lab/")
+    ? `/inventory-lab${path}`
+    : path;
 
 export function InventoryReceptionsView() {
   const [payload, setPayload] = useState<InventoryReceptionsPayload | null>(null);
@@ -100,7 +104,7 @@ export function InventoryReceptionsView() {
     setError("");
     setMessage("");
     try {
-      const workerResponse = await fetch(`/api/warehouse-workers/resolve/${encodeURIComponent(normalizedCode)}`);
+      const workerResponse = await fetch(receptionApiPath(`/api/warehouse-workers/resolve/${encodeURIComponent(normalizedCode)}`));
       const workerPayload = await workerResponse.json() as { worker?: WarehouseWorker; message?: string };
       if (!workerResponse.ok || !workerPayload.worker) {
         throw new Error(workerPayload.message || "QR de operario no válido o inactivo");

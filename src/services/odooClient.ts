@@ -20,6 +20,10 @@ import type {
 } from "./odooTypes";
 
 type DashboardUserRole = "viewer" | "printer" | "admin";
+const receptionsApiPath = (path: string) =>
+  typeof window !== "undefined" && window.location.pathname.startsWith("/inventory-lab/")
+    ? `/inventory-lab${path}`
+    : path;
 type DashboardPermission =
   | "dashboard"
   | "tasks"
@@ -787,7 +791,7 @@ export const odooClient = {
     return purchases;
   },
   async getPendingPurchases() {
-    const response = await fetch("/api/odoo/pending-purchases");
+    const response = await fetch(receptionsApiPath("/api/odoo/pending-purchases"));
     const payload = (await response.json()) as PurchaseReceptionsPayload;
     if (!response.ok) {
       throw new Error(payload.message ?? "No se pudieron leer las recepciones de Odoo");
@@ -795,7 +799,7 @@ export const odooClient = {
     return payload;
   },
   async getInventoryReceptions() {
-    const response = await fetch("/api/odoo/inventory-receptions");
+    const response = await fetch(receptionsApiPath("/api/odoo/inventory-receptions"));
     const payload = (await response.json()) as InventoryReceptionsPayload;
     if (!response.ok) {
       throw new Error(payload.message ?? "No se pudieron leer las recepciones de Inventario");
@@ -803,7 +807,7 @@ export const odooClient = {
     return payload;
   },
   async getReceptionSessions() {
-    const response = await fetch("/api/odoo/reception-sessions");
+    const response = await fetch(receptionsApiPath("/api/odoo/reception-sessions"));
     const payload = await readJson<{ sessions?: ReceptionSession[]; message?: string }>(response);
     if (!response.ok) {
       throw new Error(payload.message ?? "No se pudieron leer las sesiones de recepción");
@@ -816,7 +820,7 @@ export const odooClient = {
     purchaseRef: string;
     operator: ReceptionOperator;
   }) {
-    const response = await fetch("/api/odoo/reception-sessions", {
+    const response = await fetch(receptionsApiPath("/api/odoo/reception-sessions"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
@@ -828,7 +832,7 @@ export const odooClient = {
     return payload;
   },
   async completeReceptionSession(receptionId: string) {
-    const response = await fetch("/api/odoo/reception-sessions", {
+    const response = await fetch(receptionsApiPath("/api/odoo/reception-sessions"), {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ receptionId }),
