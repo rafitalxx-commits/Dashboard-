@@ -3085,6 +3085,7 @@ th {
 }
 
 .incident-panel-header,
+.incident-header-actions,
 .incident-actions,
 .incident-row-actions {
   align-items: center;
@@ -3095,6 +3096,19 @@ th {
 .incident-panel-header {
   justify-content: space-between;
   margin-bottom: 12px;
+}
+
+.incident-header-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.incident-refresh-compact .is-spinning {
+  animation: incident-spin 0.8s linear infinite;
+}
+
+@keyframes incident-spin {
+  to { transform: rotate(360deg); }
 }
 
 .incident-panel-empty .incident-panel-header {

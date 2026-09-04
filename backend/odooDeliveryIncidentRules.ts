@@ -6,6 +6,15 @@ export function isClosedOdooDelivery(state?: string) {
   return state === "done" || state === "cancel";
 }
 
+export function isDeliveryIncidentStillPending(
+  pickingState: string | undefined,
+  hasPicking: boolean,
+  serviceOnly: boolean,
+) {
+  if (isClosedOdooDelivery(pickingState)) return false;
+  return hasPicking || !serviceOnly;
+}
+
 export function isServiceOnlyOrder(
   lines: DeliveryIncidentOrderLine[],
   productTypes: Map<number, string>,

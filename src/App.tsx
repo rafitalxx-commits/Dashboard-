@@ -304,7 +304,6 @@ type PrintBatch = {
   orders: Array<Pick<Order, "id" | "odooRef">>;
 };
 type DeliveryIncident = Awaited<ReturnType<typeof odooClient.getDeliveryIncidents>>[number];
-const DELIVERY_INCIDENTS_VERSION = "2026.08.19.1005";
 
 const pageSizeOptions = [80, 200, 500];
 const deliveryOptions = ["Todos", "Entregados", "No entregados"];
@@ -3085,10 +3084,10 @@ function DeliveryIncidentsPanel({
       <div className="incident-panel-header">
         <div>
           <strong>Incidencia entrega Odoo</strong>
-          <small>{statusText}</small>
-          <small>Versión {DELIVERY_INCIDENTS_VERSION}</small>
+          <small aria-live="polite" role="status">{statusText}</small>
         </div>
-        {activeIncidents.length > 0 ? (
+        <div className="incident-header-actions">
+          {activeIncidents.length > 0 && (
           <button
             aria-expanded={expanded}
             className="incident-toggle"
@@ -3097,18 +3096,19 @@ function DeliveryIncidentsPanel({
           >
             {expanded ? "Ocultar incidencias" : "Ver incidencias"}
           </button>
-        ) : (
+          )}
           <button
+            aria-busy={loading}
             aria-label="Actualizar incidencias de entrega Odoo"
             className="incident-refresh-compact"
             disabled={loading}
             onClick={onRefresh}
             type="button"
           >
-            <RefreshCw size={14} />
-            Actualizar
+            <RefreshCw className={loading ? "is-spinning" : undefined} size={14} />
+            {loading ? "Actualizando…" : "Actualizar"}
           </button>
-        )}
+        </div>
       </div>
       {expanded && activeIncidents.length > 0 && (
         <>
@@ -3117,6 +3117,8 @@ function DeliveryIncidentsPanel({
           <thead>
             <tr>
               <th>Pedido</th>
+              <th>Albarán</th>
+              <th>Etiqueta</th>
               <th>Motivo</th>
               <th>Acciones</th>
             </tr>
@@ -3127,6 +3129,14 @@ function DeliveryIncidentsPanel({
                 <td>
                   <strong>{incident.orderName ?? `#${incident.orderId}`}</strong>
                   <small>#{incident.orderId}</small>
+                </td>
+                <td>
+                  <strong>{incident.pickingName || incident.pickingId || "Sin albarán"}</strong>
+                  {incident.pickingState && <small>Estado: {incident.pickingState}</small>}
+                </td>
+                <td>
+                  <strong>{incident.tracking || "Sin tracking"}</strong>
+                  <small>Intento: {formatShortDateTime(incident.lastAttemptAt)}</small>
                 </td>
                 <td>{incident.reason}</td>
                 <td>
@@ -3153,14 +3163,14 @@ function DeliveryIncidentsPanel({
             ))}
             {!loading && activeIncidents.length === 0 && (
               <tr>
-                <td className="empty-state" colSpan={3}>
+                <td className="empty-state" colSpan={5}>
                   No hay incidencias de entrega Odoo pendientes.
                 </td>
               </tr>
             )}
             {!loading && activeIncidents.length > visibleIncidents.length && (
               <tr>
-                <td className="empty-state" colSpan={3}>
+                <td className="empty-state" colSpan={5}>
                   Se muestran las primeras {visibleIncidents.length} incidencias. Usa los filtros de Pedidos para revisar el resto.
                 </td>
               </tr>

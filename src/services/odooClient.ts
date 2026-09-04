@@ -601,6 +601,7 @@ export const odooClient = {
       channel?: string;
       tracking?: string;
       pickingId?: string;
+      pickingName?: string;
       pickingState?: string;
       labelCreatedAt?: string;
       reason: string;

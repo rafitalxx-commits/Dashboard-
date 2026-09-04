@@ -25,7 +25,7 @@ import { registerPrestashopRoutes } from "./backend/prestashop/routes";
 import { registerPublicTrackingRoutes } from "./backend/publicTracking/routes";
 import { registerWarehouseWorkersRoutes } from "./backend/warehouseWorkers/routes";
 import { registerExpeditionDestinationOverridesRoutes } from "./backend/expeditionDestinationOverrides/routes";
-import { isClosedOdooDelivery, isServiceOnlyOrder } from "./backend/odooDeliveryIncidentRules";
+import { isDeliveryIncidentStillPending, isServiceOnlyOrder } from "./backend/odooDeliveryIncidentRules";
 import { formatOdooMadrid } from "./backend/odooDateTime";
 import { createProductCatalog } from "./backend/products/catalog";
 import { createProductInventories } from "./backend/products/inventories";
@@ -311,6 +311,7 @@ type DeliveryValidationIncident = {
   channel?: string;
   tracking?: string;
   pickingId?: string;
+  pickingName?: string;
   pickingState?: string;
   labelCreatedAt?: string;
   reason: string;
@@ -5145,11 +5146,12 @@ async function runAutomaticDeliveryValidation(
       orderName: incident.orderName,
       client: order?.client,
       channel: order?.channel,
-      tracking: order?.sendcloud?.trackingNumber,
-      pickingId: order?.odooDeliveryValidation?.pickingId,
-      pickingState: order?.odooDeliveryValidation?.label,
+      tracking: incident.tracking ?? order?.sendcloud?.trackingNumber,
+      pickingId: incident.pickingId ?? order?.odooDeliveryValidation?.pickingId,
+      pickingName: incident.pickingName,
+      pickingState: incident.pickingState ?? order?.odooDeliveryValidation?.label,
       labelCreatedAt: order?.sendcloud?.rawStatus,
-      reason: classifyDeliveryIncidentReason(incident.reason),
+      reason: incident.reason,
       lastAttemptAt: now,
     } satisfies DeliveryValidationIncident;
   });
@@ -5204,31 +5206,11 @@ async function runAutomaticDeliveryValidation(
   };
 }
 
-function eligibleDashboardIncidentOrderIds(env: Record<string, string>, orders: OrdersCacheStore["orders"]) {
-  return new Set(getDashboardLabelStatuses(env, orders as OdooRecord[]).keys());
-}
-
-const DELIVERY_INCIDENT_LOGIC_VERSION = 2;
-
 function pruneIneligibleDeliveryIncidents(env: Record<string, string>) {
-  const store = readOrdersCache(env);
-  // Estas incidencias se crearon con la lógica antigua de Sendcloud. No son
-  // reintentos pendientes del flujo actual, así que se descartan una sola vez.
-  if ((store.deliveryIncidentLogicVersion ?? 0) < DELIVERY_INCIDENT_LOGIC_VERSION) {
-    const next = {
-      ...store,
-      deliveryIncidentLogicVersion: DELIVERY_INCIDENT_LOGIC_VERSION,
-      incidents: [],
-    };
-    writeOrdersCache(env, next);
-    return next;
-  }
-  const eligibleOrderIds = eligibleDashboardIncidentOrderIds(env, store.orders);
-  const incidents = store.incidents.filter((incident) => eligibleOrderIds.has(incident.orderId));
-  if (incidents.length !== store.incidents.length) {
-    writeOrdersCache(env, { ...store, incidents });
-  }
-  return { ...store, incidents };
+  // Una incidencia es trabajo operativo pendiente y no depende de que el
+  // pedido siga dentro de la ventana del cache ni de que su etiqueta continúe
+  // visible. Solo reconcileDeliveryIncidents puede cerrarla al comprobar Odoo.
+  return readOrdersCache(env);
 }
 
 // Odoo es la fuente de verdad: una entrega hecha o cancelada no puede seguir
@@ -5278,9 +5260,12 @@ async function reconcileDeliveryIncidents(env: Record<string, string>) {
     const incidents = store.incidents.filter((incident) => {
       if (incident.resolvedAt) return true;
       const pickingState = stateByPickingId.get(Number(incident.pickingId));
-      if (isClosedOdooDelivery(pickingState)) return false;
       const hasPicking = Number.isInteger(Number(incident.pickingId)) && Number(incident.pickingId) > 0;
-      return hasPicking || !isServiceOnlyOrder(linesByOrderId.get(incident.orderId) ?? [], productTypes);
+      return isDeliveryIncidentStillPending(
+        pickingState,
+        hasPicking,
+        isServiceOnlyOrder(linesByOrderId.get(incident.orderId) ?? [], productTypes),
+      );
     });
     if (incidents.length !== store.incidents.length) {
       const next = { ...store, incidents, updatedAt: new Date().toISOString() };
@@ -5328,11 +5313,13 @@ function recordManualDeliveryValidationAudit(
       id: createDeliveryIncidentId(incident.orderId, incident.reason),
       orderId: incident.orderId,
       orderName: incident.orderName,
-      pickingId: order?.odooDeliveryValidation?.pickingId,
-      tracking: order?.sendcloud?.trackingNumber,
+      pickingId: incident.pickingId ?? order?.odooDeliveryValidation?.pickingId,
+      pickingName: incident.pickingName,
+      pickingState: incident.pickingState,
+      tracking: incident.tracking ?? order?.sendcloud?.trackingNumber,
       client: order?.client,
       channel: order?.channel,
-      reason: classifyDeliveryIncidentReason(incident.reason),
+      reason: incident.reason,
       lastAttemptAt: now,
     };
   });
@@ -5467,7 +5454,11 @@ async function retryDeliveryIncidents(env: Record<string, string>, incidentIds: 
     id: createDeliveryIncidentId(incident.orderId, incident.reason),
     orderId: incident.orderId,
     orderName: incident.orderName,
-    reason: classifyDeliveryIncidentReason(incident.reason),
+    pickingId: incident.pickingId,
+    pickingName: incident.pickingName,
+    pickingState: incident.pickingState,
+    tracking: incident.tracking,
+    reason: incident.reason,
     lastAttemptAt: now,
   }));
   const audit: DeliveryValidationAuditEntry[] = [
@@ -6446,7 +6437,15 @@ async function validateOdooDeliveries(
 
   const validated: Array<{ orderId: number; orderName?: string; pickingId: number }> =
     [];
-  const incidents: Array<{ orderId: number; orderName?: string; reason: string }> = [];
+  const incidents: Array<{
+    orderId: number;
+    orderName?: string;
+    pickingId?: string;
+    pickingName?: string;
+    pickingState?: string;
+    tracking?: string;
+    reason: string;
+  }> = [];
   const seenIdempotencyKeys = new Set<string>();
 
   for (const order of orders) {
@@ -6459,17 +6458,22 @@ async function validateOdooDeliveries(
         ? buildGeneiLabelValidationStatus(order, options.tracking)
         : sendcloudByReference.get(getExternalOrderRef(order));
     const precheck = buildOdooDeliveryValidation(order, relatedPickings, sendcloud);
+    const incidentDetails = (reason: string, picking = relatedPickings[0]) => ({
+      orderId: order.id,
+      orderName: order.name,
+      pickingId: picking ? String(picking.id) : precheck.pickingId,
+      pickingName: picking?.name,
+      pickingState: picking?.state,
+      tracking: sendcloud?.trackingNumber,
+      reason,
+    });
     const idempotencyKey = createDeliveryValidationIdempotencyKey(
       `#${order.id}`,
       precheck.pickingId,
       sendcloud?.trackingNumber,
     );
     if (seenIdempotencyKeys.has(idempotencyKey)) {
-      incidents.push({
-        orderId: order.id,
-        orderName: order.name,
-        reason: "Validacion duplicada ignorada por idempotencia.",
-      });
+      incidents.push(incidentDetails("Validacion duplicada ignorada por idempotencia."));
       continue;
     }
     seenIdempotencyKeys.add(idempotencyKey);
@@ -6482,11 +6486,7 @@ async function validateOdooDeliveries(
       continue;
     }
     if (!precheck.canValidate || relatedPickings.length !== 1) {
-      incidents.push({
-        orderId: order.id,
-        orderName: order.name,
-        reason: precheck.reason,
-      });
+      incidents.push(incidentDetails(precheck.reason));
       continue;
     }
 
@@ -6508,13 +6508,9 @@ async function validateOdooDeliveries(
       { fields: ["id", "state", "date_done"] },
     )) as OdooPickingRecord[];
     if (reservedPicking?.state !== "assigned") {
-      incidents.push({
-        orderId: order.id,
-        orderName: order.name,
-        reason: `Odoo dejo el albaran en estado ${translatePickingState(
+      incidents.push(incidentDetails(`Odoo dejo el albaran en estado ${translatePickingState(
           reservedPicking?.state,
-        )}; no se valida automaticamente.`,
-      });
+        )}; no se valida automaticamente.`, reservedPicking));
       continue;
     }
 
@@ -6530,12 +6526,9 @@ async function validateOdooDeliveries(
       if (isPackageNumberWizard(result)) {
         await processSinglePackageValidationWizard(config, uid, pickingId);
       } else {
-        incidents.push({
-          orderId: order.id,
-          orderName: order.name,
-          reason:
-            "Odoo requiere asistente de validacion/backorder; se deja como incidencia manual.",
-        });
+        incidents.push(incidentDetails(
+          "Odoo requiere asistente de validacion/backorder; se deja como incidencia manual.",
+        ));
         continue;
       }
     }
@@ -6551,13 +6544,9 @@ async function validateOdooDeliveries(
     if (donePicking?.state === "done") {
       validated.push({ orderId: order.id, orderName: order.name, pickingId });
     } else {
-      incidents.push({
-        orderId: order.id,
-        orderName: order.name,
-        reason: `Odoo no dejo el albaran como hecho; estado actual ${translatePickingState(
+      incidents.push(incidentDetails(`Odoo no dejo el albaran como hecho; estado actual ${translatePickingState(
           donePicking?.state,
-        )}.`,
-      });
+        )}.`, donePicking));
     }
   }
 
