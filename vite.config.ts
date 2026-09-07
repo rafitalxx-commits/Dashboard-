@@ -1182,6 +1182,15 @@ function odooReadOnlyApi(env: Record<string, string>) {
               );
               return;
             }
+            if (request.method === "DELETE") {
+              const input = await readJsonBody<{ receptionId?: string }>(request);
+              sendJson(
+                response,
+                200,
+                receptionSessions.cancel(String(input.receptionId ?? "").trim()),
+              );
+              return;
+            }
             sendJson(response, 405, { message: "Metodo no permitido" });
           } catch (error) {
             sendJson(response, 400, {

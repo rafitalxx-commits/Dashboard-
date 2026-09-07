@@ -130,6 +130,8 @@
 .inventory-active-session > span { display: grid; gap: 2px; }
 .inventory-active-session small { font-size: 12px; }
 .inventory-active-session button { margin-left: auto; }
+.inventory-active-session .inventory-release-session { background: transparent; border: 1px solid #9bcbb8; color: #17634e; margin-left: auto; }
+.inventory-active-session .inventory-release-session + button { margin-left: 0; }
 .inventory-reception-drawer .inventory-reception-line-main { grid-template-columns: 48px minmax(220px, 1fr) minmax(190px, auto) minmax(150px, auto); }
 .inventory-line-metrics { display: flex; flex-direction: column; gap: 5px; text-align: right; }
 .inventory-line-metrics span { color: #74858d; font-size: 12px; }

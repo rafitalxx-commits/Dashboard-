@@ -95,5 +95,16 @@ export function createReceptionSessions(options: { dataDir?: string } = {}) {
     return store.sessions[index];
   };
 
-  return { list, start, complete };
+  const cancel = (receptionId: string) => {
+    const store = read();
+    const index = store.sessions.findIndex(
+      (session) => session.receptionId === receptionId && session.status === "in_progress",
+    );
+    if (index < 0) throw new Error("No hay una sesión activa para liberar");
+    const [session] = store.sessions.splice(index, 1);
+    write(store);
+    return session;
+  };
+
+  return { list, start, complete, cancel };
 }

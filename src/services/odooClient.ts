@@ -843,6 +843,18 @@ export const odooClient = {
     }
     return payload;
   },
+  async cancelReceptionSession(receptionId: string) {
+    const response = await fetch(receptionsApiPath("/api/odoo/reception-sessions"), {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ receptionId }),
+    });
+    const payload = await readJson<ReceptionSession & { message?: string }>(response);
+    if (!response.ok) {
+      throw new Error(payload.message ?? "No se pudo liberar la recepción");
+    }
+    return payload;
+  },
   async getProducts() {
     return products;
   },
