@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProductLocations, DISPATCH_PENDING_LOCATION } from "../backend/products/locations.ts";
-import { createLocationPlan, isLocationPlanBalanced } from "../src/modules/receptions/locationPlan.ts";
+import { createLocationPlan, isLocationPlanBalanced, updateReceivedQuantity } from "../src/modules/receptions/locationPlan.ts";
 import type { InventoryReceptionLine } from "../src/services/odooTypes.ts";
 
 const testDir = mkdtempSync(join(tmpdir(), "dashboard-reception-phase-4-"));
@@ -60,6 +60,21 @@ try {
   assert.equal(isLocationPlanBalanced(receivedPlan, activeLocations.map((item) => item.code)), true);
   assert.equal(receivedPlan.receivedQty, 1);
   assert.equal(receivedPlan.allocations[0]?.location, "A101");
+
+  const zeroLinePlan = updateReceivedQuantity(dispatchPlan, 0);
+  assert.equal(zeroLinePlan.receivedQty, 0);
+  assert.deepEqual(zeroLinePlan.allocations, []);
+  assert.equal(isLocationPlanBalanced(zeroLinePlan, activeLocations.map((item) => item.code)), true);
+
+  const partialSourcePlan = {
+    ...receivedPlan,
+    receivedQty: 2,
+    allocations: [{ ...receivedPlan.allocations[0], quantity: 2 }],
+  };
+  const oneReceivedPlan = updateReceivedQuantity(partialSourcePlan, 1);
+  assert.equal(oneReceivedPlan.receivedQty, 1);
+  assert.equal(oneReceivedPlan.allocations[0]?.quantity, 1);
+  assert.equal(isLocationPlanBalanced(oneReceivedPlan, activeLocations.map((item) => item.code)), true);
 } finally {
   rmSync(testDir, { recursive: true, force: true });
 }

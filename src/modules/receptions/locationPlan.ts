@@ -29,6 +29,20 @@ export function allocatedQuantity(allocations: ReceptionLocationAllocation[]) {
   return allocations.reduce((total, allocation) => total + normalizedQuantity(allocation.quantity), 0);
 }
 
+export function updateReceivedQuantity(
+  plan: ReceptionLocationPlan,
+  value: unknown,
+): ReceptionLocationPlan {
+  const receivedQty = normalizedQuantity(value);
+  const allocations = receivedQty === 0
+    ? []
+    : plan.allocations.length === 1
+      ? [{ ...plan.allocations[0], quantity: receivedQty }]
+      : plan.allocations;
+
+  return { ...plan, receivedQty, allocations, ready: false };
+}
+
 export function isLocationPlanBalanced(
   plan: ReceptionLocationPlan,
   activeLocationCodes?: Iterable<string>,
