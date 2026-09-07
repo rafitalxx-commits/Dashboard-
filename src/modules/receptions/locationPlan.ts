@@ -20,7 +20,7 @@ export function createLocationPlan(
         : []
       : line.preferredLocation && activeCodes.has(line.preferredLocation)
         ? [{ id: `${line.id}-preferred`, location: line.preferredLocation, quantity: line.pendingQty }]
-        : [],
+        : [{ id: `${line.id}-location`, location: "", quantity: line.pendingQty }],
     ready: false,
   };
 }

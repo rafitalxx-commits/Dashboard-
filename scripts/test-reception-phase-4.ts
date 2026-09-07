@@ -61,6 +61,13 @@ try {
   assert.equal(receivedPlan.receivedQty, 1);
   assert.equal(receivedPlan.allocations[0]?.location, "A101");
 
+  const productWithoutLocation = { ...replenishment, id: "P04875-no-location", preferredLocation: undefined };
+  const manualPlan = createLocationPlan(productWithoutLocation, activeLocations);
+  assert.equal(manualPlan.allocations.length, 1);
+  assert.equal(manualPlan.allocations[0]?.location, "");
+  assert.equal(manualPlan.allocations[0]?.quantity, 1);
+  assert.equal(isLocationPlanBalanced(manualPlan, activeLocations.map((item) => item.code)), false);
+
   const zeroLinePlan = updateReceivedQuantity(dispatchPlan, 0);
   assert.equal(zeroLinePlan.receivedQty, 0);
   assert.deepEqual(zeroLinePlan.allocations, []);
