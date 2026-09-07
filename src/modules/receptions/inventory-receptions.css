@@ -130,6 +130,9 @@
 .inventory-session-gate button, .inventory-active-session button { align-items: center; background: #176d58; border: 0; border-radius: 8px; color: #fff; cursor: pointer; display: flex; font-weight: 800; gap: 6px; min-height: 38px; padding: 0 12px; }
 .inventory-session-gate button:disabled, .inventory-active-session button:disabled { opacity: .45; }
 .inventory-session-gate button.text { background: transparent; color: #526b76; }
+.inventory-session-gate form { align-items: end; display: flex; gap: 8px; }
+.inventory-drawer-header-actions { display: flex; gap: 6px; }
+.inventory-drawer-header-actions button { position: static !important; }
 .inventory-active-session { background: #e8f7ef; color: #17634e; }
 .inventory-active-session > span { display: grid; gap: 2px; }
 .inventory-active-session small { font-size: 12px; }
@@ -168,6 +171,14 @@
 .inventory-validation-review label { align-items: center; display: flex; gap: 8px; }
 .inventory-validation-review > div { display: flex; gap: 9px; justify-content: flex-end; }
 .inventory-simulation-warning { background: #fff4d8; border-radius: 8px; color: #745616; font-size: 12px; padding: 9px 11px; }
+.inventory-validation-actions { display: flex; gap: 8px; }
+.inventory-validation-actions .danger { border-color: #ddb7b2; color: #873b34; }
+.inventory-validation-review > label { display: grid; gap: 6px; font-weight: 750; }
+.inventory-validation-review > label input { border: 1px solid #c7d7cf; border-radius: 8px; font: inherit; min-height: 40px; padding: 0 10px; }
+.inventory-dispatch-option { align-items: center; background: #fff4df; border: 1px solid #ead2a4; border-radius: 9px; color: #75520e; display: flex; gap: 12px; justify-content: space-between; padding: 10px 12px; }
+.inventory-dispatch-option span { font-size: 12px; }
+.inventory-dispatch-option strong { display: block; }
+.inventory-dispatch-option button { background: #fff; border: 1px solid #d9b873; border-radius: 7px; color: #75520e; cursor: pointer; font-weight: 800; min-height: 36px; }
 
 @media (max-width: 900px) {
   .inventory-receptions-kpis { grid-template-columns: 1fr 1fr; }
@@ -211,6 +222,7 @@
   .inventory-drawer-summary .inventory-receipt-metrics, .inventory-active-session button { margin-left: 0; }
   .inventory-session-gate > div { grid-template-columns: 22px 1fr; }
   .inventory-session-gate label, .inventory-session-gate button { width: 100%; }
+  .inventory-session-gate form, .inventory-validation-actions, .inventory-dispatch-option { align-items: stretch; flex-direction: column; }
   .inventory-reception-drawer .inventory-reception-line-main { padding: 14px 16px; }
   .inventory-line-metrics { gap: 7px; }
   .inventory-reception-validation { align-items: stretch; flex-direction: column; padding: 16px; }
