@@ -20,10 +20,7 @@ import type {
 } from "./odooTypes";
 
 type DashboardUserRole = "viewer" | "printer" | "admin";
-const receptionsApiPath = (path: string) =>
-  typeof window !== "undefined" && window.location.pathname.startsWith("/inventory-lab/")
-    ? `/inventory-lab${path}`
-    : path;
+const receptionsApiPath = (path: string) => path;
 type DashboardPermission =
   | "dashboard"
   | "tasks"
@@ -97,9 +94,9 @@ async function readJson<T = any>(response: Response): Promise<T> {
   }
 }
 const productsApi = (path = "") =>
-  `${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/odoo/products${path}`;
+  `/api/odoo/products${path}`;
 const inventoriesApi = () =>
-  `${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/odoo/inventories`;
+  "/api/odoo/inventories";
 type DashboardCalendarEvent = {
   id: string;
   source: CalendarAccountId;
