@@ -111,9 +111,9 @@ No se implementarán supuestos sobre rutas MTO, grupos de aprovisionamiento u or
 
 ## Límites vigentes
 
-- `ODOO_WRITE_ENABLED=false` durante los puntos 1 a 8.
-- No validar recepciones, modificar PO, crear compras ni cambiar stock en esta fase.
-- No desplegar a producción sin PR, validación y aprobación expresa de Rafa.
+- La rama LAB incorpora el contrato de escritura de recepciones, pero no está fusionada ni desplegada en producción.
+- Las rutas de validación y cancelación exigen sesión autenticada, permiso `products` y permiso explícito `odooWrite`.
+- No desplegar a producción sin PR, validación funcional y aprobación expresa de Rafa.
 - Las credenciales viven en `.env.local` o en el entorno del servidor y nunca se añaden a Git.
 
 ## Diseño de auditoría móvil (LAB)
@@ -122,7 +122,7 @@ La lista de recepciones se mantiene compacta: pedido de compra, proveedor, refer
 
 El operario debe identificarse mediante un QR activo configurado en el Dashboard antes de repartir ubicaciones o editar cantidades. Para una reposición sin ubicación, la primera ubicación confirmada se guarda como preferente solo en Dashboard; no cambia el stock ni la ficha de producto de Odoo.
 
-Una línea Bajo pedido muestra el pedido de venta, avisa de que no debe almacenarse y enlaza la referencia a Expediciones en modo manual. Un reparto con una cantidad inferior a la pendiente se señala como parcial pendiente de forma local. La creación del backorder o la validación de una entrega parcial real queda para la fase de escrituras en Odoo, con revisión y aprobación explícita.
+Una línea Bajo pedido muestra el pedido de venta, avisa de que no debe almacenarse y enlaza la referencia a Expediciones en modo manual. Un reparto con una cantidad inferior a la pendiente se señala como parcial. Al validar, Dashboard escribe las cantidades comprobadas en los movimientos y utiliza el asistente nativo de Odoo para crear o descartar el backorder según la opción elegida.
 
 ## Catálogo único de ubicaciones (LAB)
 
@@ -130,4 +130,4 @@ Una línea Bajo pedido muestra el pedido de venta, avisa de que no debe almacena
 
 La asignación de un producto, el escáner, los inventarios y los repartos de recepción solo aceptan entradas físicas activas del catálogo. Escanear un código desconocido o inactivo no lo crea. `Pendiente de envío` es una entrada operativa activa del mismo catálogo y se propone por defecto para las líneas Bajo pedido.
 
-Los repartos de recepción siguen siendo locales. Una línea puede guardarse con cero unidades y queda marcada como pendiente local; una cantidad menor que la pendiente queda marcada como parcial local. Estas acciones no crean backorders, entregas, movimientos ni cambios de stock en Odoo.
+Los repartos se editan localmente hasta pulsar `Validar`. Una línea puede guardarse con cero unidades y queda marcada como pendiente local; una cantidad menor queda marcada como parcial. Solo la validación confirmada envía cantidades a Odoo, resuelve el backorder y bloquea la edición; cerrar el panel antes de validar conserva el borrador sin tocar Odoo.

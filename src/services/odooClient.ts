@@ -844,6 +844,26 @@ export const odooClient = {
     }
     return payload;
   },
+  async validateInventoryReception(input: {
+    receptionId: string;
+    createBackorder: boolean;
+    lines: Array<{ lineId: string; productId?: string; quantity: number }>;
+  }) {
+    const response = await fetch(receptionsApiPath("/api/odoo/inventory-receptions/validate"), {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
+    });
+    const payload = await readJson<{ ok?: boolean; receptionRef?: string; state?: string; dateDone?: string; pendingReception?: { id: string; ref?: string; state?: string }; message?: string }>(response);
+    if (!response.ok || !payload.ok) throw new Error(payload.message ?? "No se pudo validar la recepción en Odoo");
+    return payload;
+  },
+  async cancelInventoryReception(receptionId: string, reason: string) {
+    const response = await fetch(receptionsApiPath("/api/odoo/inventory-receptions/cancel"), {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ receptionId, reason }),
+    });
+    const payload = await readJson<{ ok?: boolean; receptionRef?: string; state?: string; message?: string }>(response);
+    if (!response.ok || !payload.ok) throw new Error(payload.message ?? "No se pudo cancelar la recepción en Odoo");
+    return payload;
+  },
   async getReceptionSessions() {
     const response = await fetch(receptionsApiPath("/api/odoo/reception-sessions"));
     const payload = await readJson<{ sessions?: ReceptionSession[]; message?: string }>(response);

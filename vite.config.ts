@@ -1256,7 +1256,32 @@ function odooReadOnlyApi(env: Record<string, string>) {
             sendJson(response, 401, { message: "Login requerido" });
             return;
           }
-          if (request.method !== "GET") {
+          const url = new URL(request.url ?? "/", "http://local");
+          if (url.pathname === "/validate" && request.method === "POST") {
+            if (!user.permissions.includes("odooWrite")) {
+              sendJson(response, 403, { message: "Sin permiso para escribir en Odoo" });
+              return;
+            }
+            try {
+              sendJson(response, 200, await validateOdooInventoryReception(env, await readJsonBody(request)));
+            } catch (error) {
+              sendJson(response, 400, { message: error instanceof Error ? error.message : "No se pudo validar la recepción en Odoo" });
+            }
+            return;
+          }
+          if (url.pathname === "/cancel" && request.method === "POST") {
+            if (!user.permissions.includes("odooWrite")) {
+              sendJson(response, 403, { message: "Sin permiso para escribir en Odoo" });
+              return;
+            }
+            try {
+              sendJson(response, 200, await cancelOdooInventoryReception(env, await readJsonBody(request)));
+            } catch (error) {
+              sendJson(response, 400, { message: error instanceof Error ? error.message : "No se pudo cancelar la recepción en Odoo" });
+            }
+            return;
+          }
+          if (url.pathname !== "/" || request.method !== "GET") {
             sendJson(response, 405, { message: "Metodo no permitido" });
             return;
           }
@@ -6040,6 +6065,102 @@ async function getOdooDashboardFull(
   };
 }
 
+type InventoryReceptionWriteLine = { lineId?: unknown; productId?: unknown; quantity?: unknown };
+
+async function validateOdooInventoryReception(env: Record<string, string>, raw: unknown) {
+  const input = (raw && typeof raw === "object" ? raw : {}) as {
+    receptionId?: unknown;
+    createBackorder?: unknown;
+    lines?: InventoryReceptionWriteLine[];
+  };
+  const pickingId = Number(input.receptionId);
+  if (!Number.isInteger(pickingId) || pickingId <= 0) throw new Error("Recepción Odoo no válida");
+  if (!Array.isArray(input.lines) || input.lines.length === 0) throw new Error("La recepción no contiene cantidades para validar");
+  const createBackorder = input.createBackorder === true;
+  const config = getOdooConfig(env);
+  if (!config.url || !config.database || !config.username || !config.apiKey) throw new Error("Faltan variables de conexión con Odoo");
+  const uid = await authenticate(config);
+  const [picking] = (await executeKw(config, uid, "stock.picking", "read", [[pickingId]], {
+    fields: ["id", "name", "state", "picking_type_code", "location_id", "location_dest_id", "move_ids_without_package"],
+  })) as Array<OdooPickingRecord & { location_id?: false | [number, string] }>;
+  if (!picking || picking.picking_type_code !== "incoming") throw new Error("El albarán no es una recepción de entrada");
+  if (picking.state === "done") return { ok: true, idempotent: true, receptionRef: picking.name, state: "done" };
+  if (picking.state === "cancel") throw new Error("La recepción está cancelada en Odoo");
+
+  const existingIds = new Set(picking.move_ids_without_package ?? []);
+  const requestedExisting = input.lines.filter((line) => Number.isInteger(Number(line.lineId)));
+  const requestedIds = new Set(requestedExisting.map((line) => Number(line.lineId)));
+  if (requestedExisting.length !== requestedIds.size || existingIds.size !== requestedIds.size || [...existingIds].some((id) => !requestedIds.has(id))) {
+    throw new Error("Las líneas han cambiado en Odoo. Actualiza la recepción antes de validar");
+  }
+  const quantities = input.lines.map((line) => ({ ...line, quantity: Number(line.quantity) }));
+  if (quantities.some((line) => !Number.isFinite(line.quantity) || line.quantity < 0)) throw new Error("Hay cantidades recibidas no válidas");
+  if (!quantities.some((line) => line.quantity > 0)) throw new Error("Indica al menos una unidad recibida");
+
+  const existingMoves = (await executeKw(config, uid, "stock.move", "read", [[...existingIds]], {
+    fields: ["id", "product_id", "product_uom_qty", "product_uom", "state"],
+  })) as OdooMoveRecord[];
+  for (const line of quantities.filter((item) => Number.isInteger(Number(item.lineId)))) {
+    const moveId = Number(line.lineId);
+    const move = existingMoves.find((item) => item.id === moveId);
+    if (!move || move.state === "done" || move.state === "cancel") throw new Error(`La línea ${moveId} ya no se puede modificar`);
+    await executeInventoryReceptionWrite(config, uid, "stock.move", "write", [[moveId], { quantity: line.quantity, picked: line.quantity > 0 }]);
+  }
+
+  const sourceId = getRelationId(picking.location_id);
+  const destinationId = getRelationId(picking.location_dest_id);
+  for (const line of quantities.filter((item) => !Number.isInteger(Number(item.lineId)) && item.quantity > 0)) {
+    const productId = Number(line.productId);
+    if (!Number.isInteger(productId) || productId <= 0 || !sourceId || !destinationId) throw new Error("Producto inesperado no válido");
+    const [product] = (await executeKw(config, uid, "product.product", "read", [[productId]], { fields: ["id", "display_name", "uom_id"] })) as Array<ProductRecord & { uom_id?: false | [number, string] }>;
+    const uomId = getRelationId(product?.uom_id);
+    if (!product || !uomId) throw new Error("No se pudo comprobar el producto inesperado en Odoo");
+    await executeInventoryReceptionWrite(config, uid, "stock.move", "create", [{
+      name: cleanText(product.display_name) || `Producto ${productId}`,
+      picking_id: pickingId,
+      product_id: productId,
+      product_uom: uomId,
+      product_uom_qty: line.quantity,
+      quantity: line.quantity,
+      picked: true,
+      location_id: sourceId,
+      location_dest_id: destinationId,
+    }]);
+  }
+
+  const context = { button_validate_picking_ids: [pickingId], active_id: pickingId, active_ids: [pickingId], active_model: "stock.picking" };
+  const result = await executeInventoryReceptionWrite(config, uid, "stock.picking", "button_validate", [[pickingId]], { context });
+  if (result && typeof result === "object") {
+    const model = (result as { res_model?: string }).res_model;
+    if (model !== "stock.backorder.confirmation") throw new Error(`Odoo requiere un asistente no soportado: ${model || "desconocido"}`);
+    const wizardId = (await executeInventoryReceptionWrite(config, uid, "stock.backorder.confirmation", "create", [{ pick_ids: [[4, pickingId]] }], { context })) as number;
+    await executeInventoryReceptionWrite(config, uid, "stock.backorder.confirmation", createBackorder ? "process" : "process_cancel_backorder", [[wizardId]], { context });
+  }
+  const [finished] = (await executeKw(config, uid, "stock.picking", "read", [[pickingId]], { fields: ["id", "name", "state", "date_done"] })) as OdooPickingRecord[];
+  if (finished?.state !== "done") throw new Error(`Odoo no confirmó la recepción; estado ${finished?.state || "desconocido"}`);
+  const backorders = createBackorder ? (await executeKw(config, uid, "stock.picking", "search_read", [[["backorder_id", "=", pickingId], ["state", "not in", ["done", "cancel"]]]], { fields: ["id", "name", "state"], order: "id desc", limit: 1 })) as OdooPickingRecord[] : [];
+  return { ok: true, idempotent: false, receptionRef: finished.name, state: finished.state, dateDone: finished.date_done, pendingReception: backorders[0] ? { id: String(backorders[0].id), ref: backorders[0].name, state: backorders[0].state } : undefined };
+}
+
+async function cancelOdooInventoryReception(env: Record<string, string>, raw: unknown) {
+  const input = (raw && typeof raw === "object" ? raw : {}) as { receptionId?: unknown; reason?: unknown };
+  const pickingId = Number(input.receptionId);
+  const reason = cleanText(input.reason);
+  if (!Number.isInteger(pickingId) || pickingId <= 0) throw new Error("Recepción Odoo no válida");
+  if (!reason) throw new Error("Indica el motivo de cancelación");
+  const config = getOdooConfig(env);
+  if (!config.url || !config.database || !config.username || !config.apiKey) throw new Error("Faltan variables de conexión con Odoo");
+  const uid = await authenticate(config);
+  const [picking] = (await executeKw(config, uid, "stock.picking", "read", [[pickingId]], { fields: ["id", "name", "state", "picking_type_code"] })) as OdooPickingRecord[];
+  if (!picking || picking.picking_type_code !== "incoming") throw new Error("El albarán no es una recepción de entrada");
+  if (picking.state === "cancel") return { ok: true, idempotent: true, receptionRef: picking.name, state: "cancel" };
+  if (picking.state === "done") throw new Error("No se puede cancelar una recepción ya validada");
+  await executeInventoryReceptionWrite(config, uid, "stock.picking", "action_cancel", [[pickingId]]);
+  const [cancelled] = (await executeKw(config, uid, "stock.picking", "read", [[pickingId]], { fields: ["id", "name", "state"] })) as OdooPickingRecord[];
+  if (cancelled?.state !== "cancel") throw new Error("Odoo no confirmó la cancelación");
+  return { ok: true, idempotent: false, receptionRef: cancelled.name, state: cancelled.state, reason };
+}
+
 async function getOdooInventoryReceptions(
   env: Record<string, string>,
   preferredLocations = new Map<number, string>(),
@@ -7526,6 +7647,42 @@ async function executeKwStrictWrite(
   }
 
   throw new Error("Operacion Odoo bloqueada: escritura no permitida");
+}
+
+async function executeInventoryReceptionWrite(
+  config: ReturnType<typeof getOdooConfig>, uid: number, model: string, method: string,
+  args: unknown[], kwargs: Record<string, unknown> = {},
+) {
+  const ids = Array.isArray(args[0]) ? args[0] : [];
+  const validIds = ids.length > 0 && ids.every((id) => Number.isInteger(id) && Number(id) > 0);
+  if (model === "stock.picking" && ["button_validate", "action_cancel"].includes(method) && validIds) {
+    return rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
+  }
+  if (model === "stock.move" && method === "write" && validIds) {
+    const values = args[1];
+    const allowed = new Set(["quantity", "picked"]);
+    if (!values || typeof values !== "object" || Array.isArray(values) || Object.keys(values).some((field) => !allowed.has(field))) throw new Error("Operación bloqueada: campos de recepción no permitidos");
+    const quantity = Number((values as { quantity?: unknown }).quantity);
+    if (!Number.isFinite(quantity) || quantity < 0 || typeof (values as { picked?: unknown }).picked !== "boolean") throw new Error("Operación bloqueada: cantidad de recepción no válida");
+    return rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
+  }
+  if (model === "stock.move" && method === "create") {
+    const values = args[0];
+    const allowed = new Set(["name", "picking_id", "product_id", "product_uom", "product_uom_qty", "quantity", "picked", "location_id", "location_dest_id"]);
+    if (!values || typeof values !== "object" || Array.isArray(values) || Object.keys(values).some((field) => !allowed.has(field))) throw new Error("Operación bloqueada: producto inesperado no permitido");
+    const record = values as Record<string, unknown>;
+    if (!["picking_id", "product_id", "product_uom", "location_id", "location_dest_id"].every((field) => Number.isInteger(record[field]) && Number(record[field]) > 0) || Number(record.quantity) <= 0 || record.picked !== true) throw new Error("Operación bloqueada: producto inesperado no válido");
+    return rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
+  }
+  if (model === "stock.backorder.confirmation" && method === "create") {
+    const values = args[0] as { pick_ids?: unknown } | undefined;
+    if (!values || !Array.isArray(values.pick_ids)) throw new Error("Operación bloqueada: asistente de parcial no válido");
+    return rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
+  }
+  if (model === "stock.backorder.confirmation" && ["process", "process_cancel_backorder"].includes(method) && validIds) {
+    return rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
+  }
+  throw new Error("Operación Odoo de recepción bloqueada");
 }
 
 async function markReservedPickingMovesPicked(
