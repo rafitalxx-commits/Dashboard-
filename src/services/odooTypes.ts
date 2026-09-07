@@ -433,10 +433,26 @@ export type PendingReceipt = {
   supplier: string;
   operatorId: string;
   operatorName: string;
+  pendingReceptionRef: string;
+  requiresNewOperator: true;
   status: "pending" | "completed";
   lines: Array<{ lineId: string; productId?: string; sku: string; name: string; orderedQty: number; receivedQty: number; pendingQty: number }>;
   createdAt: string;
   updatedAt: string;
+};
+
+export type ReceptionHistory = {
+  id: string;
+  receptionId: string;
+  receptionRef: string;
+  purchaseRef: string;
+  supplier: string;
+  operatorId: string;
+  operatorName: string;
+  outcome: "total" | "partial_backorder" | "partial_no_backorder" | "cancelled";
+  pendingReceptionRef?: string;
+  lines: PendingReceipt["lines"];
+  createdAt: string;
 };
 
 export type ReceptionOperator = {
@@ -463,7 +479,7 @@ export type InventoryReception = {
   supplier: string;
   scheduledDate: string;
   state: string;
-  status: "Preparada" | "Esperando" | "Borrador" | "Otra";
+  status: "Esperando" | "Pendiente" | "Borrador" | "Otra";
   destination: string;
   lines: InventoryReceptionLine[];
   expectedQty: number;

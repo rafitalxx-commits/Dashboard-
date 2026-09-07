@@ -83,6 +83,7 @@ type OdooPickingRecord = {
   purchase_id?: false | [number, string];
   partner_id?: false | [number, string];
   location_dest_id?: false | [number, string];
+  backorder_id?: false | [number, string];
 };
 
 type OdooMoveRecord = {
@@ -1184,6 +1185,19 @@ function odooReadOnlyApi(env: Record<string, string>) {
             if (request.method === "POST") { sendJson(response, 201, pendingReceipts.save(await readJsonBody(request))); return; }
             sendJson(response, 405, { message: "Metodo no permitido" });
           } catch (error) { sendJson(response, 400, { message: error instanceof Error ? error.message : "No se pudo guardar el pedido pendiente" }); }
+        },
+      );
+
+      server.middlewares.use(
+        "/api/odoo/reception-history",
+        async (request, response) => {
+          const user = auth.getSessionUser(request.headers.cookie);
+          if (!user || !user.permissions.includes("products")) { sendJson(response, 401, { message: "Login requerido" }); return; }
+          try {
+            if (request.method === "GET") { sendJson(response, 200, { entries: pendingReceipts.listHistory() }); return; }
+            if (request.method === "POST") { sendJson(response, 201, pendingReceipts.saveHistory(await readJsonBody(request))); return; }
+            sendJson(response, 405, { message: "Metodo no permitido" });
+          } catch (error) { sendJson(response, 400, { message: error instanceof Error ? error.message : "No se pudo guardar el historial" }); }
         },
       );
 
@@ -6060,6 +6074,7 @@ async function getOdooInventoryReceptions(
         "state",
         "scheduled_date",
         "location_dest_id",
+        "backorder_id",
         "move_ids_without_package",
       ],
       order: "scheduled_date asc, id desc",
@@ -6234,9 +6249,9 @@ async function getOdooInventoryReceptions(
     });
     const state = picking.state || "draft";
     const status =
-      state === "assigned"
-        ? "Preparada"
-        : state === "waiting" || state === "confirmed"
+      getRelationId(picking.backorder_id)
+        ? "Pendiente"
+        : state === "assigned" || state === "waiting" || state === "confirmed"
           ? "Esperando"
           : state === "draft"
             ? "Borrador"
@@ -6264,7 +6279,7 @@ async function getOdooInventoryReceptions(
     mode: "live" as const,
     receptions,
     total: receptions.length,
-    ready: receptions.filter((reception) => reception.status === "Preparada").length,
+    ready: receptions.filter((reception) => reception.status === "Pendiente").length,
     waiting: receptions.filter((reception) => reception.status === "Esperando").length,
     pendingLines: receptions.reduce(
       (total, reception) =>

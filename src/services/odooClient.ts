@@ -858,10 +858,22 @@ export const odooClient = {
     if (!response.ok) throw new Error(payload.message ?? "No se pudieron leer los pedidos pendientes por recibir");
     return payload.receipts ?? [];
   },
-  async savePendingReceipt(input: Omit<PendingReceipt, "id" | "status" | "createdAt" | "updatedAt">) {
+  async savePendingReceipt(input: Omit<PendingReceipt, "id" | "status" | "createdAt" | "updatedAt" | "pendingReceptionRef" | "requiresNewOperator">) {
     const response = await fetch(receptionsApiPath("/api/odoo/pending-receipts"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
     const payload = await readJson<{ receipt?: PendingReceipt; receipts?: PendingReceipt[]; message?: string }>(response);
     if (!response.ok || !payload.receipt) throw new Error(payload.message ?? "No se pudo guardar el pedido pendiente por recibir");
+    return payload;
+  },
+  async getReceptionHistory() {
+    const response = await fetch(receptionsApiPath("/api/odoo/reception-history"));
+    const payload = await readJson<{ entries?: import("./odooTypes").ReceptionHistory[]; message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo leer el historial de recepciones");
+    return payload.entries ?? [];
+  },
+  async saveReceptionHistory(input: Omit<import("./odooTypes").ReceptionHistory, "id" | "createdAt">) {
+    const response = await fetch(receptionsApiPath("/api/odoo/reception-history"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
+    const payload = await readJson<{ history?: import("./odooTypes").ReceptionHistory; entries?: import("./odooTypes").ReceptionHistory[]; message?: string }>(response);
+    if (!response.ok || !payload.history) throw new Error(payload.message ?? "No se pudo guardar el historial de recepción");
     return payload;
   },
   async startReceptionSession(input: {
