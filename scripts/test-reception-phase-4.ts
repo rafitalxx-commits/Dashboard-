@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProductLocations, DISPATCH_PENDING_LOCATION } from "../backend/products/locations.ts";
+import { createPendingReceipts } from "../backend/receptions/pendingReceipts.ts";
 import { createLocationPlan, isLocationPlanBalanced, updateReceivedQuantity } from "../src/modules/receptions/locationPlan.ts";
 import type { InventoryReceptionLine } from "../src/services/odooTypes.ts";
 
@@ -82,6 +83,15 @@ try {
   assert.equal(oneReceivedPlan.receivedQty, 1);
   assert.equal(oneReceivedPlan.allocations[0]?.quantity, 1);
   assert.equal(isLocationPlanBalanced(oneReceivedPlan, activeLocations.map((item) => item.code)), true);
+
+  const pendingReceipts = createPendingReceipts({ dataDir: testDir });
+  const saved = pendingReceipts.save({ receptionId: "115975", receptionRef: "ALM/IN/05245", purchaseRef: "P04924", supplier: "Proveedor", operatorId: "OP005", operatorName: "Rafa", lines: [
+    { lineId: "tebbde27", productId: "43004", sku: "TEBBDE27", name: "Producto 1", orderedQty: 40, receivedQty: 10, pendingQty: 30 },
+    { lineId: "te4517po", productId: "35645", sku: "TE4517PO", name: "Producto 2", orderedQty: 20, receivedQty: 5, pendingQty: 15 },
+  ] });
+  assert.equal(saved.receipt.purchaseRef, "P04924");
+  assert.deepEqual(saved.receipt.lines.map((line) => [line.sku, line.pendingQty]), [["TEBBDE27", 30], ["TE4517PO", 15]]);
+  assert.equal(pendingReceipts.list().length, 1);
 } finally {
   rmSync(testDir, { recursive: true, force: true });
 }

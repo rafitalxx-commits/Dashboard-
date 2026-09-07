@@ -17,6 +17,7 @@ import type {
   PurchaseReceptionsPayload,
   ReceptionOperator,
   ReceptionSession,
+  PendingReceipt,
 } from "./odooTypes";
 
 type DashboardUserRole = "viewer" | "printer" | "admin";
@@ -850,6 +851,18 @@ export const odooClient = {
       throw new Error(payload.message ?? "No se pudieron leer las sesiones de recepción");
     }
     return payload.sessions ?? [];
+  },
+  async getPendingReceipts() {
+    const response = await fetch(receptionsApiPath("/api/odoo/pending-receipts"));
+    const payload = await readJson<{ receipts?: PendingReceipt[]; message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudieron leer los pedidos pendientes por recibir");
+    return payload.receipts ?? [];
+  },
+  async savePendingReceipt(input: Omit<PendingReceipt, "id" | "status" | "createdAt" | "updatedAt">) {
+    const response = await fetch(receptionsApiPath("/api/odoo/pending-receipts"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
+    const payload = await readJson<{ receipt?: PendingReceipt; receipts?: PendingReceipt[]; message?: string }>(response);
+    if (!response.ok || !payload.receipt) throw new Error(payload.message ?? "No se pudo guardar el pedido pendiente por recibir");
+    return payload;
   },
   async startReceptionSession(input: {
     receptionId: string;

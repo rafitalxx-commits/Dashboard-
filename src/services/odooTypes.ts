@@ -425,6 +425,20 @@ export type ReceptionLocationPlan = {
   ready: boolean;
 };
 
+export type PendingReceipt = {
+  id: string;
+  receptionId: string;
+  receptionRef: string;
+  purchaseRef: string;
+  supplier: string;
+  operatorId: string;
+  operatorName: string;
+  status: "pending" | "completed";
+  lines: Array<{ lineId: string; productId?: string; sku: string; name: string; orderedQty: number; receivedQty: number; pendingQty: number }>;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type ReceptionOperator = {
   id: string;
   code: string;

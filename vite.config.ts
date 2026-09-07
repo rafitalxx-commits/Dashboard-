@@ -34,6 +34,7 @@ import { formatOdooMadrid } from "./backend/odooDateTime";
 import { createProductCatalog } from "./backend/products/catalog";
 import { createProductInventories } from "./backend/products/inventories";
 import { createProductLocations, parseLocationCode } from "./backend/products/locations";
+import { createPendingReceipts } from "./backend/receptions/pendingReceipts";
 import { createReceptionSessions } from "./backend/receptions/sessions";
 import {
   buildSaleOrderRefsByReceptionMove,
@@ -477,6 +478,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
       const receptionSessions = createReceptionSessions({
         dataDir: env.DASHBOARD_DATA_DIR,
       });
+      const pendingReceipts = createPendingReceipts({ dataDir: env.DASHBOARD_DATA_DIR });
       const productInventories = createProductInventories({
         dataDir: env.DASHBOARD_DATA_DIR,
         isActiveLocation: (code) => productLocations.isActive(code, "physical"),
@@ -1169,6 +1171,19 @@ function odooReadOnlyApi(env: Record<string, string>) {
                   : "Error leyendo recepciones de Odoo",
             });
           }
+        },
+      );
+
+      server.middlewares.use(
+        "/api/odoo/pending-receipts",
+        async (request, response) => {
+          const user = auth.getSessionUser(request.headers.cookie);
+          if (!user || !user.permissions.includes("products")) { sendJson(response, 401, { message: "Login requerido" }); return; }
+          try {
+            if (request.method === "GET") { sendJson(response, 200, { receipts: pendingReceipts.list() }); return; }
+            if (request.method === "POST") { sendJson(response, 201, pendingReceipts.save(await readJsonBody(request))); return; }
+            sendJson(response, 405, { message: "Metodo no permitido" });
+          } catch (error) { sendJson(response, 400, { message: error instanceof Error ? error.message : "No se pudo guardar el pedido pendiente" }); }
         },
       );
 
