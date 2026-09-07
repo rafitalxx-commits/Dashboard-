@@ -135,6 +135,8 @@
 .inventory-drawer-header-actions button { align-items: center; background: linear-gradient(180deg,#fff,#edf4f7); border: 1px solid #c8d9e1; border-radius: 11px; box-shadow: 0 4px 12px rgb(23 78 104 / 10%); color: #174e68; display: inline-flex; height: 40px; justify-content: center; position: static !important; transition: transform .15s ease,box-shadow .15s ease,border-color .15s ease; width: 40px; }
 .inventory-drawer-header-actions button:hover { border-color: #72a7bb; box-shadow: 0 6px 16px rgb(23 78 104 / 17%); transform: translateY(-1px); }
 .inventory-drawer-header-actions button:active { box-shadow: 0 2px 7px rgb(23 78 104 / 12%); transform: translateY(1px); }
+.inventory-drawer-header-actions .inventory-cancel-compact { color: #9f3838; font-size: 12px; font-weight: 700; padding: 0 12px; width: auto; }
+.inventory-drawer-header-actions button:disabled { cursor: wait; opacity: .62; transform: none; }
 .inventory-active-session { background: #e8f7ef; color: #17634e; }
 .inventory-active-session > span { display: grid; gap: 2px; }
 .inventory-active-session small { font-size: 12px; }
