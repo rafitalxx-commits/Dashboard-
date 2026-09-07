@@ -19,6 +19,7 @@ import type {
   CatalogProductDetail,
   CatalogStore,
   InventoryScope,
+  LocationCatalogEntry,
   ProductLocation,
 } from "../../services/odooTypes";
 import {
@@ -59,6 +60,7 @@ export function ProductsCatalogView({
   const [selected, setSelected] = useState<CatalogProduct | null>(null);
   const [detail, setDetail] = useState<CatalogProductDetail | null>(null);
   const [locations, setLocations] = useState<ProductLocation[]>([]);
+  const [locationCatalog, setLocationCatalog] = useState<LocationCatalogEntry[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
   const [images, setImages] = useState<Record<string, string>>({});
   const [editor, setEditor] = useState<{
@@ -85,7 +87,12 @@ export function ProductsCatalogView({
   const load = async () => {
     setLoading(true);
     try {
-      setCatalog(await odooClient.getProductCatalog());
+      const [nextCatalog, nextLocations] = await Promise.all([
+        odooClient.getProductCatalog(),
+        odooClient.getLocationCatalog(true),
+      ]);
+      setCatalog(nextCatalog);
+      setLocationCatalog(nextLocations);
     } catch (e) {
       setMessage(
         e instanceof Error ? e.message : "No se pudo cargar Productos",
@@ -914,7 +921,7 @@ export function ProductsCatalogView({
                   )}
                   {editor && (
                     <div className="location-editor">
-                      <input
+                      <select
                         value={editor.code}
                         disabled={locations.some(
                           (item) => item.code === editor.code,
@@ -925,8 +932,10 @@ export function ProductsCatalogView({
                             code: e.target.value.toUpperCase(),
                           })
                         }
-                        placeholder="A101"
-                      />
+                      >
+                        <option value="">Selecciona una ubicación activa</option>
+                        {locationCatalog.filter((item) => item.kind === "physical").map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
+                      </select>
                       <input
                         value={editor.quantity}
                         inputMode="decimal"
@@ -972,7 +981,7 @@ export function ProductsCatalogView({
                       <div>
                         <button
                           className="drawer-action"
-                          disabled={saving}
+                          disabled={saving || !editor.code}
                           onClick={() => void saveLocation()}
                         >
                           Guardar

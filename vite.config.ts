@@ -479,6 +479,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
       });
       const productInventories = createProductInventories({
         dataDir: env.DASHBOARD_DATA_DIR,
+        isActiveLocation: (code) => productLocations.isActive(code, "physical"),
         catalog: () => {
           const locations = productLocations.summary().locations;
           return productCatalog.list().products.map((product) => ({
@@ -544,6 +545,21 @@ function odooReadOnlyApi(env: Record<string, string>) {
           }
           try {
             const url = new URL(request.url ?? "/", "http://local");
+            if (request.method === "GET" && url.pathname === "/location-catalog") {
+              sendJson(response, 200, {
+                locations: productLocations.catalog(url.searchParams.get("active") === "true"),
+              });
+              return;
+            }
+            if (request.method === "POST" && url.pathname === "/location-catalog") {
+              sendJson(response, 201, productLocations.saveCatalogEntry(await readJsonBody(request)));
+              return;
+            }
+            if (request.method === "PATCH" && url.pathname === "/location-catalog") {
+              const input = await readJsonBody<{ code?: unknown; active?: unknown }>(request);
+              sendJson(response, 200, productLocations.setCatalogEntryActive(input.code, input.active));
+              return;
+            }
             if (request.method === "GET" && url.pathname === "/locations") {
               sendJson(response, 200, {
                 locations: productLocations.forProduct(

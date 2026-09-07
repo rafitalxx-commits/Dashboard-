@@ -72,6 +72,14 @@ export type ProductLocation = {
   createdAt: string;
   updatedAt: string;
 };
+export type LocationCatalogEntry = {
+  code: string;
+  label: string;
+  kind: "physical" | "dispatch";
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
 export type InventoryScope = {
   type: "general" | "products" | "supplier" | "locations";
   productSelection: {

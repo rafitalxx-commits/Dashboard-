@@ -24,6 +24,7 @@ import type {
   CatalogProduct,
   CatalogStore,
   InventoryScope,
+  LocationCatalogEntry,
   ProductInventory,
 } from "../../services/odooTypes";
 
@@ -54,16 +55,19 @@ export function InventoryView({
 }) {
   const [catalog, setCatalog] = useState<CatalogStore>(empty);
   const [inventories, setInventories] = useState<ProductInventory[]>([]);
+  const [locationCatalog, setLocationCatalog] = useState<LocationCatalogEntry[]>([]);
   const [message, setMessage] = useState("");
   const [opened, setOpened] = useState<ProductInventory | null>(null);
   const load = async () => {
     try {
-      const [nextCatalog, nextInventories] = await Promise.all([
+      const [nextCatalog, nextInventories, nextLocations] = await Promise.all([
         odooClient.getProductCatalog(),
         odooClient.getProductInventories(),
+        odooClient.getLocationCatalog(true),
       ]);
       setCatalog(nextCatalog);
       setInventories(nextInventories);
+      setLocationCatalog(nextLocations.filter((item) => item.kind === "physical"));
     } catch (error) {
       setMessage(
         error instanceof Error ? error.message : "No se pudo cargar Inventario",
@@ -92,7 +96,7 @@ export function InventoryView({
     setInventories((current) => current.map((item) => item.id === updated.id ? updated : item));
     if (updated.status === "review") onNavigate("review");
   };
-  if (opened) return <>{message && <p className="products-message">{message}</p>}<InventorySession inventory={opened} catalog={catalog.products} onClose={closeInventory} onPrevious={openedIndex > 0 ? () => setOpened(shown[openedIndex - 1]) : undefined} onNext={openedIndex >= 0 && openedIndex < shown.length - 1 ? () => setOpened(shown[openedIndex + 1]) : undefined} readOnly={screen === "history"} returnLabel={labels[screen]} onMessage={setMessage} /></>;
+  if (opened) return <>{message && <p className="products-message">{message}</p>}<InventorySession inventory={opened} catalog={catalog.products} locationCatalog={locationCatalog} onClose={closeInventory} onPrevious={openedIndex > 0 ? () => setOpened(shown[openedIndex - 1]) : undefined} onNext={openedIndex >= 0 && openedIndex < shown.length - 1 ? () => setOpened(shown[openedIndex + 1]) : undefined} readOnly={screen === "history"} returnLabel={labels[screen]} onMessage={setMessage} /></>;
   return (
     <section className="inventory-view">
       <header className="products-header">
@@ -127,6 +131,7 @@ export function InventoryView({
       {screen === "new" ? (
         <InventoryCreate
           catalog={catalog.products}
+          locationCatalog={locationCatalog}
           onCreated={(inventory) => {
             setInventories((current) => [inventory, ...current]);
             onNavigate("active");
@@ -150,10 +155,12 @@ export function InventoryView({
 
 function InventoryCreate({
   catalog,
+  locationCatalog,
   onCreated,
   onMessage,
 }: {
   catalog: CatalogProduct[];
+  locationCatalog: LocationCatalogEntry[];
   onCreated: (inventory: ProductInventory) => void;
   onMessage: (message: string) => void;
 }) {
@@ -319,14 +326,13 @@ function InventoryCreate({
       {type === "locations" && (
         <><label>
           Ubicación o ubicaciones a contar
-          <textarea
-            required
-            value={locationCodes}
-            onChange={(event) => setLocationCodes(event.target.value)}
-            placeholder="B103"
-          />
+          <select value="" onChange={(event) => { const next = event.target.value; const selected = locationCodes.split(/[,\n]/).map((item) => item.trim()).filter(Boolean); if (next && !selected.includes(next)) setLocationCodes([...selected, next].join(", ")); }}>
+            <option value="">Añadir ubicación activa…</option>
+            {locationCatalog.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
+          </select>
         </label><p className="inventory-help">Al crear, podrás contar cualquier producto, pero solo en estas ubicaciones. No necesitas seleccionar productos uno a uno.</p></>
       )}
+      {type === "locations" && locationCodes && <div className="inventory-picker-actions">{locationCodes.split(/[,\n]/).map((item) => item.trim()).filter(Boolean).map((item) => <button key={item} onClick={() => setLocationCodes(locationCodes.split(/[,\n]/).map((code) => code.trim()).filter((code) => code && code !== item).join(", "))} type="button">{item} ×</button>)}</div>}
       {type === "products" && (
         <section className="inventory-product-picker">
           <label>
@@ -433,7 +439,7 @@ function InventoryPagination({ page, pages, onPage }: { page: number; pages: num
   return <nav className="inventory-pagination" aria-label="Paginación"><button disabled={page === 1} onClick={() => onPage(page - 1)} type="button"><ChevronLeft size={16}/> Anterior</button><span>Página {page} de {pages}</span><button disabled={page === pages} onClick={() => onPage(page + 1)} type="button">Siguiente <ChevronRight size={16}/></button></nav>;
 }
 
-function InventorySession({ inventory: initial, catalog, onClose, onPrevious, onNext, readOnly = false, returnLabel, onMessage }: { inventory: ProductInventory; catalog: CatalogProduct[]; onClose: (inventory: ProductInventory) => void; onPrevious?: () => void; onNext?: () => void; readOnly?: boolean; returnLabel: string; onMessage: (message: string) => void }) {
+function InventorySession({ inventory: initial, catalog, locationCatalog, onClose, onPrevious, onNext, readOnly = false, returnLabel, onMessage }: { inventory: ProductInventory; catalog: CatalogProduct[]; locationCatalog: LocationCatalogEntry[]; onClose: (inventory: ProductInventory) => void; onPrevious?: () => void; onNext?: () => void; readOnly?: boolean; returnLabel: string; onMessage: (message: string) => void }) {
   const [inventory, setInventory] = useState(initial);
   const [operatorName, setOperatorName] = useState(initial.operator?.name || "");
   const [activeLocation, setActiveLocation] = useState("");
@@ -529,7 +535,7 @@ function InventorySession({ inventory: initial, catalog, onClose, onPrevious, on
       const code = String(rawCode || "").trim();
       if (!code) return;
       const normalized = code.toLocaleLowerCase();
-      if (/^[A-Z]+\d+\d{2}$/.test(code.toUpperCase())) { const location = code.toUpperCase(); if (inventory.scope.allowedLocationCodes.length && !inventory.scope.allowedLocationCodes.includes(location)) { feedback(false); return onMessage("Ubicación fuera del alcance de este inventario"); } feedback(true); setActiveLocation(location); setScan(""); setLocationQuery(""); onMessage(`Ubicación activa: ${location}`); return; }
+      if (/^[A-Z]+\d+\d{2}$/.test(code.toUpperCase())) { const location = code.toUpperCase(); if (!locationCatalog.some((item) => item.code === location)) { feedback(false); return onMessage(`La ubicación ${location} no existe o está inactiva en Productos → Ubicaciones`); } if (inventory.scope.allowedLocationCodes.length && !inventory.scope.allowedLocationCodes.includes(location)) { feedback(false); return onMessage("Ubicación fuera del alcance de este inventario"); } feedback(true); setActiveLocation(location); setScan(""); setLocationQuery(""); onMessage(`Ubicación activa: ${location}`); return; }
       // Odoo can return a reference or barcode as a number on older records.
       // Normalize every candidate before comparing so a manual SKU can never
       // break the React screen.
@@ -647,7 +653,7 @@ function InventorySession({ inventory: initial, catalog, onClose, onPrevious, on
     <section className="inventory-session">
       {navigation}
       <header><p className="eyebrow">INVENTARIO EN CURSO · {inventory.operator?.name}</p><h1>{activeLocation ? `Ubicación ${activeLocation}` : "Escanea una ubicación"}</h1>{activeLocation ? <p>{locationRows.length} productos previstos en esta ubicación</p> : <p>Empieza leyendo el QR de la ubicación.</p>}</header>
-      <section className="inventory-camera-screen"><div className="inventory-camera-head"><strong>{activeLocation ? "Producto: cámara o búsqueda manual" : "Escanea o escribe la ubicación"}</strong><span><button aria-label="Abrir cámara" className="inventory-camera-open" onClick={() => void openCamera()} title="Buscar por QR o EAN con cámara" type="button"><Camera size={18}/><span>Abrir cámara</span></button>{activeLocation && <button onClick={() => { closeCamera(); setManualOpen((open) => !open); }} type="button"><Search size={18}/> Añadir manual</button>}</span></div>{cameraMessage && <p>{cameraMessage}</p>}<div className="inventory-scan"><ScanLine size={20}/><input value={scan} onFocus={() => void enableFeedback()} onChange={(event) => setScan(event.target.value)} onKeyDown={(event) => event.key === "Enter" && resolve()} placeholder={activeLocation ? "Pega o escribe referencia, SKU o EAN" : "Escribe código de ubicación"}/><button onClick={() => resolve()} type="button">Buscar</button></div></section>
+      <section className="inventory-camera-screen"><div className="inventory-camera-head"><strong>{activeLocation ? "Producto: cámara o búsqueda manual" : "Escanea o selecciona la ubicación"}</strong><span><button aria-label="Abrir cámara" className="inventory-camera-open" onClick={() => void openCamera()} title="Buscar por QR o EAN con cámara" type="button"><Camera size={18}/><span>Abrir cámara</span></button>{activeLocation && <button onClick={() => { closeCamera(); setManualOpen((open) => !open); }} type="button"><Search size={18}/> Añadir manual</button>}</span></div>{cameraMessage && <p>{cameraMessage}</p>} {!activeLocation && <select aria-label="Seleccionar ubicación activa" value="" onChange={(event) => event.target.value && resolve(event.target.value)}><option value="">Selecciona una ubicación activa…</option>{locationCatalog.filter((item) => !inventory.scope.allowedLocationCodes.length || inventory.scope.allowedLocationCodes.includes(item.code)).map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select>}<div className="inventory-scan"><ScanLine size={20}/><input value={scan} onFocus={() => void enableFeedback()} onChange={(event) => setScan(event.target.value)} onKeyDown={(event) => event.key === "Enter" && resolve()} placeholder={activeLocation ? "Pega o escribe referencia, SKU o EAN" : "Escanea el QR de una ubicación activa"}/><button onClick={() => resolve()} type="button">Buscar</button></div></section>
       {cameraOpen && <section className="catalog-camera-search inventory-camera-search" aria-label="Buscar producto con cámara"><div><strong>{activeLocation ? "Apunta al QR o EAN del producto" : "Apunta al QR de la ubicación"}</strong><button aria-label="Cerrar cámara" onClick={closeCamera} type="button"><X size={18}/></button></div><video ref={videoRef} autoPlay playsInline muted onPointerDown={() => void enableFeedback()}/>{cameraMessage && <p>{cameraMessage}</p>}</section>}
       {activeLocation && manualOpen && <section className="inventory-manual-picker"><div><strong>Buscar producto para {activeLocation}</strong><button onClick={() => setManualOpen(false)} type="button"><X size={16}/> Cerrar</button></div><label><Search size={16}/><input autoFocus value={manualQuery} onChange={(event) => setManualQuery(event.target.value)} placeholder="Referencia, nombre o EAN" /></label><div>{manualQuery.trim() ? manualMatches.map((item) => <button key={item.id} onClick={() => { openProduct(item); setManualOpen(false); setManualQuery(""); }} type="button"><span><strong>{item.reference || "Sin referencia"}</strong><small>{item.name}</small></span><b>{item.barcode || "Seleccionar"}</b></button>) : <p>Escribe al menos una referencia, nombre o EAN.</p>}{manualQuery.trim() && !manualMatches.length && <p>No hay productos del alcance que coincidan.</p>}</div></section>}
       {activeLocation && !product && <section className="inventory-location-detail"><div className="inventory-location-toolbar"><label><Search size={16}/><input value={locationQuery} onChange={(event) => { setLocationQuery(event.target.value); setLocationVisible(50); }} placeholder="Buscar producto en esta ubicación"/></label><strong>{locationRows.length}</strong></div><div className="inventory-location-products">{locationRows.slice(0, locationVisible).map((item) => { const current = currentCount(item.id, activeLocation); return <button key={item.id} onClick={() => openProduct(item)} type="button"><span><strong>{item.reference || "Sin referencia"}</strong><small>{item.name}</small></span><b>{current ? `${current.quantity} contado` : "Contar"}</b></button>; })}</div>{locationVisible < locationRows.length && <button className="inventory-load-more" onClick={() => setLocationVisible((value) => value + 50)} type="button">Ver 50 más</button>}{!locationRows.length && <p className="products-empty">No hay productos previstos en esta ubicación.</p>}</section>}

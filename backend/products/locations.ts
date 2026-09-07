@@ -14,6 +14,17 @@ export type ProductLocation = {
   updatedAt: string;
 };
 
+export type LocationCatalogEntry = {
+  code: string;
+  label: string;
+  kind: "physical" | "dispatch";
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export const DISPATCH_PENDING_LOCATION = "PENDIENTE_ENVIO";
+
 export type ProductLocationChange = {
   id: string;
   productId: number;
@@ -34,8 +45,9 @@ export type OdooMovementSyncResult = {
 };
 
 type Store = {
-  version: 2;
+  version: 3;
   locations: ProductLocation[];
+  locationCatalog: LocationCatalogEntry[];
   changes: ProductLocationChange[];
   odooMovementSync?: {
     baselineAt: string;
@@ -43,7 +55,7 @@ type Store = {
     processedMoveIds: number[];
   };
 };
-const empty = (): Store => ({ version: 2, locations: [], changes: [] });
+const empty = (): Store => ({ version: 3, locations: [], locationCatalog: [], changes: [] });
 
 /** A101 means row A, shelf 1 and height 01.  P/V are not location concepts. */
 export function parseLocationCode(input: unknown) {
@@ -59,9 +71,37 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
   const read = (): Store => {
     try {
       const stored = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) as Partial<Store> : empty();
+      const locations = stored.locations || [];
+      const now = new Date().toISOString();
+      const catalogByCode = new Map(
+        (stored.locationCatalog || []).map((item) => [item.code, item]),
+      );
+      for (const location of locations) {
+        if (!catalogByCode.has(location.code)) {
+          catalogByCode.set(location.code, {
+            code: location.code,
+            label: location.code,
+            kind: "physical",
+            active: true,
+            createdAt: location.createdAt || now,
+            updatedAt: location.updatedAt || now,
+          });
+        }
+      }
+      catalogByCode.set(DISPATCH_PENDING_LOCATION, {
+        ...(catalogByCode.get(DISPATCH_PENDING_LOCATION) || {
+          createdAt: now,
+        }),
+        code: DISPATCH_PENDING_LOCATION,
+        label: "Pendiente de envío",
+        kind: "dispatch",
+        active: true,
+        updatedAt: catalogByCode.get(DISPATCH_PENDING_LOCATION)?.updatedAt || now,
+      });
       return {
-        version: 2,
-        locations: stored.locations || [],
+        version: 3,
+        locations,
+        locationCatalog: [...catalogByCode.values()],
         changes: stored.changes || [],
         odooMovementSync: stored.odooMovementSync,
       };
@@ -69,6 +109,52 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     catch { return empty(); }
   };
   const write = (store: Store) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 }); };
+  const catalog = (activeOnly = false) => read().locationCatalog
+    .filter((item) => !activeOnly || item.active)
+    .sort((left, right) => Number(right.active) - Number(left.active) || left.label.localeCompare(right.label, "es"));
+  const requireActive = (store: Store, code: unknown, kind?: LocationCatalogEntry["kind"]) => {
+    const normalized = String(code ?? "").trim().toUpperCase().replace(/\s+/g, "_");
+    const entry = store.locationCatalog.find((item) => item.code === normalized && item.active);
+    if (!entry || (kind && entry.kind !== kind)) {
+      throw new Error("Selecciona una ubicación activa del catálogo de Productos → Ubicaciones");
+    }
+    return entry;
+  };
+  const saveCatalogEntry = (input: { code?: unknown; active?: unknown }) => {
+    const parsed = parseLocationCode(input.code);
+    const store = read();
+    const now = new Date().toISOString();
+    const index = store.locationCatalog.findIndex((item) => item.code === parsed.code);
+    const previous = index >= 0 ? store.locationCatalog[index] : undefined;
+    const value: LocationCatalogEntry = {
+      code: parsed.code,
+      label: parsed.code,
+      kind: "physical",
+      active: input.active === undefined ? previous?.active ?? true : Boolean(input.active),
+      createdAt: previous?.createdAt || now,
+      updatedAt: now,
+    };
+    if (index >= 0) store.locationCatalog[index] = value;
+    else store.locationCatalog.push(value);
+    write(store);
+    return { location: value, locations: catalogFrom(store) };
+  };
+  const setCatalogEntryActive = (code: unknown, active: unknown) => {
+    const normalized = String(code ?? "").trim().toUpperCase().replace(/\s+/g, "_");
+    if (normalized === DISPATCH_PENDING_LOCATION && !Boolean(active)) {
+      throw new Error("Pendiente de envío debe permanecer activa para las líneas Bajo pedido");
+    }
+    const store = read();
+    const index = store.locationCatalog.findIndex((item) => item.code === normalized);
+    if (index < 0) throw new Error("Ubicación de catálogo no encontrada");
+    store.locationCatalog[index] = {
+      ...store.locationCatalog[index],
+      active: Boolean(active),
+      updatedAt: new Date().toISOString(),
+    };
+    write(store);
+    return { location: store.locationCatalog[index], locations: catalogFrom(store) };
+  };
   const forProduct = (productId: number) => read().locations.filter((item) => item.productId === productId).sort((a, b) => Number(b.preferred) - Number(a.preferred) || a.code.localeCompare(b.code));
   const save = (input: { productId: number; code: unknown; quantity?: unknown; preferred?: unknown; replenishmentMin?: unknown; reason?: "manual" | "replenishment" }) => {
     const productId = Number(input.productId);
@@ -78,7 +164,7 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     if (!Number.isFinite(quantity)) throw new Error("Cantidad inválida");
     const minimum = input.replenishmentMin === undefined || input.replenishmentMin === "" ? undefined : Number(input.replenishmentMin);
     if (minimum !== undefined && (!Number.isFinite(minimum) || minimum < 0)) throw new Error("Mínimo de reposición inválido");
-    const store = read(); const now = new Date().toISOString(); const index = store.locations.findIndex((item) => item.productId === productId && item.code === location.code);
+    const store = read(); requireActive(store, location.code, "physical"); const now = new Date().toISOString(); const index = store.locations.findIndex((item) => item.productId === productId && item.code === location.code);
     const previous = index >= 0 ? store.locations[index] : undefined;
     const preferred = input.preferred === undefined ? previous?.preferred ?? false : Boolean(input.preferred);
     if (preferred) store.locations = store.locations.map((item) => item.productId === productId ? { ...item, preferred: false, replenishmentMin: undefined } : item);
@@ -96,7 +182,7 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     const productId = Number(input.productId); const from = parseLocationCode(input.fromCode); const to = parseLocationCode(input.toCode); const quantity = Number(input.quantity);
     if (!Number.isInteger(productId) || productId <= 0 || !Number.isFinite(quantity) || quantity <= 0) throw new Error("Movimiento de reposición inválido");
     if (from.code === to.code) throw new Error("El origen y el destino deben ser distintos");
-    const store = read(); const fromIndex = store.locations.findIndex((item) => item.productId === productId && item.code === from.code);
+    const store = read(); requireActive(store, from.code, "physical"); requireActive(store, to.code, "physical"); const fromIndex = store.locations.findIndex((item) => item.productId === productId && item.code === from.code);
     if (fromIndex < 0) throw new Error("Ubicación de origen no encontrada");
     const source = store.locations[fromIndex]; if (source.quantity < quantity) throw new Error("No hay cantidad suficiente en la ubicación de origen");
     const toIndex = store.locations.findIndex((item) => item.productId === productId && item.code === to.code); const target = toIndex >= 0 ? store.locations[toIndex] : undefined; const now = new Date().toISOString();
@@ -113,7 +199,7 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     for (const item of store.locations) quantities.set(`${item.productId}:${item.code}`, { productId: item.productId, quantity: item.quantity });
     const affectedProductIds = new Set<number>();
     for (const count of counts) {
-      const productId = Number(count.productId); const location = parseLocationCode(count.locationCode); const quantity = Number(count.quantity);
+      const productId = Number(count.productId); const location = parseLocationCode(count.locationCode); requireActive(store, location.code, "physical"); const quantity = Number(count.quantity);
       if (!Number.isInteger(productId) || productId <= 0 || !Number.isFinite(quantity) || quantity < 0) throw new Error("Conteo de inventario inválido");
       quantities.set(`${productId}:${location.code}`, { productId, quantity });
       affectedProductIds.add(productId);
@@ -126,7 +212,7 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
   const replaceFromInventory = (counts: InventoryCountInput[], baselineAt = new Date().toISOString()) => {
     const store = read(); const now = new Date().toISOString();
     for (const count of counts) {
-      const productId = Number(count.productId); const location = parseLocationCode(count.locationCode); const quantity = Number(count.quantity);
+      const productId = Number(count.productId); const location = parseLocationCode(count.locationCode); requireActive(store, location.code, "physical"); const quantity = Number(count.quantity);
       if (!Number.isInteger(productId) || productId <= 0 || !Number.isFinite(quantity) || quantity < 0) throw new Error("Conteo de inventario inválido");
       const index = store.locations.findIndex((item) => item.productId === productId && item.code === location.code);
       const previous = index >= 0 ? store.locations[index] : undefined;
@@ -176,7 +262,23 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     state.processedMoveIds = [...known].slice(-50000); state.lastSyncedAt = input.syncedAt || now; write(store);
     return { processed, applied, skipped, warnings, baselineAt: state.baselineAt, lastSyncedAt: state.lastSyncedAt };
   };
-  return { forProduct, save, remove, transfer, inventoryTotalsAfterReplace, replaceFromInventory, applyOdooMovements, summary: () => read() };
+  return {
+    forProduct,
+    catalog,
+    saveCatalogEntry,
+    setCatalogEntryActive,
+    isActive: (code: unknown, kind?: LocationCatalogEntry["kind"]) => {
+      try { requireActive(read(), code, kind); return true; } catch { return false; }
+    },
+    save,
+    remove,
+    transfer,
+    inventoryTotalsAfterReplace,
+    replaceFromInventory,
+    applyOdooMovements,
+    summary: () => read(),
+  };
 }
 
 function forProductFrom(store: Store, productId: number) { return store.locations.filter((item) => item.productId === productId).sort((a, b) => Number(b.preferred) - Number(a.preferred) || a.code.localeCompare(b.code)); }
+function catalogFrom(store: Store) { return [...store.locationCatalog].sort((left, right) => Number(right.active) - Number(left.active) || left.label.localeCompare(right.label, "es")); }

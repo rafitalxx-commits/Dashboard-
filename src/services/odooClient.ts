@@ -196,6 +196,46 @@ export const odooClient = {
       throw new Error(payload.message ?? "No se pudieron leer las ubicaciones");
     return payload.locations ?? [];
   },
+  async getLocationCatalog(activeOnly = false) {
+    const response = await fetch(
+      productsApi(`/location-catalog${activeOnly ? "?active=true" : ""}`),
+    );
+    const payload = (await readJson(response)) as {
+      locations?: import("./odooTypes").LocationCatalogEntry[];
+      message?: string;
+    };
+    if (!response.ok)
+      throw new Error(payload.message ?? "No se pudo leer el catálogo de ubicaciones");
+    return payload.locations ?? [];
+  },
+  async createLocationCatalogEntry(code: string) {
+    const response = await fetch(productsApi("/location-catalog"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, active: true }),
+    });
+    const payload = (await readJson(response)) as {
+      locations?: import("./odooTypes").LocationCatalogEntry[];
+      message?: string;
+    };
+    if (!response.ok)
+      throw new Error(payload.message ?? "No se pudo crear la ubicación");
+    return payload.locations ?? [];
+  },
+  async setLocationCatalogEntryActive(code: string, active: boolean) {
+    const response = await fetch(productsApi("/location-catalog"), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, active }),
+    });
+    const payload = (await readJson(response)) as {
+      locations?: import("./odooTypes").LocationCatalogEntry[];
+      message?: string;
+    };
+    if (!response.ok)
+      throw new Error(payload.message ?? "No se pudo actualizar la ubicación");
+    return payload.locations ?? [];
+  },
   async saveProductLocation(
     input: Pick<ProductLocation, "productId" | "code" | "quantity"> & {
       preferred?: boolean;

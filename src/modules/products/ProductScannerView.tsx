@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import QRCode from "qrcode";
 import { odooClient } from "../../services/odooClient";
-import type { CatalogProduct } from "../../services/odooTypes";
+import type { CatalogProduct, LocationCatalogEntry } from "../../services/odooTypes";
 import {
   getSavedQzLabelPrinter,
   printImageLabelWithQzTray,
@@ -137,6 +137,7 @@ export function ProductScannerView({ products, onChanged, preset }: Props) {
     preset === "labels" ? true : (saved.print ?? false),
   );
   const [activeLocation, setActiveLocation] = useState("");
+  const [locationCatalog, setLocationCatalog] = useState<LocationCatalogEntry[]>([]);
   const [value, setValue] = useState("");
   const [pending, setPending] = useState<CatalogProduct | null>(null);
   const [quantity, setQuantity] = useState("");
@@ -159,6 +160,13 @@ export function ProductScannerView({ products, onChanged, preset }: Props) {
       JSON.stringify({ locate, count, print }),
     );
   }, [locate, count, print]);
+  useEffect(() => {
+    let live = true;
+    void odooClient.getLocationCatalog(true)
+      .then((items) => { if (live) setLocationCatalog(items.filter((item) => item.kind === "physical")); })
+      .catch((error) => { if (live) setMessage(error instanceof Error ? error.message : "No se pudieron leer las ubicaciones activas"); });
+    return () => { live = false; };
+  }, []);
   useEffect(() => {
     activeLocationRef.current = activeLocation;
   }, [activeLocation]);
@@ -323,6 +331,22 @@ export function ProductScannerView({ products, onChanged, preset }: Props) {
     const code = raw.trim().toUpperCase();
     if (!code || busy || processingRef.current) return;
     processingRef.current = true;
+    if (locate && locationPattern.test(code)) {
+      if (!locationCatalog.some((item) => item.code === code)) {
+        setMessage(`La ubicación ${code} no existe o está inactiva. Créala o actívala en Productos → Ubicaciones.`);
+        playDetectedTone(false);
+        processingRef.current = false;
+        return;
+      }
+      activeLocationRef.current = code;
+      setActiveLocation(code);
+      setValue("");
+      setUnmatchedEan(null);
+      setMessage(`Ubicación activa: ${code}`);
+      playDetectedTone();
+      processingRef.current = false;
+      return;
+    }
     const product = findProduct(code);
     if (product) {
       setUnmatchedEan(null);
@@ -340,16 +364,6 @@ export function ProductScannerView({ products, onChanged, preset }: Props) {
         return;
       }
       void process(product);
-      return;
-    }
-    if (locate && locationPattern.test(code)) {
-      activeLocationRef.current = code;
-      setActiveLocation(code);
-      setValue("");
-      setUnmatchedEan(null);
-      setMessage(`Ubicación activa: ${code}`);
-      playDetectedTone();
-      processingRef.current = false;
       return;
     }
     setUnmatchedEan({ code, location: activeLocationRef.current });
@@ -459,7 +473,7 @@ export function ProductScannerView({ products, onChanged, preset }: Props) {
         </label>
       </div>
       {locate && (
-        <p className="scanner-location">
+        <div className="scanner-location">
           {activeLocation ? (
             <>
               Ubicación activa: <strong>{activeLocation}</strong>
@@ -467,7 +481,8 @@ export function ProductScannerView({ products, onChanged, preset }: Props) {
           ) : (
             "Escanea el QR de ubicación para activarla."
           )}
-        </p>
+          <label>Seleccionar ubicación activa<select value={activeLocation} onChange={(event) => { activeLocationRef.current = event.target.value; setActiveLocation(event.target.value); }}><option value="">Selecciona…</option>{locationCatalog.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></label>
+        </div>
       )}
       <form className="scanner-input" onSubmit={scan}>
         <ScanLine size={24} />

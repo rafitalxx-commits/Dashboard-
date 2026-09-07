@@ -19,6 +19,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   PackageOpen,
+  MapPin,
   Printer,
   ReceiptText,
   RefreshCw,
@@ -41,6 +42,7 @@ import { WarehouseWorkersSettings } from "./modules/expeditions/WarehouseWorkers
 import { WarehouseStatisticsView } from "./modules/warehouseStats/WarehouseStatisticsView";
 import { ProductsCatalogView } from "./modules/products/ProductsCatalogView";
 import { ProductLabelsView } from "./modules/products/ProductLabelsView";
+import { ProductLocationsView } from "./modules/products/ProductLocationsView";
 import { InventoryView } from "./modules/products/InventoryView";
 import { InventoryReceptionsView } from "./modules/receptions/InventoryReceptionsView";
 import { PendingPurchasesView } from "./modules/receptions/ReceptionsView";
@@ -144,6 +146,13 @@ const navItems = [
     navGroup: "products",
   },
   {
+    label: "Ubicaciones",
+    icon: MapPin,
+    view: "productsLocations",
+    permission: "products",
+    navGroup: "products",
+  },
+  {
     label: "Nuevo inventario",
     icon: Plus,
     view: "productsInventoryNew",
@@ -215,6 +224,7 @@ const viewRoutes: Record<ActiveView, string> = {
   products: "productos",
   productsScanner: "productos/escanear",
   productsLabels: "productos/etiquetas",
+  productsLocations: "productos/ubicaciones",
   productsInventoryNew: "productos/inventario/nuevo",
   productsInventoryActive: "productos/inventario/en-curso",
   productsInventoryReview: "productos/inventario/revision",
@@ -1208,6 +1218,8 @@ function App() {
     activeView === "products" ||
     activeView === "productsScanner" ||
     activeView === "productsLabels" ||
+    activeView === "productsLocations" ||
+    activeView === "receptions" ||
     activeView.startsWith("productsInventory");
   const isPurchasesView =
     activeView === "purchases" || activeView === "pendingPurchases";
@@ -1855,6 +1867,8 @@ function App() {
           <ProductsCatalogView key="scanner" startScanner />
         ) : activeView === "productsLabels" ? (
           <ProductLabelsView />
+        ) : activeView === "productsLocations" ? (
+          <ProductLocationsView />
         ) : activeView === "productsInventoryNew" ? (
           <InventoryView
             screen="new"

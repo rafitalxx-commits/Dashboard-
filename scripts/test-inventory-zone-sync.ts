@@ -6,6 +6,8 @@ import { createProductLocations } from "../backend/products/locations.ts";
 
 const dataDir = mkdtempSync(join(tmpdir(), "dashboard-inventory-zone-sync-"));
 const locations = createProductLocations({ dataDir });
+locations.saveCatalogEntry({ code: "C101" });
+locations.saveCatalogEntry({ code: "C105" });
 
 locations.replaceFromInventory([{ productId: 101, locationCode: "C101", quantity: 20 }], "2026-08-27T09:00:00.000Z");
 assert.deepEqual(locations.inventoryTotalsAfterReplace([{ productId: 101, locationCode: "C105", quantity: 30 }]), { 101: 50 });

@@ -65,6 +65,7 @@ const validLocation = (value: string) => /^[A-Z]+\d+\d{2}$/.test(value);
 export function createProductInventories(options: {
   dataDir?: string;
   catalog: () => CatalogProduct[];
+  isActiveLocation?: (code: string) => boolean;
 }) {
   const dataDir =
     options.dataDir ?? process.env.DASHBOARD_DATA_DIR ?? ".dashboard-data";
@@ -152,6 +153,8 @@ export function createProductInventories(options: {
           .filter(validLocation),
       ),
     ];
+    if (options.isActiveLocation && allowedLocationCodes.some((code) => !options.isActiveLocation?.(code)))
+      throw new Error("Selecciona ubicaciones activas de Productos → Ubicaciones");
     if (type === "locations" && !allowedLocationCodes.length)
       throw new Error("Indica al menos una ubicación válida");
     const catalog = options.catalog();
@@ -208,6 +211,8 @@ export function createProductInventories(options: {
     if (inventory.status !== "in_progress") throw new Error("El conteo está bloqueado. Abre un reconteo para corregir cantidades");
     const code = cleanCode(input.locationCode);
     if (!validLocation(code)) throw new Error("Ubicación no válida");
+    if (options.isActiveLocation && !options.isActiveLocation(code))
+      throw new Error("La ubicación no existe o no está activa en Productos → Ubicaciones");
     if (inventory.scope.allowedLocationCodes.length && !inventory.scope.allowedLocationCodes.includes(code)) throw new Error("Ubicación fuera del alcance de este inventario");
     const productId = Number(input.productId);
     const zoneProducts = inventory.scope.plannedProductIdsByLocation?.[code];
