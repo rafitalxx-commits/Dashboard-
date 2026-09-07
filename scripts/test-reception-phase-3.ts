@@ -37,10 +37,20 @@ try {
   assert.equal(completed.status, "completed");
   assert.equal(completed.operator.code, "R01");
   assert.equal(sessions.list()[0].status, "completed");
+  const reopened = sessions.start({
+    receptionId: "123",
+    receptionRef: "ALM/IN/00123",
+    purchaseRef: "P00123",
+    operator: { id: "worker-2", code: "R02", name: "Asun" },
+  });
+  assert.equal(reopened.status, "in_progress");
+  assert.equal(reopened.operator.code, "R02");
+  assert.equal(sessions.list().length, 1);
   assert.throws(() => sessions.complete("missing"), /no encontrada/);
   const stored = JSON.parse(readFileSync(join(testDir, "reception-sessions.json"), "utf8"));
   assert.equal(stored.sessions[0].receptionId, "123");
-  assert.equal(stored.sessions[0].status, "completed");
+  assert.equal(stored.sessions[0].status, "in_progress");
+  assert.equal(stored.sessions[0].operator.code, "R02");
 } finally {
   rmSync(testDir, { recursive: true, force: true });
 }

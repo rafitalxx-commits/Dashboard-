@@ -63,7 +63,7 @@ export function createReceptionSessions(options: { dataDir?: string } = {}) {
     if (!receptionId || !receptionRef) throw new Error("Recepción inválida");
     const store = read();
     const existing = store.sessions.find((session) => session.receptionId === receptionId);
-    if (existing) return existing;
+    if (existing?.status === "in_progress") return existing;
     const now = new Date().toISOString();
     const session: ReceptionSession = {
       receptionId,
@@ -74,7 +74,8 @@ export function createReceptionSessions(options: { dataDir?: string } = {}) {
       startedAt: now,
       updatedAt: now,
     };
-    store.sessions.unshift(session);
+    if (existing) store.sessions = [session, ...store.sessions.filter((item) => item.receptionId !== receptionId)];
+    else store.sessions.unshift(session);
     write(store);
     return session;
   };
