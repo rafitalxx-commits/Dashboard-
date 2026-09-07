@@ -140,6 +140,20 @@
 .inventory-locked-action { align-items: center; color: #8b7443; display: flex; font-size: 12px; font-weight: 750; gap: 5px; justify-content: flex-end; }
 .inventory-line-classification a { color: inherit; font-weight: 850; text-decoration: underline; }
 .inventory-location-required { align-items: center; background: #fff3dc; border-radius: 8px; color: #87580a; display: flex; font-size: 12px; font-weight: 700; gap: 6px; margin: 0; padding: 8px 10px; }
+.inventory-add-unexpected { align-items: center; background: #edf6fb; border-bottom: 1px solid #d9e7ee; display: flex; gap: 15px; justify-content: space-between; padding: 13px 24px; }
+.inventory-add-unexpected > div { display: grid; gap: 3px; }
+.inventory-add-unexpected strong { color: #174e68; font-size: 13px; }
+.inventory-add-unexpected span { color: #607985; font-size: 12px; }
+.inventory-add-unexpected button { align-items: center; background: #fff; border: 1px solid #bcd4e0; border-radius: 8px; color: #174e68; cursor: pointer; display: flex; font-weight: 800; gap: 6px; padding: 9px 11px; white-space: nowrap; }
+.inventory-unexpected-picker { background: #f7fafc; border-bottom: 1px solid #d9e7ee; display: grid; gap: 10px; padding: 14px 24px; }
+.inventory-unexpected-picker > label { color: #536f7c; display: grid; font-size: 12px; font-weight: 750; gap: 4px; }
+.inventory-unexpected-picker input { border: 1px solid #c4d7df; border-radius: 8px; font: inherit; min-height: 38px; padding: 0 10px; }
+.inventory-unexpected-picker > div { display: grid; gap: 6px; }
+.inventory-unexpected-picker > div > button { background: #fff; border: 1px solid #d6e1e6; border-radius: 8px; cursor: pointer; display: grid; gap: 2px; padding: 9px 11px; text-align: left; }
+.inventory-unexpected-picker > div > button:hover { border-color: #78a9be; background: #f0f8fb; }
+.inventory-unexpected-picker > div > button span, .inventory-unexpected-picker > span { color: #687d87; font-size: 12px; }
+.inventory-unexpected-picker > .error { color: #963a33; }
+.inventory-unexpected-picker .cancel { background: transparent; border: 0; color: #526d79; cursor: pointer; font-weight: 750; justify-self: start; padding: 3px 0; }
 
 @media (max-width: 900px) {
   .inventory-receptions-kpis { grid-template-columns: 1fr 1fr; }
@@ -178,6 +192,8 @@
   .inventory-reception-drawer { width: 100vw; }
   .inventory-reception-drawer > header { padding: 16px; position: sticky; top: 0; z-index: 2; background: #fff; }
   .inventory-drawer-summary, .inventory-session-gate, .inventory-active-session { align-items: stretch; flex-direction: column; padding: 13px 16px; }
+  .inventory-add-unexpected, .inventory-unexpected-picker { padding-left: 16px; padding-right: 16px; }
+  .inventory-add-unexpected { align-items: stretch; flex-direction: column; }
   .inventory-drawer-summary .inventory-receipt-metrics, .inventory-active-session button { margin-left: 0; }
   .inventory-session-gate > div { grid-template-columns: 22px 1fr; }
   .inventory-session-gate label, .inventory-session-gate button { width: 100%; }
