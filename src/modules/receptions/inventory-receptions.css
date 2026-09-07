@@ -73,7 +73,11 @@
 .inventory-location-plan > header > div { display: grid; gap: 3px; }
 .inventory-location-plan > header span { color: #687b85; font-size: 12px; }
 .inventory-location-plan label { color: #60727c; display: grid; font-size: 12px; font-weight: 750; gap: 4px; }
-.inventory-location-plan input { background: #fff; border: 1px solid #cbd9df; border-radius: 8px; color: #203844; font: inherit; min-width: 0; padding: 8px 9px; }
+.inventory-location-plan input, .inventory-location-plan select { background: #fff; border: 1px solid #cbd9df; border-radius: 8px; color: #203844; font: inherit; min-width: 0; padding: 8px 9px; }
+.inventory-local-status { border-radius: 999px; display: inline-flex; font-size: 11px; font-weight: 800; margin-top: 6px; padding: 4px 8px; width: fit-content; }
+.inventory-local-status.pending { background: #fff1e5; color: #8a510d; }
+.inventory-local-status.partial { background: #fef3c7; color: #92400e; }
+.inventory-local-status.ready { background: #e5f7ef; color: #12684e; }
 .inventory-location-plan > header input { width: 120px; }
 .inventory-use-preferred, .inventory-add-allocation { align-items: center; background: transparent; border: 0; color: #17627e; cursor: pointer; display: flex; font-weight: 800; gap: 6px; justify-self: start; padding: 2px 0; }
 .inventory-allocation-list { display: grid; gap: 8px; }

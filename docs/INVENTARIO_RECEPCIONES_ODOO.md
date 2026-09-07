@@ -123,3 +123,11 @@ La lista de recepciones se mantiene compacta: pedido de compra, proveedor, refer
 El operario debe identificarse mediante un QR activo configurado en el Dashboard antes de repartir ubicaciones o editar cantidades. Para una reposición sin ubicación, la primera ubicación confirmada se guarda como preferente solo en Dashboard; no cambia el stock ni la ficha de producto de Odoo.
 
 Una línea Bajo pedido muestra el pedido de venta, avisa de que no debe almacenarse y enlaza la referencia a Expediciones en modo manual. Un reparto con una cantidad inferior a la pendiente se señala como parcial pendiente de forma local. La creación del backorder o la validación de una entrega parcial real queda para la fase de escrituras en Odoo, con revisión y aprobación explícita.
+
+## Catálogo único de ubicaciones (LAB)
+
+`Productos → Ubicaciones` es el catálogo local único de ubicaciones válidas. Las ubicaciones físicas existentes se incorporan al catálogo al leer el store anterior, sin borrar asignaciones ni cantidades. Las nuevas ubicaciones se crean y activan únicamente desde esta pantalla.
+
+La asignación de un producto, el escáner, los inventarios y los repartos de recepción solo aceptan entradas físicas activas del catálogo. Escanear un código desconocido o inactivo no lo crea. `Pendiente de envío` es una entrada operativa activa del mismo catálogo y se propone por defecto para las líneas Bajo pedido.
+
+Los repartos de recepción siguen siendo locales. Una línea puede guardarse con cero unidades y queda marcada como pendiente local; una cantidad menor que la pendiente queda marcada como parcial local. Estas acciones no crean backorders, entregas, movimientos ni cambios de stock en Odoo.
