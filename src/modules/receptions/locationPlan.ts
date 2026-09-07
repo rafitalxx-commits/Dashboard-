@@ -7,9 +7,11 @@ import type {
 export function createLocationPlan(line: InventoryReceptionLine): ReceptionLocationPlan {
   return {
     receivedQty: line.pendingQty,
-    allocations: line.preferredLocation
-      ? [{ id: `${line.id}-preferred`, location: line.preferredLocation, quantity: line.pendingQty }]
-      : [],
+    allocations: line.classification === "under_order"
+      ? [{ id: `${line.id}-dispatch`, location: "Pendiente de envío", quantity: line.pendingQty }]
+      : line.preferredLocation
+        ? [{ id: `${line.id}-preferred`, location: line.preferredLocation, quantity: line.pendingQty }]
+        : [],
     ready: false,
   };
 }
