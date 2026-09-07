@@ -971,6 +971,16 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
   const scanInputRef = useRef<HTMLInputElement | null>(null);
   const operationLockRef = useRef(false);
 
+  useEffect(() => {
+    const query = window.location.hash.split("?")[1] || "";
+    const receptionOrderRef = new URLSearchParams(query).get("pedido")?.trim();
+    if (!receptionOrderRef) return;
+    setSection("operativa");
+    setMode("manual");
+    setScan(receptionOrderRef);
+    setNotice(`Pedido ${receptionOrderRef} preparado para expedición manual. Revisa los datos y continúa la operativa.`);
+  }, []);
+
   const totalWeight = useMemo(
     () => parcels.reduce((total, parcel) => total + Number(parcel.weight.replace(",", ".") || 0), 0),
     [parcels],

@@ -437,6 +437,7 @@ export type InventoryReception = {
   id: string;
   ref: string;
   purchaseRef: string;
+  supplierRef?: string;
   supplier: string;
   scheduledDate: string;
   state: string;

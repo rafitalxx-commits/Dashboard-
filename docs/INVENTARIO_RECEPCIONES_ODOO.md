@@ -115,3 +115,11 @@ No se implementarán supuestos sobre rutas MTO, grupos de aprovisionamiento u or
 - No validar recepciones, modificar PO, crear compras ni cambiar stock en esta fase.
 - No desplegar a producción sin PR, validación y aprobación expresa de Rafa.
 - Las credenciales viven en `.env.local` o en el entorno del servidor y nunca se añaden a Git.
+
+## Diseño de auditoría móvil (LAB)
+
+La lista de recepciones se mantiene compacta: pedido de compra, proveedor, referencia del proveedor cuando exista y los totales de esperado, recibido y pendiente. El detalle se abre en un panel lateral en escritorio y ocupa una pantalla completa en móvil.
+
+El operario debe identificarse mediante un QR activo configurado en el Dashboard antes de repartir ubicaciones o editar cantidades. Para una reposición sin ubicación, la primera ubicación confirmada se guarda como preferente solo en Dashboard; no cambia el stock ni la ficha de producto de Odoo.
+
+Una línea Bajo pedido muestra el pedido de venta, avisa de que no debe almacenarse y enlaza la referencia a Expediciones en modo manual. Un reparto con una cantidad inferior a la pendiente se señala como parcial pendiente de forma local. La creación del backorder o la validación de una entrega parcial real queda para la fase de escrituras en Odoo, con revisión y aprobación explícita.

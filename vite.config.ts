@@ -6118,6 +6118,21 @@ async function getOdooInventoryReceptions(
     purchaseLines,
     saleLines,
   );
+  const purchaseIds = Array.from(
+    new Set(
+      pickings
+        .map((picking) => getRelationId(picking.purchase_id))
+        .filter((id): id is number => typeof id === "number"),
+    ),
+  );
+  const purchaseReferences = purchaseIds.length
+    ? (await executeKw(config, uid, "purchase.order", "read", [purchaseIds], {
+        fields: ["id", "partner_ref"],
+      })) as Array<{ id: number; partner_ref?: string | false }>
+    : [];
+  const supplierRefsByPurchaseId = new Map(
+    purchaseReferences.map((purchase) => [purchase.id, cleanText(purchase.partner_ref)]),
+  );
   const productIds = Array.from(
     new Set(
       activeMoves
@@ -6191,6 +6206,8 @@ async function getOdooInventoryReceptions(
       ref: picking.name || `Recepción #${picking.id}`,
       purchaseRef:
         getRelationName(picking.purchase_id) || cleanText(picking.origin),
+      supplierRef:
+        supplierRefsByPurchaseId.get(getRelationId(picking.purchase_id) ?? -1) || undefined,
       supplier: getRelationName(picking.partner_id) || "Proveedor sin nombre",
       scheduledDate: cleanText(picking.scheduled_date),
       state,
