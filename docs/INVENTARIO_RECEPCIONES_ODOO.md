@@ -48,13 +48,21 @@ o datos que deben revisarse en Odoo.
 ### Editor de presupuestos de compra (LAB)
 
 La primera fase editable muestra exclusivamente presupuestos Odoo en estado
-`draft` o `sent`. La edición de cantidades y precios y la incorporación de
-productos se prepara localmente antes de cualquier escritura.
+`draft` o `sent`. Permite crear un presupuesto desde cero seleccionando primero
+el proveedor, editar cantidades, precios y descripciones, e incorporar o quitar
+productos antes de cualquier escritura. La fecha prevista no se solicita en la
+interfaz; Odoo conserva o aplica el valor técnico necesario.
 
 Al buscar un producto, el Dashboard consulta la tarifa del proveedor del
 presupuesto en `product.supplierinfo`, respetando variante, plantilla, cantidad
 mínima, vigencia y moneda. Un precio cero o inexistente se trata como tarifa no
 válida y exige introducir un precio manual.
+
+La búsqueda ofrece sugerencias mientras se escribe y admite términos unidos por
+`+`; todos los términos deben coincidir. La confirmación final ofrece
+`Aceptar` y `Aceptar y enviar email`: ambas usan la confirmación nativa del
+pedido y dejan que Odoo genere el albarán; la segunda añade después el envío
+nativo al correo del proveedor. En LAB ambas operaciones están interceptadas.
 
 El precio definitivo se guarda en `purchase.order.line.price_unit`, de modo
 que forme parte del histórico real de compras. El Dashboard no escribirá

@@ -4,6 +4,7 @@ export type CatalogProduct = {
   id: number;
   templateId?: number;
   name: string;
+  description?: string;
   reference: string;
   barcode: string;
   uom: string;
@@ -416,12 +417,20 @@ export type PurchaseProductOption = {
   costMethod: string;
 };
 
+export type PurchaseVendorOption = {
+  id: string;
+  name: string;
+  email: string;
+  currency: string;
+};
+
 export type PurchaseQuotationDraftLine = {
   id: string;
   productId: string;
   quantity: number;
   priceUnit: number;
   expectedDate: string;
+  description: string;
 };
 
 export type PurchaseOrderActionPreview = {

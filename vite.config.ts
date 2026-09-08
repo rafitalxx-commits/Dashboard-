@@ -1179,9 +1179,14 @@ function odooReadOnlyApi(env: Record<string, string>) {
             if (action === "products") {
               sendJson(response, 200, await getOdooPurchaseProductOptions(env, {
                 orderId: Number(url.searchParams.get("orderId")),
+                partnerId: Number(url.searchParams.get("partnerId")),
                 query: url.searchParams.get("q") || "",
                 quantity: Number(url.searchParams.get("quantity") || 1),
               }));
+              return;
+            }
+            if (action === "vendors") {
+              sendJson(response, 200, await getOdooPurchaseVendorOptions(env, url.searchParams.get("q") || ""));
               return;
             }
             if (action === "action-preview") {
@@ -6403,6 +6408,7 @@ async function getOdooInventoryReceptions(
           stripProductCode(relationName) ||
           cleanText(move.name) ||
           "Producto sin nombre",
+        description: cleanText(line.name),
         sku: cleanText(product?.default_code) || getProductCode(relationName),
         barcode: cleanText(product?.barcode),
         imageUrl: formatProductImage(product?.image_128),
@@ -6652,19 +6658,20 @@ async function getOdooPurchaseReceptions(env: Record<string, string>) {
 
 async function getOdooPurchaseProductOptions(
   env: Record<string, string>,
-  input: { orderId: number; query: string; quantity: number },
+  input: { orderId: number; partnerId?: number; query: string; quantity: number },
 ) {
-  if (!Number.isInteger(input.orderId) || input.orderId <= 0) throw new Error("Presupuesto no válido");
   const config = getOdooConfig(env);
   const uid = await authenticate(config);
-  const [order] = await executeKw(config, uid, "purchase.order", "read", [[input.orderId]], { fields: ["id", "state", "partner_id", "currency_id"] }) as Array<OdooPurchaseOrderRecord>;
-  if (!order || !["draft", "sent"].includes(order.state || "")) throw new Error("El presupuesto ya no se puede editar");
+  const hasOrder = Number.isInteger(input.orderId) && input.orderId > 0;
+  const [order] = hasOrder ? await executeKw(config, uid, "purchase.order", "read", [[input.orderId]], { fields: ["id", "state", "partner_id", "currency_id"] }) as Array<OdooPurchaseOrderRecord> : [];
+  if (hasOrder && (!order || !["draft", "sent"].includes(order.state || ""))) throw new Error("El presupuesto ya no se puede editar");
+  const partnerId = getRelationId(order?.partner_id) || (Number.isInteger(input.partnerId) ? Number(input.partnerId) : 0);
+  if (!partnerId) throw new Error("Selecciona primero un proveedor");
   const term = cleanText(input.query);
   const domain: unknown[] = [["purchase_ok", "=", true]];
-  if (term) domain.push("|", "|", ["default_code", "ilike", term], ["barcode", "ilike", term], ["name", "ilike", term]);
+  for (const token of term.split("+").map((part) => part.trim()).filter(Boolean)) domain.push("|", "|", ["default_code", "ilike", token], ["barcode", "ilike", token], ["name", "ilike", token]);
   const products = await executeKw(config, uid, "product.product", "search_read", [domain], { fields: ["id", "name", "display_name", "default_code", "barcode", "image_128", "product_tmpl_id", "categ_id", "uom_po_id"], limit: 25 }) as ProductRecord[];
   const templateIds = products.map((product) => getRelationId(product.product_tmpl_id)).filter((id): id is number => Boolean(id));
-  const partnerId = getRelationId(order.partner_id);
   const today = new Date().toISOString().slice(0, 10);
   const supplierRows = templateIds.length && partnerId ? await executeKw(config, uid, "product.supplierinfo", "search_read", [[
     ["partner_id", "=", partnerId], ["product_tmpl_id", "in", templateIds], ["min_qty", "<=", Math.max(0, input.quantity)],
@@ -6677,8 +6684,17 @@ async function getOdooPurchaseProductOptions(
     const productId = product.id;
     const templateId = getRelationId(product.product_tmpl_id);
     const supplier = chooseSupplierPrice(productId, templateId ?? 0, supplierRows as SupplierPriceRow[]);
-    return { id: String(product.id), name: cleanText(product.name) || cleanText(product.display_name), sku: cleanText(product.default_code), barcode: cleanText(product.barcode), imageUrl: formatProductImage(product.image_128), uom: getRelationName((product as ProductRecord & { uom_po_id?: false | [number, string] }).uom_po_id) || "uds", suggestedPrice: Number(supplier?.price ?? 0), supplierPriceFound: Boolean(supplier && Number(supplier.price) > 0), supplierMinQty: Number(supplier?.min_qty ?? 0), supplierCurrency: getRelationName(supplier?.currency_id as false | [number, string]) || getRelationName(order.currency_id), supplierDelay: Number(supplier?.delay ?? 0), costMethod: costMethodByCategory.get(getRelationId((product as ProductRecord & { categ_id?: false | [number, string] }).categ_id) ?? 0) || "standard" };
+    return { id: String(product.id), name: cleanText(product.name) || cleanText(product.display_name), sku: cleanText(product.default_code), barcode: cleanText(product.barcode), imageUrl: formatProductImage(product.image_128), uom: getRelationName((product as ProductRecord & { uom_po_id?: false | [number, string] }).uom_po_id) || "uds", suggestedPrice: Number(supplier?.price ?? 0), supplierPriceFound: Boolean(supplier && Number(supplier.price) > 0), supplierMinQty: Number(supplier?.min_qty ?? 0), supplierCurrency: getRelationName(supplier?.currency_id as false | [number, string]) || getRelationName(order?.currency_id) || "EUR", supplierDelay: Number(supplier?.delay ?? 0), costMethod: costMethodByCategory.get(getRelationId((product as ProductRecord & { categ_id?: false | [number, string] }).categ_id) ?? 0) || "standard" };
   }) };
+}
+
+async function getOdooPurchaseVendorOptions(env: Record<string, string>, query: string) {
+  const config = getOdooConfig(env);
+  const uid = await authenticate(config);
+  const domain: unknown[] = [["supplier_rank", ">", 0], ["active", "=", true]];
+  for (const token of cleanText(query).split("+").map((part) => part.trim()).filter(Boolean)) domain.push("|", ["name", "ilike", token], ["email", "ilike", token]);
+  const vendors = await executeKw(config, uid, "res.partner", "search_read", [domain], { fields: ["id", "name", "email", "property_purchase_currency_id"], order: "name asc", limit: 20 }) as Array<{ id: number; name?: string; email?: string | false; property_purchase_currency_id?: false | [number, string] }>;
+  return { vendors: vendors.map((vendor) => ({ id: String(vendor.id), name: cleanText(vendor.name), email: cleanText(vendor.email), currency: getRelationName(vendor.property_purchase_currency_id) || "EUR" })) };
 }
 
 async function getOdooPurchaseActionPreview(env: Record<string, string>, orderId: number) {
@@ -6711,6 +6727,7 @@ type PurchaseQuotationWriteLine = {
   quantity?: unknown;
   priceUnit?: unknown;
   expectedDate?: unknown;
+  description?: unknown;
 };
 
 async function saveOdooPurchaseQuotation(env: Record<string, string>, raw: unknown) {
@@ -6719,11 +6736,14 @@ async function saveOdooPurchaseQuotation(env: Record<string, string>, raw: unkno
   }
   const input = (raw && typeof raw === "object" ? raw : {}) as {
     orderId?: unknown;
+    partnerId?: unknown;
     lines?: PurchaseQuotationWriteLine[];
     deletedLineIds?: unknown[];
   };
-  const orderId = Number(input.orderId);
-  if (!Number.isInteger(orderId) || orderId <= 0) throw new Error("Presupuesto no válido");
+  let orderId = Number(input.orderId);
+  const creating = !Number.isInteger(orderId) || orderId <= 0;
+  const partnerId = Number(input.partnerId);
+  if (creating && (!Number.isInteger(partnerId) || partnerId <= 0)) throw new Error("Proveedor no válido");
   if (!Array.isArray(input.lines) || input.lines.length === 0) throw new Error("El presupuesto debe contener al menos una línea");
   const lines = input.lines.map((line) => ({
     id: cleanText(line.id),
@@ -6731,6 +6751,7 @@ async function saveOdooPurchaseQuotation(env: Record<string, string>, raw: unkno
     quantity: Number(line.quantity),
     priceUnit: Number(line.priceUnit),
     expectedDate: cleanText(line.expectedDate),
+    description: cleanText(line.description),
   }));
   if (lines.some((line) => !Number.isInteger(line.productId) || line.productId <= 0 || !Number.isFinite(line.quantity) || line.quantity <= 0 || !Number.isFinite(line.priceUnit) || line.priceUnit <= 0 || !/^\d{4}-\d{2}-\d{2}/.test(line.expectedDate))) {
     throw new Error("Hay productos, cantidades, precios o fechas no válidos");
@@ -6741,8 +6762,14 @@ async function saveOdooPurchaseQuotation(env: Record<string, string>, raw: unkno
   const config = getOdooConfig(env);
   if (!config.url || !config.database || !config.username || !config.apiKey) throw new Error("Faltan variables de conexión con Odoo");
   const uid = await authenticate(config);
-  const [order] = await executeKw(config, uid, "purchase.order", "read", [[orderId]], { fields: ["id", "name", "state", "order_line"] }) as OdooPurchaseOrderRecord[];
-  if (!order || !["draft", "sent"].includes(order.state || "")) throw new Error("El presupuesto ya no se puede editar");
+  let [order] = creating ? [] : await executeKw(config, uid, "purchase.order", "read", [[orderId]], { fields: ["id", "name", "state", "order_line"] }) as OdooPurchaseOrderRecord[];
+  if (!creating && (!order || !["draft", "sent"].includes(order.state || ""))) throw new Error("El presupuesto ya no se puede editar");
+  if (creating) {
+    const [partner] = await executeKw(config, uid, "res.partner", "read", [[partnerId]], { fields: ["id", "active", "supplier_rank"] }) as Array<{ id: number; active?: boolean; supplier_rank?: number }>;
+    if (!partner?.active || Number(partner.supplier_rank ?? 0) <= 0) throw new Error("El proveedor ya no está disponible");
+    orderId = Number(await executePurchaseQuotationWrite(config, uid, "purchase.order", "create", [{ partner_id: partnerId }]));
+    [order] = await executeKw(config, uid, "purchase.order", "read", [[orderId]], { fields: ["id", "name", "state", "order_line"] }) as OdooPurchaseOrderRecord[];
+  }
   const currentLineIds = await executeKw(config, uid, "purchase.order.line", "search", [[
     ["order_id", "=", orderId], ["display_type", "=", false],
   ]]) as number[];
@@ -6758,6 +6785,7 @@ async function saveOdooPurchaseQuotation(env: Record<string, string>, raw: unkno
       product_qty: line.quantity,
       price_unit: line.priceUnit,
       date_planned: `${line.expectedDate.slice(0, 10)} 12:00:00`,
+      name: line.description,
     }]);
   }
   if (deletedLineIds.length) await executePurchaseQuotationWrite(config, uid, "purchase.order.line", "unlink", [deletedLineIds]);
@@ -6773,7 +6801,7 @@ async function saveOdooPurchaseQuotation(env: Record<string, string>, raw: unkno
       await executePurchaseQuotationWrite(config, uid, "purchase.order.line", "create", [{
         order_id: orderId,
         product_id: line.productId,
-        name: cleanText(product.display_name) || `Producto ${line.productId}`,
+        name: line.description || cleanText(product.display_name) || `Producto ${line.productId}`,
         product_qty: line.quantity,
         product_uom: uomId,
         price_unit: line.priceUnit,
@@ -7892,11 +7920,16 @@ async function executePurchaseQuotationWrite(
   config: ReturnType<typeof getOdooConfig>, uid: number, model: string, method: string,
   args: unknown[], kwargs: Record<string, unknown> = {},
 ) {
+  if (model === "purchase.order" && method === "create") {
+    const values = args[0];
+    if (!values || typeof values !== "object" || Array.isArray(values) || Object.keys(values).some((field) => field !== "partner_id") || !Number.isInteger((values as { partner_id?: unknown }).partner_id)) throw new Error("Operación de alta de presupuesto bloqueada");
+    return rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
+  }
   if (model !== "purchase.order.line") throw new Error("Operación de compra bloqueada");
   if (method === "write") {
     const ids = args[0];
     const values = args[1];
-    const allowed = new Set(["product_qty", "price_unit", "date_planned"]);
+    const allowed = new Set(["product_qty", "price_unit", "date_planned", "name"]);
     if (!Array.isArray(ids) || ids.length !== 1 || !ids.every((id) => Number.isInteger(id) && Number(id) > 0) || !values || typeof values !== "object" || Array.isArray(values) || Object.keys(values).some((field) => !allowed.has(field))) throw new Error("Operación de edición de compra bloqueada");
   } else if (method === "unlink") {
     const ids = args[0];

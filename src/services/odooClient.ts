@@ -17,6 +17,7 @@ import type {
   PurchaseReceptionsPayload,
   PurchaseQuotationDraftLine,
   PurchaseOrderActionPreview,
+  PurchaseVendorOption,
   ReceptionOperator,
   ReceptionSession,
   PendingReceipt,
@@ -838,18 +839,25 @@ export const odooClient = {
     }
     return payload;
   },
-  async getPendingPurchaseProducts(orderId: string, query: string, quantity = 1) {
+  async getPendingPurchaseProducts(orderId: string, query: string, quantity = 1, partnerId?: string) {
     const params = new URLSearchParams({ orderId, q: query, quantity: String(quantity) });
+    if (partnerId) params.set("partnerId", partnerId);
     const response = await fetch(receptionsApiPath(`/api/odoo/pending-purchases/products?${params}`));
     const payload = await readJson<{ products?: import("./odooTypes").PurchaseProductOption[]; message?: string }>(response);
     if (!response.ok) throw new Error(payload.message ?? "No se pudieron buscar productos del proveedor");
     return payload.products ?? [];
   },
-  async savePendingPurchase(orderId: string, lines: PurchaseQuotationDraftLine[], deletedLineIds: string[]) {
+  async getPurchaseVendors(query: string) {
+    const response = await fetch(receptionsApiPath(`/api/odoo/pending-purchases/vendors?q=${encodeURIComponent(query)}`));
+    const payload = await readJson<{ vendors?: PurchaseVendorOption[]; message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudieron buscar proveedores");
+    return payload.vendors ?? [];
+  },
+  async savePendingPurchase(orderId: string, lines: PurchaseQuotationDraftLine[], deletedLineIds: string[], partnerId?: string) {
     const response = await fetch(receptionsApiPath("/api/odoo/pending-purchases/save"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ orderId, lines, deletedLineIds }),
+      body: JSON.stringify({ orderId, partnerId, lines, deletedLineIds }),
     });
     const payload = await readJson<{ ok?: boolean; ref?: string; message?: string }>(response);
     if (!response.ok || !payload.ok) throw new Error(payload.message ?? "No se pudo guardar el presupuesto en Odoo");

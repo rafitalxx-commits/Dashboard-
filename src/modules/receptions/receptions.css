@@ -5,6 +5,8 @@
 .receptions-intro p { color: #c9ded9; margin: 0; }
 .receptions-refresh { align-items: center; background: #fff; border: 0; border-radius: 10px; color: #123b36; cursor: pointer; display: flex; font-weight: 800; gap: 8px; padding: 11px 15px; }
 .receptions-refresh:disabled { cursor: wait; opacity: .75; }
+.purchase-header-actions { display: flex; gap: 8px; }
+.purchase-header-actions > button:first-child { align-items: center; background: #9fe3d2; border: 0; border-radius: 10px; color: #123b36; cursor: pointer; display: flex; font-weight: 800; gap: 7px; padding: 11px 15px; }
 .receptions-kpis { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .receptions-kpis > div { background: #fff; border: 1px solid #e0e7e5; border-radius: 14px; display: grid; gap: 6px; padding: 17px 19px; }
 .receptions-kpis span { color: #63736f; font-size: 13px; }
@@ -17,7 +19,7 @@
 .receptions-statuses button.active { background: #173f39; color: #fff; }
 .receptions-list { display: grid; gap: 12px; }
 .reception-card { background: #fff; border: 1px solid #dfe7e5; border-radius: 15px; box-shadow: 0 6px 22px rgba(20, 52, 47, .05); overflow: hidden; }
-.reception-summary { align-items: center; background: transparent; border: 0; color: inherit; cursor: pointer; display: grid; gap: 16px; grid-template-columns: 92px minmax(180px, 1fr) minmax(145px, .55fr) minmax(110px, .4fr) 22px; padding: 18px; text-align: left; width: 100%; }
+.reception-summary { align-items: center; background: transparent; border: 0; color: inherit; cursor: pointer; display: grid; gap: 16px; grid-template-columns: 92px minmax(180px, 1fr) minmax(110px, .4fr) 22px; padding: 18px; text-align: left; width: 100%; }
 .reception-status { border-radius: 999px; font-size: 12px; font-weight: 850; justify-self: start; padding: 6px 9px; }
 .reception-status.pending { background: #e8f2ff; color: #225f9e; }
 .reception-status.partial { background: #fff1d8; color: #8a5700; }
@@ -52,6 +54,8 @@
 .reception-edit-field input { border: 1px solid #cbdad6; border-radius: 8px; font: inherit; min-width: 0; padding: 8px; width: 100%; }
 .reception-edit-date { color: #667873; display: flex; font-size: 11px; gap: 7px; }
 .reception-edit-date input { border: 1px solid #cbdad6; border-radius: 7px; font: inherit; padding: 4px 6px; }
+.reception-line-description { color: #667873; display: grid; font-size: 11px; gap: 4px; margin-top: 4px; }
+.reception-line-description textarea { border: 1px solid #cbdad6; border-radius: 7px; font: inherit; padding: 6px; resize: vertical; }
 .reception-remove-line { align-items: center; background: #fff0ee; border: 0; border-radius: 8px; color: #a23830; cursor: pointer; display: flex; height: 36px; justify-content: center; }
 .reception-cost-warning { background: #fff3d8; border-radius: 7px; color: #805600; grid-column: 2 / -1; padding: 6px 8px; }
 .reception-editor-footer { background: #f5f8f7; border-top: 1px solid #dfe8e5; display: grid; gap: 12px; padding: 16px 18px; }
@@ -84,6 +88,8 @@
 .purchase-modal-actions button { align-items: center; border: 1px solid #b8cbc6; border-radius: 9px; cursor: pointer; display: flex; font-weight: 800; gap: 7px; padding: 10px 14px; }
 .purchase-modal-actions button:disabled { cursor: wait; opacity: .65; }
 .purchase-modal-actions .primary { background: #173f39; color: #fff; }
+.purchase-vendor-search { align-items: center; border: 1px solid #cbdad6; border-radius: 9px; display: flex; gap: 8px; padding: 0 10px; }
+.purchase-vendor-search input { border: 0; font: inherit; outline: 0; padding: 11px 0; width: 100%; }
 .receptions-message, .receptions-empty { align-items: center; background: #fff; border: 1px solid #dfe7e5; border-radius: 14px; color: #50615d; display: flex; gap: 10px; padding: 22px; }
 .receptions-message.error { background: #fff4f2; border-color: #f2c7c1; color: #8e3028; }
 .receptions-message > div, .receptions-empty { display: grid; }
