@@ -15,6 +15,7 @@ import type {
   OrdersV2Performance,
   InventoryReceptionsPayload,
   PurchaseReceptionsPayload,
+  PurchaseQuotationDraftLine,
   ReceptionOperator,
   ReceptionSession,
   PendingReceipt,
@@ -834,6 +835,23 @@ export const odooClient = {
     if (!response.ok) {
       throw new Error(payload.message ?? "No se pudieron leer las recepciones de Odoo");
     }
+    return payload;
+  },
+  async getPendingPurchaseProducts(orderId: string, query: string, quantity = 1) {
+    const params = new URLSearchParams({ orderId, q: query, quantity: String(quantity) });
+    const response = await fetch(receptionsApiPath(`/api/odoo/pending-purchases/products?${params}`));
+    const payload = await readJson<{ products?: import("./odooTypes").PurchaseProductOption[]; message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudieron buscar productos del proveedor");
+    return payload.products ?? [];
+  },
+  async savePendingPurchase(orderId: string, lines: PurchaseQuotationDraftLine[], deletedLineIds: string[]) {
+    const response = await fetch(receptionsApiPath("/api/odoo/pending-purchases/save"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orderId, lines, deletedLineIds }),
+    });
+    const payload = await readJson<{ ok?: boolean; ref?: string; message?: string }>(response);
+    if (!response.ok || !payload.ok) throw new Error(payload.message ?? "No se pudo guardar el presupuesto en Odoo");
     return payload;
   },
   async getInventoryReceptions() {

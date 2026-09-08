@@ -1,0 +1,12 @@
+import assert from "node:assert/strict";
+import { chooseSupplierPrice } from "../backend/purchases/supplierPricing.ts";
+
+const rows = [
+  { product_tmpl_id: [10, "Template"] as [number, string], product_id: false as const, min_qty: 0, price: 12, sequence: 1 },
+  { product_tmpl_id: [10, "Template"] as [number, string], product_id: [101, "Variant"] as [number, string], min_qty: 0, price: 10, sequence: 1 },
+  { product_tmpl_id: [10, "Template"] as [number, string], product_id: false as const, min_qty: 20, price: 8, sequence: 1 },
+];
+assert.equal(chooseSupplierPrice(101, 10, rows)?.price, 10);
+assert.equal(chooseSupplierPrice(102, 10, rows)?.price, 8);
+assert.equal(chooseSupplierPrice(101, 99, rows), undefined);
+console.log("Compras pendientes: selección de tarifa de proveedor verificada");

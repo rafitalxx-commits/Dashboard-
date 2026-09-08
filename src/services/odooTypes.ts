@@ -370,16 +370,20 @@ export type PurchaseReceptionLine = {
   pendingQty: number;
   uom: string;
   expectedDate: string;
+  priceUnit: number;
+  subtotal: number;
+  costMethod: "average" | "fifo" | "standard" | string;
 };
 
 export type PurchaseReception = {
   id: string;
   ref: string;
   supplier: string;
+  partnerId?: string;
   orderDate: string;
   expectedDate: string;
   state: string;
-  status: "Pendiente" | "Parcial" | "Retrasado";
+  status: "Borrador" | "Enviado";
   amountTotal: number;
   currency: string;
   lines: PurchaseReceptionLine[];
@@ -395,6 +399,29 @@ export type PurchaseReceptionsPayload = {
   pendingLines: number;
   pendingUnits: number;
   message?: string;
+};
+
+export type PurchaseProductOption = {
+  id: string;
+  name: string;
+  sku: string;
+  barcode: string;
+  imageUrl?: string;
+  uom: string;
+  suggestedPrice: number;
+  supplierPriceFound: boolean;
+  supplierMinQty: number;
+  supplierCurrency: string;
+  supplierDelay: number;
+  costMethod: string;
+};
+
+export type PurchaseQuotationDraftLine = {
+  id: string;
+  productId: string;
+  quantity: number;
+  priceUnit: number;
+  expectedDate: string;
 };
 
 export type InventoryReceptionLine = {

@@ -26,21 +26,48 @@ No se debe guardar un único tipo obligatorio en `purchase.order`. Una cantidad 
 
 ## Compras pendientes
 
-La pantalla `Compras → Compras pendientes` consulta pedidos de compra confirmados y conserva únicamente las líneas con cantidad pendiente.
+La pantalla `Compras → Compras pendientes` consulta exclusivamente presupuestos
+de compra editables (`draft` y `sent`). Los pedidos confirmados no aparecen y no
+pueden modificarse desde esta pantalla.
 
 Datos visibles:
 
 - referencia del PO;
 - proveedor;
 - fecha del pedido y fecha prevista;
-- estado pendiente, parcial o retrasado;
+- estado borrador o presupuesto enviado;
 - importe y moneda del PO;
 - imagen, nombre, SKU y EAN del producto;
 - cantidad pedida, recibida y pendiente.
 
 La pantalla permite buscar por PO, proveedor, SKU o EAN y filtrar por estado. Se apoya en `purchase.order`, `purchase.order.line` y `product.product`.
 
-La primera lectura real devolvió pedidos antiguos todavía abiertos en Odoo. No se ocultan por fecha porque pueden representar pendientes reales o datos que deben cerrarse.
+No se ocultan por fecha porque pueden representar presupuestos todavía vigentes
+o datos que deben revisarse en Odoo.
+
+### Editor de presupuestos de compra (LAB)
+
+La primera fase editable muestra exclusivamente presupuestos Odoo en estado
+`draft` o `sent`. La edición de cantidades y precios y la incorporación de
+productos se prepara localmente antes de cualquier escritura.
+
+Al buscar un producto, el Dashboard consulta la tarifa del proveedor del
+presupuesto en `product.supplierinfo`, respetando variante, plantilla, cantidad
+mínima, vigencia y moneda. Un precio cero o inexistente se trata como tarifa no
+válida y exige introducir un precio manual.
+
+El precio definitivo se guarda en `purchase.order.line.price_unit`, de modo
+que forme parte del histórico real de compras. El Dashboard no escribirá
+directamente `standard_price`: al recibir, Odoo aplicará su método de coste. En
+AVCO/FIFO la compra interviene en la valoración; con coste estándar se mostrará
+un aviso porque la recepción no modifica automáticamente ese coste.
+
+El guardado usa un contrato restringido a líneas de presupuestos editables:
+cantidad, precio unitario, fecha prevista, alta de producto y eliminación de
+línea. Antes de escribir vuelve a comprobar el estado y la composición del
+presupuesto para impedir que se sobrescriban cambios realizados en paralelo.
+En LAB, `ODOO_WRITE_ENABLED=false` bloquea la operación antes de la primera
+escritura; la prueba real requiere autorización y un presupuesto concreto.
 
 ## Punto 1: Recepciones de Inventario en solo lectura
 

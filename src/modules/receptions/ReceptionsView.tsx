@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CalendarClock,
@@ -7,24 +7,80 @@ import {
   PackageOpen,
   RefreshCw,
   Search,
+  Plus,
+  Trash2,
+  Save,
   Truck,
 } from "lucide-react";
 import { odooClient } from "../../services/odooClient";
 import type {
   PurchaseReception,
   PurchaseReceptionsPayload,
+  PurchaseReceptionLine,
+  PurchaseProductOption,
 } from "../../services/odooTypes";
 import "./receptions.css";
 
-type StatusFilter = "Todas" | PurchaseReception["status"];
+type StatusFilter = "Todos" | PurchaseReception["status"];
 
 export function PendingPurchasesView() {
   const [payload, setPayload] = useState<PurchaseReceptionsPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
-  const [status, setStatus] = useState<StatusFilter>("Todas");
+  const [status, setStatus] = useState<StatusFilter>("Todos");
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, PurchaseReceptionLine[]>>({});
+  const [productQuery, setProductQuery] = useState("");
+  const [productQuantity, setProductQuantity] = useState(1);
+  const [productResults, setProductResults] = useState<PurchaseProductOption[]>([]);
+  const [productLoading, setProductLoading] = useState(false);
+  const [message, setMessage] = useState("");
+  const [saveError, setSaveError] = useState("");
+  const [confirming, setConfirming] = useState<PurchaseReception | null>(null);
+  const [saving, setSaving] = useState(false);
+  const acceptRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!confirming) return;
+    acceptRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !saving) setConfirming(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [confirming, saving]);
+
+  const saveQuotation = async () => {
+    if (!confirming || saving) return;
+    const lines = drafts[confirming.id] ?? [];
+    setSaving(true);
+    setSaveError("");
+    try {
+      const originalIds = new Set(confirming.lines.map((line) => line.id));
+      const currentIds = new Set(lines.map((line) => line.id));
+      const result = await odooClient.savePendingPurchase(
+        confirming.id,
+        lines.map((line) => ({
+          id: line.id,
+          productId: line.productId || "",
+          quantity: line.orderedQty,
+          priceUnit: line.priceUnit,
+          expectedDate: (line.expectedDate || confirming.expectedDate).slice(0, 10),
+        })),
+        [...originalIds].filter((id) => !currentIds.has(id)),
+      );
+      setConfirming(null);
+      setEditing(null);
+      setMessage(`${result.ref || confirming.ref} guardado en Odoo. Los precios quedan registrados en su histórico de compra.`);
+      await load();
+    } catch (saveFailure) {
+      setSaveError(saveFailure instanceof Error ? saveFailure.message : "No se pudo guardar en Odoo");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -51,7 +107,7 @@ export function PendingPurchasesView() {
   const receptions = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase("es");
     return (payload?.receptions ?? []).filter((reception) => {
-      if (status !== "Todas" && reception.status !== status) return false;
+      if (status !== "Todos" && reception.status !== status) return false;
       if (!normalized) return true;
       return [
         reception.ref,
@@ -65,9 +121,9 @@ export function PendingPurchasesView() {
     <section className="receptions-view">
       <header className="receptions-intro">
         <div>
-          <span className="receptions-kicker">Compras · Solo lectura Odoo</span>
+          <span className="receptions-kicker">Compras · Presupuestos Odoo</span>
           <h2>Compras pendientes</h2>
-          <p>Pedidos de compra confirmados con cantidades todavía pendientes.</p>
+          <p>Presupuestos pendientes que todavía pueden editarse antes de confirmar.</p>
         </div>
         <button className="receptions-refresh" disabled={loading} onClick={() => void load()} type="button">
           <RefreshCw className={loading ? "spin" : ""} size={17} />
@@ -76,9 +132,9 @@ export function PendingPurchasesView() {
       </header>
 
       <div className="receptions-kpis">
-        <ReceptionKpi label="Pedidos pendientes" value={payload?.total ?? 0} />
-        <ReceptionKpi label="Líneas pendientes" value={payload?.pendingLines ?? 0} />
-        <ReceptionKpi label="Unidades pendientes" value={formatQty(payload?.pendingUnits ?? 0)} />
+        <ReceptionKpi label="Presupuestos pendientes" value={payload?.total ?? 0} />
+        <ReceptionKpi label="Líneas" value={payload?.pendingLines ?? 0} />
+        <ReceptionKpi label="Unidades solicitadas" value={formatQty(payload?.pendingUnits ?? 0)} />
       </div>
 
       <div className="receptions-toolbar">
@@ -92,7 +148,7 @@ export function PendingPurchasesView() {
           />
         </label>
         <div aria-label="Filtrar recepciones por estado" className="receptions-statuses">
-          {(["Todas", "Pendiente", "Parcial", "Retrasado"] as StatusFilter[]).map((option) => (
+          {(["Todos", "Borrador", "Enviado"] as StatusFilter[]).map((option) => (
             <button
               className={status === option ? "active" : ""}
               key={option}
@@ -111,6 +167,7 @@ export function PendingPurchasesView() {
           <div><strong>No se pudieron leer las compras pendientes</strong><span>{error}</span></div>
         </div>
       )}
+      {message && <div className="receptions-message" role="status"><Save size={19}/>{message}</div>}
 
       {loading && !payload && (
         <div className="receptions-message"><RefreshCw className="spin" size={19} /> Leyendo pedidos de compra en Odoo…</div>
@@ -127,6 +184,9 @@ export function PendingPurchasesView() {
       <div className="receptions-list">
         {receptions.map((reception) => {
           const isExpanded = expanded === reception.id;
+          const isEditing = editing === reception.id;
+          const visibleLines = drafts[reception.id] ?? reception.lines;
+          const draftTotal = visibleLines.reduce((total, line) => total + line.orderedQty * line.priceUnit, 0);
           return (
             <article className="reception-card" key={reception.id}>
               <button
@@ -147,11 +207,11 @@ export function PendingPurchasesView() {
                   <div className="reception-meta">
                     <span><small>Pedido</small><strong>{formatDate(reception.orderDate)}</strong></span>
                     <span><small>Estado Odoo</small><strong>{translateState(reception.state)}</strong></span>
-                    <span><small>Total PO</small><strong>{formatMoney(reception.amountTotal, reception.currency)}</strong></span>
-                    <span className="readonly-note"><Truck size={16} /> Consulta; no modifica Odoo</span>
+                    <span><small>Total líneas</small><strong>{formatMoney(isEditing ? draftTotal : reception.amountTotal, reception.currency)}</strong></span>
+                    {!isEditing ? <button className="reception-edit" onClick={() => { setEditing(reception.id); setDrafts((current) => ({ ...current, [reception.id]: reception.lines.map((line) => ({ ...line })) })); setMessage("Edición local iniciada. Odoo todavía no se ha modificado."); }} type="button">Editar presupuesto</button> : <span className="readonly-note"><Truck size={16}/>Cambios locales · sin enviar</span>}
                   </div>
                   <div className="reception-lines">
-                    {reception.lines.map((line) => (
+                    {visibleLines.map((line) => (
                       <div className="reception-line" key={line.id}>
                         <div className="reception-product-image">
                           {line.imageUrl ? <img alt="" src={line.imageUrl} /> : <PackageOpen size={22} />}
@@ -159,20 +219,34 @@ export function PendingPurchasesView() {
                         <div className="reception-product-copy">
                           <strong>{line.name}</strong>
                           <span>{line.sku || "Sin referencia"}{line.barcode ? ` · EAN ${line.barcode}` : ""}</span>
-                          <small>Prevista {formatDate(line.expectedDate || reception.expectedDate)}</small>
+                          {isEditing ? <label className="reception-edit-date">Fecha prevista<input onChange={(event) => setDrafts((current) => ({ ...current, [reception.id]: visibleLines.map((item) => item.id === line.id ? { ...item, expectedDate: event.target.value } : item) }))} type="date" value={(line.expectedDate || reception.expectedDate).slice(0, 10)}/></label> : <small>Prevista {formatDate(line.expectedDate || reception.expectedDate)}</small>}
                         </div>
-                        <Quantity label="Pedida" value={line.orderedQty} />
-                        <Quantity label="Recibida" value={line.receivedQty} />
-                        <Quantity emphasis label="Pendiente" value={line.pendingQty} />
+                        {isEditing ? <><label className="reception-edit-field">Cantidad<input min="0.01" onChange={(event) => setDrafts((current) => ({ ...current, [reception.id]: visibleLines.map((item) => item.id === line.id ? { ...item, orderedQty: Math.max(0, Number(event.target.value)), pendingQty: Math.max(0, Number(event.target.value)), subtotal: Math.max(0, Number(event.target.value)) * item.priceUnit } : item) }))} step="0.01" type="number" value={line.orderedQty}/></label><label className="reception-edit-field">Precio compra<input min="0" onChange={(event) => setDrafts((current) => ({ ...current, [reception.id]: visibleLines.map((item) => item.id === line.id ? { ...item, priceUnit: Math.max(0, Number(event.target.value)), subtotal: item.orderedQty * Math.max(0, Number(event.target.value)) } : item) }))} step="0.0001" type="number" value={line.priceUnit}/></label><button aria-label={`Eliminar ${line.name}`} className="reception-remove-line" onClick={() => setDrafts((current) => ({ ...current, [reception.id]: visibleLines.filter((item) => item.id !== line.id) }))} type="button"><Trash2 size={17}/></button></> : <><Quantity label="Cantidad" value={line.orderedQty}/><Quantity label="Precio" value={line.priceUnit}/><Quantity emphasis label="Subtotal" value={line.subtotal}/></>}
+                        {line.costMethod === "standard" && <small className="reception-cost-warning">Coste estándar: la compra queda en histórico, pero no cambia el coste automáticamente.</small>}
                       </div>
                     ))}
                   </div>
+                  {isEditing && <div className="reception-editor-footer"><div className="reception-product-search"><label><Search size={16}/><input onChange={(event) => setProductQuery(event.target.value)} placeholder="Añadir producto por referencia, nombre o EAN" value={productQuery}/></label><label className="product-search-quantity">Cantidad<input min="0.01" onChange={(event) => setProductQuantity(Math.max(.01, Number(event.target.value)))} step="0.01" type="number" value={productQuantity}/></label><button disabled={productLoading || productQuery.trim().length < 2} onClick={async () => { setProductLoading(true); setMessage(""); try { setProductResults(await odooClient.getPendingPurchaseProducts(reception.id, productQuery, productQuantity)); } catch (searchError) { setMessage(searchError instanceof Error ? searchError.message : "No se pudo buscar"); } finally { setProductLoading(false); } }} type="button">{productLoading ? <><RefreshCw className="spin" size={16}/>Buscando…</> : "Buscar"}</button></div>{productResults.length > 0 && <div className="reception-product-results">{productResults.map((product) => <button key={product.id} onClick={() => { const line: PurchaseReceptionLine = { id: `new-${product.id}-${Date.now()}`, productId: product.id, name: product.name, sku: product.sku, barcode: product.barcode, imageUrl: product.imageUrl, orderedQty: productQuantity, receivedQty: 0, pendingQty: productQuantity, priceUnit: product.suggestedPrice, subtotal: productQuantity * product.suggestedPrice, uom: product.uom, expectedDate: reception.expectedDate, costMethod: product.costMethod }; setDrafts((current) => ({ ...current, [reception.id]: [...visibleLines, line] })); setProductResults([]); setProductQuery(""); setProductQuantity(1); setMessage(product.supplierPriceFound ? `Producto añadido con tarifa de ${reception.supplier}: ${formatMoney(product.suggestedPrice, product.supplierCurrency || reception.currency)}.` : `Producto añadido sin tarifa válida de ${reception.supplier}; introduce el precio manualmente.`); }} type="button"><Plus size={16}/><span><strong>{product.sku || "Sin referencia"} · {product.name}</strong><small>{product.supplierPriceFound ? `Tarifa proveedor ${formatMoney(product.suggestedPrice, product.supplierCurrency || reception.currency)}${product.supplierMinQty ? ` desde ${product.supplierMinQty} uds.` : ""}` : "Sin precio válido del proveedor"}</small></span></button>)}</div>}<div className="reception-editor-actions"><button onClick={() => { setEditing(null); setProductResults([]); setMessage("Cambios descartados. Odoo no se ha modificado."); }} type="button">Cancelar cambios</button><button className="primary" disabled={visibleLines.length === 0 || visibleLines.some((line) => line.orderedQty <= 0 || line.priceUnit <= 0 || !(line.expectedDate || reception.expectedDate))} onClick={() => { setSaveError(""); setConfirming(reception); }} type="button"><Save size={16}/>Revisar cambios</button></div></div>}
                 </div>
               )}
             </article>
           );
         })}
       </div>
+      {confirming && (() => {
+        const lines = drafts[confirming.id] ?? [];
+        const total = lines.reduce((sum, line) => sum + line.orderedQty * line.priceUnit, 0);
+        return <div aria-labelledby="purchase-confirm-title" aria-modal="true" className="purchase-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setConfirming(null); }} role="dialog">
+          <div className="purchase-modal">
+            <h3 id="purchase-confirm-title">Guardar presupuesto en Odoo</h3>
+            <p>Se actualizará <strong>{confirming.ref}</strong>. Los precios quedarán guardados en el histórico real de compras.</p>
+            <dl><div><dt>Proveedor</dt><dd>{confirming.supplier}</dd></div><div><dt>Líneas</dt><dd>{lines.length}</dd></div><div><dt>Total</dt><dd>{formatMoney(total, confirming.currency)}</dd></div></dl>
+            {lines.some((line) => line.costMethod === "standard") && <div className="purchase-modal-warning"><AlertTriangle size={18}/>Hay productos de coste estándar: el precio quedará en el histórico, pero la recepción no actualizará automáticamente su coste.</div>}
+            {saveError && <div className="purchase-modal-error" role="alert">{saveError}</div>}
+            <div className="purchase-modal-actions"><button disabled={saving} onClick={() => setConfirming(null)} type="button">Cancelar</button><button className="primary" disabled={saving} onClick={() => void saveQuotation()} ref={acceptRef} type="button">{saving ? <><RefreshCw className="spin" size={16}/>Guardando en Odoo…</> : <><Save size={16}/>Guardar en Odoo</>}</button></div>
+          </div>
+        </div>;
+      })()}
     </section>
   );
 }
@@ -206,9 +280,9 @@ function formatMoney(value: number, currency: string) {
 }
 
 function statusClass(status: PurchaseReception["status"]) {
-  return status === "Retrasado" ? "late" : status === "Parcial" ? "partial" : "pending";
+  return status === "Enviado" ? "partial" : "pending";
 }
 
 function translateState(state: string) {
-  return ({ purchase: "Confirmado", done: "Bloqueado" } as Record<string, string>)[state] ?? state;
+  return ({ draft: "Presupuesto", sent: "Presupuesto enviado" } as Record<string, string>)[state] ?? state;
 }
