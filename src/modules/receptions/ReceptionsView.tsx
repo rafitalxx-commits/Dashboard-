@@ -107,13 +107,13 @@ export function PendingPurchasesView() {
   };
 
   useEffect(() => {
-    if (!creating || vendorQuery.trim().length < 2) { setVendorResults([]); return; }
+    if (!creating) { setVendorResults([]); return; }
     const timer = window.setTimeout(async () => {
       setVendorLoading(true);
       try { setVendorResults(await odooClient.getPurchaseVendors(vendorQuery)); }
       catch (failure) { setMessage(failure instanceof Error ? failure.message : "No se pudieron buscar proveedores"); }
       finally { setVendorLoading(false); }
-    }, 250);
+    }, vendorQuery.trim() ? 180 : 0);
     return () => window.clearTimeout(timer);
   }, [creating, vendorQuery]);
 
@@ -137,6 +137,18 @@ export function PendingPurchasesView() {
     setDrafts((current) => ({ ...current, [id]: [] }));
     setExpanded(id); setEditing(id); setCreating(false); setVendorQuery(""); setVendorResults([]);
     setMessage(`Nuevo presupuesto para ${vendor.name}. Añade al menos un producto.`);
+  };
+
+  const simulateConfirmation = async (sendEmail: boolean) => {
+    if (!actionPreview || actionLoading) return;
+    setActionLoading("modal");
+    try {
+      await odooClient.confirmPendingPurchase(actionPreview.orderId, sendEmail, true);
+      setMessage(sendEmail ? "Simulación completada: plantilla nativa, PDF del pedido y destinatario validados; no se envió ningún correo." : "Simulación completada: Odoo confirmaría el pedido y generaría el albarán nativo.");
+      setActionPreview(null); setActionKind(null);
+    } catch (failure) {
+      setMessage(failure instanceof Error ? failure.message : "No se pudo simular la confirmación");
+    } finally { setActionLoading(null); }
   };
 
   const load = async () => {
@@ -289,7 +301,7 @@ export function PendingPurchasesView() {
           );
         })}
       </div>
-      {creating && <div aria-labelledby="new-purchase-title" aria-modal="true" className="purchase-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setCreating(false); }} role="dialog"><div className="purchase-modal"><h3 id="new-purchase-title">Crear presupuesto de compra</h3><p>Busca y selecciona el proveedor. El presupuesto se mantendrá en borrador hasta que lo confirmes.</p><label className="purchase-vendor-search"><Search size={17}/><input autoFocus onChange={(event) => setVendorQuery(event.target.value)} placeholder="Proveedor · usa a+b para combinar términos" value={vendorQuery}/>{vendorLoading && <RefreshCw className="spin" size={16}/>}</label>{vendorResults.length > 0 && <div className="reception-product-results">{vendorResults.map((vendor) => <button key={vendor.id} onClick={() => startNewQuotation(vendor)} type="button"><Plus size={16}/><span><strong>{vendor.name}</strong><small>{vendor.email || "Sin email configurado"}</small></span></button>)}</div>}<div className="purchase-modal-actions"><button onClick={() => setCreating(false)} type="button">Cancelar</button></div></div></div>}
+      {creating && <div aria-labelledby="new-purchase-title" aria-modal="true" className="purchase-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setCreating(false); }} role="dialog"><div className="purchase-modal"><h3 id="new-purchase-title">Crear presupuesto de compra</h3><p>Selecciona un proveedor sugerido o escribe para filtrar. El presupuesto seguirá en borrador.</p><label className="purchase-vendor-search"><Search size={17}/><input autoFocus onChange={(event) => setVendorQuery(event.target.value)} placeholder="Proveedor · usa a+b para combinar términos" value={vendorQuery}/>{vendorLoading && <RefreshCw className="spin" size={16}/>}</label>{vendorLoading && vendorResults.length === 0 && <div className="purchase-search-state" role="status"><RefreshCw className="spin" size={16}/>Buscando proveedores…</div>}{!vendorLoading && vendorResults.length === 0 && <div className="purchase-search-state">No se encontró ningún proveedor con esta búsqueda.</div>}{vendorResults.length > 0 && <div className="reception-product-results">{vendorResults.map((vendor) => <button key={vendor.id} onClick={() => startNewQuotation(vendor)} type="button"><Plus size={16}/><span><strong>{vendor.name}</strong><small>{vendor.email || "Sin email configurado"}</small></span></button>)}</div>}<div className="purchase-modal-actions"><button onClick={() => setCreating(false)} type="button">Cancelar</button></div></div></div>}
       {confirming && (() => {
         const lines = drafts[confirming.id] ?? [];
         const total = lines.reduce((sum, line) => sum + line.orderedQty * line.priceUnit, 0);
@@ -304,7 +316,7 @@ export function PendingPurchasesView() {
           </div>
         </div>;
       })()}
-      {actionPreview && actionKind && <div aria-labelledby="purchase-action-title" aria-modal="true" className="purchase-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) { setActionPreview(null); setActionKind(null); } }} role="dialog"><div className="purchase-modal"><h3 id="purchase-action-title">Confirmar pedido de compra</h3><p><strong>{actionPreview.ref}</strong> · {actionPreview.supplier}</p><dl><div><dt>Líneas</dt><dd>{actionPreview.lineCount}</dd></div><div><dt>Total</dt><dd>{formatMoney(actionPreview.total, actionPreview.currency)}</dd></div><div><dt>Albarán nativo</dt><dd>{actionPreview.willCreateReceipt ? `Sí · ${actionPreview.receiptProductLines} líneas de producto` : "No · solo servicios"}</dd></div><div><dt>Email proveedor</dt><dd>{actionPreview.supplierEmail || "Sin email configurado"}</dd></div></dl><div className="purchase-modal-warning"><AlertTriangle size={18}/>Simulación LAB: no se confirmará el pedido ni se enviará ningún correo real.</div><div className="purchase-modal-actions"><button onClick={() => { setActionPreview(null); setActionKind(null); }} type="button">Cancelar</button><button className="primary" onClick={() => { setMessage("Simulación completada: Odoo confirmaría el pedido y generaría el albarán nativo, sin enviar email."); setActionPreview(null); setActionKind(null); }} type="button">Aceptar</button><button className="primary" disabled={!actionPreview.supplierEmail} onClick={() => { setMessage("Simulación completada: Odoo confirmaría el pedido, generaría el albarán y enviaría el email al proveedor."); setActionPreview(null); setActionKind(null); }} type="button">Aceptar y enviar email</button></div></div></div>}
+      {actionPreview && actionKind && <div aria-labelledby="purchase-action-title" aria-modal="true" className="purchase-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !actionLoading) { setActionPreview(null); setActionKind(null); } }} role="dialog"><div className="purchase-modal"><h3 id="purchase-action-title">Confirmar pedido de compra</h3><p><strong>{actionPreview.ref}</strong> · {actionPreview.supplier}</p><dl><div><dt>Líneas</dt><dd>{actionPreview.lineCount}</dd></div><div><dt>Total</dt><dd>{formatMoney(actionPreview.total, actionPreview.currency)}</dd></div><div><dt>Albarán nativo</dt><dd>{actionPreview.willCreateReceipt ? `Sí · ${actionPreview.receiptProductLines} líneas de producto` : "No · solo servicios"}</dd></div><div><dt>Email proveedor</dt><dd>{actionPreview.supplierEmail || "Sin email configurado"}</dd></div></dl>{!actionPreview.supplierEmail && <div className="purchase-modal-error" role="alert">El proveedor no tiene email en su ficha de contacto. Puedes confirmar, pero no enviar el correo.</div>}<div className="purchase-modal-warning"><AlertTriangle size={18}/>«Aceptar y enviar email» usará la plantilla nativa “Purchase: Purchase Order”, que genera y adjunta el PDF del pedido con proveedor, líneas y precios.</div><div className="purchase-modal-actions"><button disabled={Boolean(actionLoading)} onClick={() => { setActionPreview(null); setActionKind(null); }} type="button">Cancelar</button><button className="primary" disabled={Boolean(actionLoading)} onClick={() => void simulateConfirmation(false)} type="button">{actionLoading ? "Comprobando…" : "Aceptar"}</button><button className="primary" disabled={Boolean(actionLoading) || !actionPreview.supplierEmail} onClick={() => void simulateConfirmation(true)} type="button">{actionLoading ? "Comprobando…" : "Aceptar y enviar email"}</button></div></div></div>}
     </section>
   );
 }

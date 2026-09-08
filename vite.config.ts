@@ -444,6 +444,7 @@ const readOnlyModels = new Set([
   "product.product",
   "product.category",
   "product.supplierinfo",
+  "ir.model.data",
   "mrp.bom",
   "mrp.bom.line",
 ]);
@@ -1170,6 +1171,14 @@ function odooReadOnlyApi(env: Record<string, string>) {
                 return;
               }
               sendJson(response, 200, await saveOdooPurchaseQuotation(env, await readJsonBody(request)));
+              return;
+            }
+            if (action === "confirm" && request.method === "POST") {
+              if (!user.permissions.includes("odooWrite")) {
+                sendJson(response, 403, { message: "Sin permiso para escribir en Odoo" });
+                return;
+              }
+              sendJson(response, 200, await confirmOdooPurchaseQuotation(env, await readJsonBody(request)));
               return;
             }
             if (request.method !== "GET") {
@@ -6721,6 +6730,35 @@ async function getOdooPurchaseActionPreview(env: Record<string, string>, orderId
   };
 }
 
+async function confirmOdooPurchaseQuotation(env: Record<string, string>, raw: unknown) {
+  const input = (raw && typeof raw === "object" ? raw : {}) as { orderId?: unknown; sendEmail?: unknown; simulate?: unknown };
+  const orderId = Number(input.orderId);
+  if (!Number.isInteger(orderId) || orderId <= 0) throw new Error("Presupuesto no válido");
+  const sendEmail = input.sendEmail === true;
+  const preview = await getOdooPurchaseActionPreview(env, orderId);
+  if (sendEmail && !preview.supplierEmail) throw new Error("El proveedor no tiene email en su ficha de contacto");
+  const config = getOdooConfig(env);
+  const uid = await authenticate(config);
+  const lines = await executeKw(config, uid, "purchase.order.line", "search_read", [[["order_id", "=", orderId], ["display_type", "=", false]]], { fields: ["id", "product_id", "product_qty", "price_unit"] }) as OdooPurchaseLineRecord[];
+  if (!lines.length || lines.some((line) => !getRelationId(line.product_id) || Number(line.product_qty ?? 0) <= 0 || Number(line.price_unit ?? 0) <= 0)) throw new Error("El presupuesto contiene líneas incompletas o sin precio válido");
+  const templateRows = sendEmail ? await executeKw(config, uid, "ir.model.data", "search_read", [[["module", "=", "purchase"], ["name", "=", "email_template_edi_purchase_done"]]], { fields: ["res_id"], limit: 1 }) as Array<{ res_id?: number }> : [];
+  const templateId = Number(templateRows[0]?.res_id ?? 0);
+  if (sendEmail && !templateId) throw new Error("No se encontró la plantilla nativa de pedido de compra");
+  if (input.simulate === true) return { ok: true, simulated: true, ref: preview.ref, emailSent: false, pickingRefs: [], message: sendEmail ? "Simulación: confirmación y email nativo preparados" : "Simulación: confirmación nativa preparada" };
+  if (env.ODOO_WRITE_ENABLED !== "true") throw new Error("Escritura en Odoo desactivada en este entorno de pruebas");
+  await executePurchaseOrderAction(config, uid, "purchase.order", "button_confirm", [[orderId]]);
+  const [confirmed] = await executeKw(config, uid, "purchase.order", "read", [[orderId]], { fields: ["id", "name", "state", "picking_ids"] }) as Array<OdooPurchaseOrderRecord & { picking_ids?: number[] }>;
+  if (!confirmed || !["purchase", "done"].includes(confirmed.state || "")) throw new Error("Odoo no confirmó el pedido de compra");
+  let emailSent = false;
+  if (sendEmail) {
+    await executePurchaseOrderAction(config, uid, "mail.template", "send_mail", [[templateId], orderId], { force_send: true, raise_exception: true });
+    emailSent = true;
+  }
+  const pickingIds = confirmed.picking_ids ?? [];
+  const pickings = pickingIds.length ? await executeKw(config, uid, "stock.picking", "read", [pickingIds], { fields: ["id", "name"] }) as Array<{ id: number; name?: string }> : [];
+  return { ok: true, ref: confirmed.name || preview.ref, emailSent, pickingRefs: pickings.map((picking) => cleanText(picking.name)).filter(Boolean) };
+}
+
 type PurchaseQuotationWriteLine = {
   id?: unknown;
   productId?: unknown;
@@ -7941,6 +7979,17 @@ async function executePurchaseQuotationWrite(
   } else {
     throw new Error("Operación de compra bloqueada");
   }
+  return rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
+}
+
+async function executePurchaseOrderAction(config: ReturnType<typeof getOdooConfig>, uid: number, model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) {
+  if (model === "purchase.order" && method === "button_confirm") {
+    const ids = args[0];
+    if (!Array.isArray(ids) || ids.length !== 1 || !ids.every((id) => Number.isInteger(id) && Number(id) > 0)) throw new Error("Confirmación de compra bloqueada");
+  } else if (model === "mail.template" && method === "send_mail") {
+    const templateIds = args[0];
+    if (!Array.isArray(templateIds) || templateIds.length !== 1 || !templateIds.every((id) => Number.isInteger(id) && Number(id) > 0) || !Number.isInteger(args[1]) || Number(args[1]) <= 0 || kwargs.force_send !== true || kwargs.raise_exception !== true) throw new Error("Envío de compra bloqueado");
+  } else throw new Error("Acción de compra bloqueada");
   return rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
 }
 
