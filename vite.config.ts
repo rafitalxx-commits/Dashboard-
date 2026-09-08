@@ -1181,6 +1181,14 @@ function odooReadOnlyApi(env: Record<string, string>) {
               sendJson(response, 200, await confirmOdooPurchaseQuotation(env, await readJsonBody(request)));
               return;
             }
+            if (action === "cancel" && request.method === "POST") {
+              if (!user.permissions.includes("odooWrite")) {
+                sendJson(response, 403, { message: "Sin permiso para escribir en Odoo" });
+                return;
+              }
+              sendJson(response, 200, await cancelOdooPurchaseQuotation(env, await readJsonBody(request)));
+              return;
+            }
             if (request.method !== "GET") {
               sendJson(response, 405, { message: "Metodo no permitido" });
               return;
@@ -6678,7 +6686,7 @@ async function getOdooPurchaseProductOptions(
   if (!partnerId) throw new Error("Selecciona primero un proveedor");
   const term = cleanText(input.query);
   const domain: unknown[] = [["purchase_ok", "=", true]];
-  for (const token of term.split("+").map((part) => part.trim()).filter(Boolean)) domain.push("|", "|", ["default_code", "ilike", token], ["barcode", "ilike", token], ["name", "ilike", token]);
+  for (const token of term.split(/[+\s]+/).map((part) => part.trim()).filter(Boolean)) domain.push("|", "|", ["default_code", "ilike", token], ["barcode", "ilike", token], ["name", "ilike", token]);
   const products = await executeKw(config, uid, "product.product", "search_read", [domain], { fields: ["id", "name", "display_name", "default_code", "barcode", "image_128", "product_tmpl_id", "categ_id", "uom_po_id"], limit: 25 }) as ProductRecord[];
   const templateIds = products.map((product) => getRelationId(product.product_tmpl_id)).filter((id): id is number => Boolean(id));
   const today = new Date().toISOString().slice(0, 10);
@@ -6701,7 +6709,7 @@ async function getOdooPurchaseVendorOptions(env: Record<string, string>, query: 
   const config = getOdooConfig(env);
   const uid = await authenticate(config);
   const domain: unknown[] = [["supplier_rank", ">", 0], ["active", "=", true]];
-  for (const token of cleanText(query).split("+").map((part) => part.trim()).filter(Boolean)) domain.push("|", ["name", "ilike", token], ["email", "ilike", token]);
+  for (const token of cleanText(query).split(/[+\s]+/).map((part) => part.trim()).filter(Boolean)) domain.push("|", ["name", "ilike", token], ["email", "ilike", token]);
   const vendors = await executeKw(config, uid, "res.partner", "search_read", [domain], { fields: ["id", "name", "email", "property_purchase_currency_id"], order: "name asc", limit: 20 }) as Array<{ id: number; name?: string; email?: string | false; property_purchase_currency_id?: false | [number, string] }>;
   return { vendors: vendors.map((vendor) => ({ id: String(vendor.id), name: cleanText(vendor.name), email: cleanText(vendor.email), currency: getRelationName(vendor.property_purchase_currency_id) || "EUR" })) };
 }
@@ -6757,6 +6765,21 @@ async function confirmOdooPurchaseQuotation(env: Record<string, string>, raw: un
   const pickingIds = confirmed.picking_ids ?? [];
   const pickings = pickingIds.length ? await executeKw(config, uid, "stock.picking", "read", [pickingIds], { fields: ["id", "name"] }) as Array<{ id: number; name?: string }> : [];
   return { ok: true, ref: confirmed.name || preview.ref, emailSent, pickingRefs: pickings.map((picking) => cleanText(picking.name)).filter(Boolean) };
+}
+
+async function cancelOdooPurchaseQuotation(env: Record<string, string>, raw: unknown) {
+  const input = (raw && typeof raw === "object" ? raw : {}) as { orderId?: unknown; simulate?: unknown };
+  const orderId = Number(input.orderId);
+  if (!Number.isInteger(orderId) || orderId <= 0) throw new Error("Presupuesto no válido");
+  const preview = await getOdooPurchaseActionPreview(env, orderId);
+  if (input.simulate === true) return { ok: true, simulated: true, ref: preview.ref, message: "Simulación: cancelación nativa preparada" };
+  if (env.ODOO_WRITE_ENABLED !== "true") throw new Error("Escritura en Odoo desactivada en este entorno de pruebas");
+  const config = getOdooConfig(env);
+  const uid = await authenticate(config);
+  await executePurchaseOrderAction(config, uid, "purchase.order", "button_cancel", [[orderId]]);
+  const [cancelled] = await executeKw(config, uid, "purchase.order", "read", [[orderId]], { fields: ["id", "name", "state"] }) as OdooPurchaseOrderRecord[];
+  if (cancelled?.state !== "cancel") throw new Error("Odoo no canceló el presupuesto");
+  return { ok: true, ref: cancelled.name || preview.ref, state: "cancel" };
 }
 
 type PurchaseQuotationWriteLine = {
@@ -7983,7 +8006,7 @@ async function executePurchaseQuotationWrite(
 }
 
 async function executePurchaseOrderAction(config: ReturnType<typeof getOdooConfig>, uid: number, model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) {
-  if (model === "purchase.order" && method === "button_confirm") {
+  if (model === "purchase.order" && ["button_confirm", "button_cancel"].includes(method)) {
     const ids = args[0];
     if (!Array.isArray(ids) || ids.length !== 1 || !ids.every((id) => Number.isInteger(id) && Number(id) > 0)) throw new Error("Confirmación de compra bloqueada");
   } else if (model === "mail.template" && method === "send_mail") {

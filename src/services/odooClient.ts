@@ -879,6 +879,14 @@ export const odooClient = {
     if (!response.ok || !payload.ok) throw new Error(payload.message ?? "No se pudo confirmar el pedido");
     return payload;
   },
+  async cancelPendingPurchase(orderId: string, simulate = false) {
+    const response = await fetch(receptionsApiPath("/api/odoo/pending-purchases/cancel"), {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ orderId, simulate }),
+    });
+    const payload = await readJson<{ ok?: boolean; ref?: string; simulated?: boolean; message?: string }>(response);
+    if (!response.ok || !payload.ok) throw new Error(payload.message ?? "No se pudo cancelar el presupuesto");
+    return payload;
+  },
   async getInventoryReceptions() {
     const response = await fetch(receptionsApiPath("/api/odoo/inventory-receptions"));
     const payload = (await response.json()) as InventoryReceptionsPayload;
