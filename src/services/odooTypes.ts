@@ -408,8 +408,11 @@ export type InventoryReceptionLine = {
   processedQty: number;
   pendingQty: number;
   uom: string;
-  classification: "under_order" | "replenishment";
+  classification: "under_order" | "replenishment" | "mixed";
   saleOrderRefs: string[];
+  saleOrderAllocations?: Array<{ saleOrderRef: string; quantity: number }>;
+  pendingShipmentQty?: number;
+  warehouseStockQty?: number;
   preferredLocation?: string;
 };
 

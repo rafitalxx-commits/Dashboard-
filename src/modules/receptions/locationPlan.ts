@@ -12,15 +12,22 @@ export function createLocationPlan(
   locations: LocationCatalogEntry[] = [],
 ): ReceptionLocationPlan {
   const activeCodes = new Set(locations.filter((item) => item.active).map((item) => item.code));
+  const dispatchQty = Math.min(line.pendingQty, Math.max(0, line.pendingShipmentQty ?? (line.classification === "under_order" ? line.pendingQty : 0)));
+  const warehouseQty = Math.max(0, line.pendingQty - dispatchQty);
+  const allocations: ReceptionLocationAllocation[] = [];
+  if (dispatchQty > 0 && activeCodes.has(DISPATCH_PENDING_LOCATION)) {
+    allocations.push({ id: `${line.id}-dispatch`, location: DISPATCH_PENDING_LOCATION, quantity: dispatchQty });
+  }
+  if (warehouseQty > 0) {
+    allocations.push({
+      id: `${line.id}-preferred`,
+      location: line.preferredLocation && activeCodes.has(line.preferredLocation) ? line.preferredLocation : "",
+      quantity: warehouseQty,
+    });
+  }
   return {
     receivedQty: line.pendingQty,
-    allocations: line.classification === "under_order"
-      ? activeCodes.has(DISPATCH_PENDING_LOCATION)
-        ? [{ id: `${line.id}-dispatch`, location: DISPATCH_PENDING_LOCATION, quantity: line.pendingQty }]
-        : []
-      : line.preferredLocation && activeCodes.has(line.preferredLocation)
-        ? [{ id: `${line.id}-preferred`, location: line.preferredLocation, quantity: line.pendingQty }]
-        : [{ id: `${line.id}-location`, location: "", quantity: line.pendingQty }],
+    allocations,
     ready: false,
   };
 }

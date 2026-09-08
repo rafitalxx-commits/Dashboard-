@@ -64,6 +64,9 @@
 .inventory-line-classification.under-order span { color: #922b24; }
 .inventory-line-classification.replenishment { background: #fff5df; color: #885600; }
 .inventory-line-classification.replenishment span { color: #885600; }
+.inventory-line-classification.mixed { background: #f5efff; color: #65439a; }
+.inventory-line-classification.mixed span { color: #65439a; }
+.inventory-line-classification.mixed span strong { color: inherit; }
 .inventory-quantity { display: grid; gap: 3px; text-align: right; }
 .inventory-quantity small { color: #7c898f; }
 .inventory-quantity.emphasis strong { color: #176d58; font-size: 18px; }

@@ -62,6 +62,23 @@ try {
   assert.equal(receivedPlan.receivedQty, 1);
   assert.equal(receivedPlan.allocations[0]?.location, "A101");
 
+  const mixedPlan = createLocationPlan({
+    ...replenishment,
+    id: "P04875-line-mixed",
+    pendingQty: 10,
+    expectedQty: 10,
+    classification: "mixed",
+    saleOrderRefs: ["S100001"],
+    saleOrderAllocations: [{ saleOrderRef: "S100001", quantity: 3 }],
+    pendingShipmentQty: 3,
+    warehouseStockQty: 7,
+  }, activeLocations);
+  assert.deepEqual(mixedPlan.allocations, [
+    { id: "P04875-line-mixed-dispatch", location: DISPATCH_PENDING_LOCATION, quantity: 3 },
+    { id: "P04875-line-mixed-preferred", location: "A101", quantity: 7 },
+  ]);
+  assert.equal(isLocationPlanBalanced(mixedPlan, activeLocations.map((item) => item.code)), true);
+
   const productWithoutLocation = { ...replenishment, id: "P04875-no-location", preferredLocation: undefined };
   const manualPlan = createLocationPlan(productWithoutLocation, activeLocations);
   assert.equal(manualPlan.allocations.length, 1);

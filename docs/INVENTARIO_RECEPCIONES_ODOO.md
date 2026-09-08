@@ -80,6 +80,24 @@ Antes de clasificar automáticamente se deben inspeccionar tres casos reales:
 
 No se implementarán supuestos sobre rutas MTO, grupos de aprovisionamiento u orígenes sin verificar los campos reales de esta instalación de Odoo.
 
+### Reparto automático por cantidad (LAB)
+
+Una línea de recepción puede dividirse entre unidades pendientes de envío y
+unidades destinadas a stock. El Dashboard conserva intacta la cantidad pedida
+al proveedor y presenta el reparto, por ejemplo: `100 pedidas = 30 pendientes
+de envío + 70 para stock`.
+
+El reparto automático utiliza únicamente relaciones explícitas de Odoo entre
+el movimiento de entrada, sus movimientos destino y las líneas de venta. Se
+ignoran movimientos terminados o cancelados, se evita duplicar cantidades en
+rutas de varios pasos y nunca se asigna más que la cantidad pendiente de la
+entrada. Si no existe una relación explícita, la línea permanece como reposición
+y el operario puede añadir manualmente «Pendiente de envío» durante el reparto.
+
+La propuesta física prioriza las unidades vinculadas a pedidos de venta en
+`PENDIENTE_ENVIO`; el resto se propone en la ubicación preferente del producto.
+Esta clasificación es informativa y no modifica el pedido de compra en Odoo.
+
 ## Fases siguientes
 
 1. Recepciones: lectura Odoo.

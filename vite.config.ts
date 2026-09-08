@@ -37,6 +37,7 @@ import { createProductLocations, parseLocationCode } from "./backend/products/lo
 import { createPendingReceipts } from "./backend/receptions/pendingReceipts";
 import { createReceptionSessions } from "./backend/receptions/sessions";
 import {
+  buildSaleOrderAllocationsByReceptionMove,
   buildSaleOrderRefsByReceptionMove,
   type ReceptionPurchaseLineTrace,
   type ReceptionSaleLineTrace,
@@ -6246,7 +6247,7 @@ async function getOdooInventoryReceptions(
       "stock.move",
       "read",
       [batch],
-      { fields: ["id", "move_dest_ids", "sale_line_id"] },
+      { fields: ["id", "state", "product_uom_qty", "move_dest_ids", "sale_line_id"] },
     )) as OdooMoveRecord[];
     tracedMoves.forEach((move) => traceMovesById.set(move.id, move));
     traceMoveIds.push(
@@ -6296,6 +6297,15 @@ async function getOdooInventoryReceptions(
     : [];
   const saleOrdersByMoveId = buildSaleOrderRefsByReceptionMove(
     activeMoves.map((move) => move.id),
+    Array.from(traceMovesById.values()),
+    purchaseLines,
+    saleLines,
+  );
+  const saleOrderAllocationsByMoveId = buildSaleOrderAllocationsByReceptionMove(
+    new Map(activeMoves.map((move) => [
+      move.id,
+      Math.max(0, Number(move.product_uom_qty ?? 0) - (move.picked ? Number(move.quantity ?? 0) : 0)),
+    ])),
     Array.from(traceMovesById.values()),
     purchaseLines,
     saleLines,
@@ -6354,7 +6364,16 @@ async function getOdooInventoryReceptions(
       const relationName = getRelationName(move.product_id);
       const expectedQty = Number(move.product_uom_qty ?? 0);
       const processedQty = move.picked ? Number(move.quantity ?? 0) : 0;
-      const saleOrderRefs = saleOrdersByMoveId.get(move.id) ?? [];
+      const saleOrderAllocations = saleOrderAllocationsByMoveId.get(move.id) ?? [];
+      const saleOrderRefs = saleOrderAllocations.length
+        ? saleOrderAllocations.map((allocation) => allocation.saleOrderRef)
+        : saleOrdersByMoveId.get(move.id) ?? [];
+      const pendingQty = Math.max(0, expectedQty - processedQty);
+      const pendingShipmentQty = Math.min(
+        pendingQty,
+        saleOrderAllocations.reduce((total, allocation) => total + allocation.quantity, 0),
+      );
+      const warehouseStockQty = Math.max(0, pendingQty - pendingShipmentQty);
       return {
         id: String(move.id),
         productId: productId ? String(productId) : undefined,
@@ -6368,10 +6387,17 @@ async function getOdooInventoryReceptions(
         imageUrl: formatProductImage(product?.image_128),
         expectedQty,
         processedQty,
-        pendingQty: Math.max(0, expectedQty - processedQty),
+        pendingQty,
         uom: formatUom(getRelationName(move.product_uom)),
-        classification: saleOrderRefs.length ? "under_order" : "replenishment",
+        classification: pendingShipmentQty <= 0
+          ? "replenishment"
+          : warehouseStockQty <= 0
+            ? "under_order"
+            : "mixed",
         saleOrderRefs,
+        saleOrderAllocations,
+        pendingShipmentQty,
+        warehouseStockQty,
         preferredLocation: productId
           ? preferredLocations.get(productId) || undefined
           : undefined,
