@@ -36,6 +36,10 @@ assert.match(view, /<button autoFocus className="primary-button"/);
 assert.match(view, /type="submit">\{validating \?/);
 assert.match(view, /<RefreshCw className="inventory-spin" size=\{16\}\/>Validando…/);
 assert.match(view, /type="button">Cancelar<\/button>/);
+assert.match(view, /inventory-validation-modal-backdrop/);
+assert.match(view, /event\.key === "Escape"/);
+assert.match(view, /event\.key !== "Tab"/);
+assert.match(view, /validationButtonRef\.current\?\.focus\(\)/);
 assert.doesNotMatch(view, /validateSimulation|cancelSimulation|Confirmar simulación/);
 
 console.log("Recepciones Fase 5: escritura Odoo, permisos y feedback verificados");
