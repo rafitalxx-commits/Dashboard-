@@ -24,7 +24,8 @@ import type {
 } from "./odooTypes";
 
 type DashboardUserRole = "viewer" | "printer" | "admin";
-const receptionsApiPath = (path: string) => path;
+const dashboardBasePath = import.meta.env.BASE_URL === "/" ? "" : import.meta.env.BASE_URL.replace(/\/$/, "");
+const receptionsApiPath = (path: string) => `${dashboardBasePath}${path}`;
 type DashboardPermission =
   | "dashboard"
   | "tasks"
