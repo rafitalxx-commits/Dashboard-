@@ -153,6 +153,8 @@ type OdooPurchaseLineRecord = {
   product_qty?: number;
   qty_received?: number;
   price_unit?: number;
+  discount?: number;
+  price_unit_discounted?: number;
   price_subtotal?: number;
   product_uom?: false | [number, string];
   date_planned?: string | false;
@@ -6556,6 +6558,8 @@ async function getOdooPurchaseReceptions(env: Record<string, string>) {
         "product_qty",
         "qty_received",
         "price_unit",
+        "discount",
+        "price_unit_discounted",
         "price_subtotal",
         "product_uom",
         "date_planned",
@@ -6624,6 +6628,8 @@ async function getOdooPurchaseReceptions(env: Record<string, string>) {
         receivedQty,
         pendingQty: Math.max(0, orderedQty - receivedQty),
         priceUnit: Number(line.price_unit ?? 0),
+        discount: Number(line.discount ?? 0),
+        priceUnitDiscounted: Number(line.price_unit_discounted ?? (Number(line.price_unit ?? 0) * (1 - Number(line.discount ?? 0) / 100))),
         subtotal: Number(line.price_subtotal ?? (orderedQty * Number(line.price_unit ?? 0))),
         uom: "uds",
         costMethod: costMethodByCategory.get(getRelationId((product as ProductRecord & { categ_id?: false | [number, string] } | undefined)?.categ_id) ?? 0) || "standard",
@@ -6693,7 +6699,7 @@ async function getOdooPurchaseProductOptions(
   const supplierRows = templateIds.length && partnerId ? await executeKw(config, uid, "product.supplierinfo", "search_read", [[
     ["partner_id", "=", partnerId], ["product_tmpl_id", "in", templateIds], ["min_qty", "<=", Math.max(0, input.quantity)],
     "|", ["date_start", "=", false], ["date_start", "<=", today], "|", ["date_end", "=", false], ["date_end", ">=", today],
-  ]], { fields: ["product_tmpl_id", "product_id", "min_qty", "price", "currency_id", "delay", "sequence"], order: "sequence asc, min_qty desc", limit: 5000 }) as Array<Record<string, unknown>> : [];
+  ]], { fields: ["product_tmpl_id", "product_id", "min_qty", "price", "discount", "price_discounted", "currency_id", "delay", "sequence"], order: "sequence asc, min_qty desc", limit: 5000 }) as Array<Record<string, unknown>> : [];
   const categoryIds = products.map((product) => getRelationId((product as ProductRecord & { categ_id?: false | [number, string] }).categ_id)).filter((id): id is number => Boolean(id));
   const categories = categoryIds.length ? await executeKw(config, uid, "product.category", "read", [categoryIds], { fields: ["id", "property_cost_method"] }) as Array<{ id: number; property_cost_method?: string }> : [];
   const costMethodByCategory = new Map(categories.map((category) => [category.id, category.property_cost_method || "standard"]));
@@ -6701,7 +6707,10 @@ async function getOdooPurchaseProductOptions(
     const productId = product.id;
     const templateId = getRelationId(product.product_tmpl_id);
     const supplier = chooseSupplierPrice(productId, templateId ?? 0, supplierRows as SupplierPriceRow[]);
-    return { id: String(product.id), name: cleanText(product.name) || cleanText(product.display_name), sku: cleanText(product.default_code), barcode: cleanText(product.barcode), imageUrl: formatProductImage(product.image_128), uom: getRelationName((product as ProductRecord & { uom_po_id?: false | [number, string] }).uom_po_id) || "uds", suggestedPrice: Number(supplier?.price ?? 0), supplierPriceFound: Boolean(supplier && Number(supplier.price) > 0), supplierMinQty: Number(supplier?.min_qty ?? 0), supplierCurrency: getRelationName(supplier?.currency_id as false | [number, string]) || getRelationName(order?.currency_id) || "EUR", supplierDelay: Number(supplier?.delay ?? 0), costMethod: costMethodByCategory.get(getRelationId((product as ProductRecord & { categ_id?: false | [number, string] }).categ_id) ?? 0) || "standard" };
+    const suggestedPrice = Number(supplier?.price ?? 0);
+    const suggestedDiscount = Number(supplier?.discount ?? 0);
+    const suggestedNetPrice = Number(supplier?.price_discounted ?? (suggestedPrice * (1 - suggestedDiscount / 100)));
+    return { id: String(product.id), name: cleanText(product.name) || cleanText(product.display_name), sku: cleanText(product.default_code), barcode: cleanText(product.barcode), imageUrl: formatProductImage(product.image_128), uom: getRelationName((product as ProductRecord & { uom_po_id?: false | [number, string] }).uom_po_id) || "uds", suggestedPrice, suggestedDiscount, suggestedNetPrice, supplierPriceFound: Boolean(supplier), supplierMinQty: Number(supplier?.min_qty ?? 0), supplierCurrency: getRelationName(supplier?.currency_id as false | [number, string]) || getRelationName(order?.currency_id) || "EUR", supplierDelay: Number(supplier?.delay ?? 0), costMethod: costMethodByCategory.get(getRelationId((product as ProductRecord & { categ_id?: false | [number, string] }).categ_id) ?? 0) || "standard" };
   }) };
 }
 
@@ -6748,7 +6757,7 @@ async function confirmOdooPurchaseQuotation(env: Record<string, string>, raw: un
   const config = getOdooConfig(env);
   const uid = await authenticate(config);
   const lines = await executeKw(config, uid, "purchase.order.line", "search_read", [[["order_id", "=", orderId], ["display_type", "=", false]]], { fields: ["id", "product_id", "product_qty", "price_unit"] }) as OdooPurchaseLineRecord[];
-  if (!lines.length || lines.some((line) => !getRelationId(line.product_id) || Number(line.product_qty ?? 0) <= 0 || Number(line.price_unit ?? 0) <= 0)) throw new Error("El presupuesto contiene líneas incompletas o sin precio válido");
+  if (!lines.length || lines.some((line) => !getRelationId(line.product_id) || Number(line.product_qty ?? 0) <= 0 || Number(line.price_unit ?? 0) < 0)) throw new Error("El presupuesto contiene líneas incompletas o con precio no válido");
   const templateRows = sendEmail ? await executeKw(config, uid, "ir.model.data", "search_read", [[["module", "=", "purchase"], ["name", "=", "email_template_edi_purchase_done"]]], { fields: ["res_id"], limit: 1 }) as Array<{ res_id?: number }> : [];
   const templateId = Number(templateRows[0]?.res_id ?? 0);
   if (sendEmail && !templateId) throw new Error("No se encontró la plantilla nativa de pedido de compra");
@@ -6787,6 +6796,7 @@ type PurchaseQuotationWriteLine = {
   productId?: unknown;
   quantity?: unknown;
   priceUnit?: unknown;
+  discount?: unknown;
   expectedDate?: unknown;
   description?: unknown;
 };
@@ -6811,10 +6821,11 @@ async function saveOdooPurchaseQuotation(env: Record<string, string>, raw: unkno
     productId: Number(line.productId),
     quantity: Number(line.quantity),
     priceUnit: Number(line.priceUnit),
+    discount: Number(line.discount ?? 0),
     expectedDate: cleanText(line.expectedDate),
     description: cleanText(line.description),
   }));
-  if (lines.some((line) => !Number.isInteger(line.productId) || line.productId <= 0 || !Number.isFinite(line.quantity) || line.quantity <= 0 || !Number.isFinite(line.priceUnit) || line.priceUnit <= 0 || !/^\d{4}-\d{2}-\d{2}/.test(line.expectedDate))) {
+  if (lines.some((line) => !Number.isInteger(line.productId) || line.productId <= 0 || !Number.isFinite(line.quantity) || line.quantity <= 0 || !Number.isFinite(line.priceUnit) || line.priceUnit < 0 || !Number.isFinite(line.discount) || line.discount < 0 || line.discount > 100 || !/^\d{4}-\d{2}-\d{2}/.test(line.expectedDate))) {
     throw new Error("Hay productos, cantidades, precios o fechas no válidos");
   }
   const deletedLineIds = (Array.isArray(input.deletedLineIds) ? input.deletedLineIds : []).map(Number);
@@ -6845,6 +6856,7 @@ async function saveOdooPurchaseQuotation(env: Record<string, string>, raw: unkno
     await executePurchaseQuotationWrite(config, uid, "purchase.order.line", "write", [[Number(line.id)], {
       product_qty: line.quantity,
       price_unit: line.priceUnit,
+      discount: line.discount,
       date_planned: `${line.expectedDate.slice(0, 10)} 12:00:00`,
       name: line.description,
     }]);
@@ -6866,6 +6878,7 @@ async function saveOdooPurchaseQuotation(env: Record<string, string>, raw: unkno
         product_qty: line.quantity,
         product_uom: uomId,
         price_unit: line.priceUnit,
+        discount: line.discount,
         date_planned: `${line.expectedDate.slice(0, 10)} 12:00:00`,
         taxes_id: [[6, 0, product.supplier_taxes_id ?? []]],
       }]);

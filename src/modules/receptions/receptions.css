@@ -42,7 +42,7 @@
 .purchase-order-actions .reception-edit { background: #173f39; color: #fff; margin-left: 0; }
 .purchase-order-actions .danger, .purchase-modal-actions .danger { background: #fff0ee; border-color: #efc4bf; color: #9a3028; }
 .reception-lines { display: grid; }
-.reception-line { align-items: center; border-top: 1px solid #edf1f0; display: grid; gap: 13px; grid-template-columns: 48px minmax(220px, 1fr) repeat(3, 82px); padding: 13px 18px; }
+.reception-line { align-items: center; border-top: 1px solid #edf1f0; display: grid; gap: 13px; grid-template-columns: 48px minmax(220px, 1fr) repeat(4, 82px); padding: 13px 18px; }
 .reception-line:first-child { border-top: 0; }
 .reception-product-image { align-items: center; background: #f1f5f4; border-radius: 9px; color: #71807c; display: flex; height: 45px; justify-content: center; overflow: hidden; width: 45px; }
 .reception-product-image img { height: 100%; object-fit: contain; width: 100%; }
@@ -53,6 +53,7 @@
 .reception-quantity.emphasis strong { color: #176a5b; font-size: 18px; }
 .reception-edit-field { color: #667873; display: grid; font-size: 11px; font-weight: 750; gap: 4px; }
 .reception-edit-field input { border: 1px solid #cbdad6; border-radius: 8px; font: inherit; min-width: 0; padding: 8px; width: 100%; }
+.reception-edit-field small { color: #176a5b; font-size: 10px; font-weight: 800; }
 .reception-edit-date { color: #667873; display: flex; font-size: 11px; gap: 7px; }
 .reception-edit-date input { border: 1px solid #cbdad6; border-radius: 7px; font: inherit; padding: 4px 6px; }
 .reception-line-description { color: #667873; display: grid; font-size: 11px; gap: 4px; margin-top: 4px; }

@@ -3,6 +3,8 @@ export type SupplierPriceRow = {
   product_id?: false | [number, string];
   min_qty?: number;
   price?: number;
+  discount?: number;
+  price_discounted?: number;
   currency_id?: false | [number, string];
   delay?: number;
   sequence?: number;

@@ -372,7 +372,10 @@ export type PurchaseReceptionLine = {
   uom: string;
   expectedDate: string;
   priceUnit: number;
+  discount: number;
+  priceUnitDiscounted: number;
   subtotal: number;
+  description?: string;
   costMethod: "average" | "fifo" | "standard" | string;
 };
 
@@ -410,6 +413,8 @@ export type PurchaseProductOption = {
   imageUrl?: string;
   uom: string;
   suggestedPrice: number;
+  suggestedDiscount: number;
+  suggestedNetPrice: number;
   supplierPriceFound: boolean;
   supplierMinQty: number;
   supplierCurrency: string;
@@ -429,6 +434,7 @@ export type PurchaseQuotationDraftLine = {
   productId: string;
   quantity: number;
   priceUnit: number;
+  discount: number;
   expectedDate: string;
   description: string;
 };
