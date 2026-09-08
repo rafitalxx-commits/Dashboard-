@@ -1184,6 +1184,10 @@ function odooReadOnlyApi(env: Record<string, string>) {
               }));
               return;
             }
+            if (action === "action-preview") {
+              sendJson(response, 200, await getOdooPurchaseActionPreview(env, Number(url.searchParams.get("orderId"))));
+              return;
+            }
             sendJson(response, 200, await getOdooPurchaseReceptions(env));
           } catch (error) {
             sendJson(response, request.method === "GET" ? 500 : 400, {
@@ -6675,6 +6679,30 @@ async function getOdooPurchaseProductOptions(
     const supplier = chooseSupplierPrice(productId, templateId ?? 0, supplierRows as SupplierPriceRow[]);
     return { id: String(product.id), name: cleanText(product.name) || cleanText(product.display_name), sku: cleanText(product.default_code), barcode: cleanText(product.barcode), imageUrl: formatProductImage(product.image_128), uom: getRelationName((product as ProductRecord & { uom_po_id?: false | [number, string] }).uom_po_id) || "uds", suggestedPrice: Number(supplier?.price ?? 0), supplierPriceFound: Boolean(supplier && Number(supplier.price) > 0), supplierMinQty: Number(supplier?.min_qty ?? 0), supplierCurrency: getRelationName(supplier?.currency_id as false | [number, string]) || getRelationName(order.currency_id), supplierDelay: Number(supplier?.delay ?? 0), costMethod: costMethodByCategory.get(getRelationId((product as ProductRecord & { categ_id?: false | [number, string] }).categ_id) ?? 0) || "standard" };
   }) };
+}
+
+async function getOdooPurchaseActionPreview(env: Record<string, string>, orderId: number) {
+  if (!Number.isInteger(orderId) || orderId <= 0) throw new Error("Presupuesto no válido");
+  const config = getOdooConfig(env);
+  const uid = await authenticate(config);
+  const [order] = await executeKw(config, uid, "purchase.order", "read", [[orderId]], { fields: ["id", "name", "state", "partner_id", "currency_id", "amount_total"] }) as OdooPurchaseOrderRecord[];
+  if (!order || !["draft", "sent"].includes(order.state || "")) throw new Error("El presupuesto ya no se puede enviar ni confirmar");
+  const partnerId = getRelationId(order.partner_id);
+  const [partner] = partnerId ? await executeKw(config, uid, "res.partner", "read", [[partnerId]], { fields: ["id", "name", "email"] }) as Array<{ id: number; name?: string; email?: string | false }> : [];
+  const lines = await executeKw(config, uid, "purchase.order.line", "search_read", [[
+    ["order_id", "=", orderId], ["display_type", "=", false], ["product_id", "!=", false],
+  ]], { fields: ["id", "product_id", "product_qty", "price_unit"] }) as OdooPurchaseLineRecord[];
+  const productIds = lines.map((line) => getRelationId(line.product_id)).filter((id): id is number => Boolean(id));
+  const products = productIds.length ? await executeKw(config, uid, "product.product", "read", [productIds], { fields: ["id", "type"] }) as ProductRecord[] : [];
+  const productTypeById = new Map(products.map((product) => [product.id, cleanText(product.type)]));
+  const receiptProductLines = lines.filter((line) => productTypeById.get(getRelationId(line.product_id) ?? 0) !== "service").length;
+  return {
+    orderId: String(order.id), ref: order.name || `PO #${order.id}`, state: order.state || "draft",
+    supplier: cleanText(partner?.name) || getRelationName(order.partner_id) || "Proveedor sin nombre",
+    supplierEmail: cleanText(partner?.email), lineCount: lines.length,
+    total: Number(order.amount_total ?? 0), currency: getRelationName(order.currency_id) || "EUR",
+    willCreateReceipt: receiptProductLines > 0, receiptProductLines,
+  };
 }
 
 type PurchaseQuotationWriteLine = {

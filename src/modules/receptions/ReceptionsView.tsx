@@ -10,6 +10,8 @@ import {
   Plus,
   Trash2,
   Save,
+  Mail,
+  CheckCircle2,
   Truck,
 } from "lucide-react";
 import { odooClient } from "../../services/odooClient";
@@ -18,6 +20,7 @@ import type {
   PurchaseReceptionsPayload,
   PurchaseReceptionLine,
   PurchaseProductOption,
+  PurchaseOrderActionPreview,
 } from "../../services/odooTypes";
 import "./receptions.css";
 
@@ -40,6 +43,9 @@ export function PendingPurchasesView() {
   const [saveError, setSaveError] = useState("");
   const [confirming, setConfirming] = useState<PurchaseReception | null>(null);
   const [saving, setSaving] = useState(false);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [actionPreview, setActionPreview] = useState<PurchaseOrderActionPreview | null>(null);
+  const [actionKind, setActionKind] = useState<"send" | "confirm" | null>(null);
   const acceptRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -79,6 +85,19 @@ export function PendingPurchasesView() {
       setSaveError(saveFailure instanceof Error ? saveFailure.message : "No se pudo guardar en Odoo");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const previewAction = async (reception: PurchaseReception, kind: "send" | "confirm") => {
+    setActionLoading(`${reception.id}-${kind}`);
+    setMessage("");
+    try {
+      setActionPreview(await odooClient.getPendingPurchaseActionPreview(reception.id));
+      setActionKind(kind);
+    } catch (failure) {
+      setMessage(failure instanceof Error ? failure.message : "No se pudo preparar la acción");
+    } finally {
+      setActionLoading(null);
     }
   };
 
@@ -208,7 +227,7 @@ export function PendingPurchasesView() {
                     <span><small>Pedido</small><strong>{formatDate(reception.orderDate)}</strong></span>
                     <span><small>Estado Odoo</small><strong>{translateState(reception.state)}</strong></span>
                     <span><small>Total líneas</small><strong>{formatMoney(isEditing ? draftTotal : reception.amountTotal, reception.currency)}</strong></span>
-                    {!isEditing ? <button className="reception-edit" onClick={() => { setEditing(reception.id); setDrafts((current) => ({ ...current, [reception.id]: reception.lines.map((line) => ({ ...line })) })); setMessage("Edición local iniciada. Odoo todavía no se ha modificado."); }} type="button">Editar presupuesto</button> : <span className="readonly-note"><Truck size={16}/>Cambios locales · sin enviar</span>}
+                    {!isEditing ? <div className="purchase-order-actions"><button disabled={Boolean(actionLoading)} onClick={() => void previewAction(reception, "send")} type="button">{actionLoading === `${reception.id}-send` ? <><RefreshCw className="spin" size={15}/>Preparando…</> : <><Mail size={15}/>Enviar al proveedor</>}</button><button disabled={Boolean(actionLoading)} onClick={() => void previewAction(reception, "confirm")} type="button">{actionLoading === `${reception.id}-confirm` ? <><RefreshCw className="spin" size={15}/>Comprobando…</> : <><CheckCircle2 size={15}/>Confirmar pedido</>}</button><button className="reception-edit" onClick={() => { setEditing(reception.id); setDrafts((current) => ({ ...current, [reception.id]: reception.lines.map((line) => ({ ...line })) })); setMessage("Edición local iniciada. Odoo todavía no se ha modificado."); }} type="button">Editar presupuesto</button></div> : <span className="readonly-note"><Truck size={16}/>Cambios locales · sin enviar</span>}
                   </div>
                   <div className="reception-lines">
                     {visibleLines.map((line) => (
@@ -247,6 +266,7 @@ export function PendingPurchasesView() {
           </div>
         </div>;
       })()}
+      {actionPreview && actionKind && <div aria-labelledby="purchase-action-title" aria-modal="true" className="purchase-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) { setActionPreview(null); setActionKind(null); } }} role="dialog"><div className="purchase-modal"><h3 id="purchase-action-title">{actionKind === "send" ? "Enviar pedido al proveedor" : "Confirmar pedido de compra"}</h3><p><strong>{actionPreview.ref}</strong> · {actionPreview.supplier}</p><dl><div><dt>Líneas</dt><dd>{actionPreview.lineCount}</dd></div><div><dt>Total</dt><dd>{formatMoney(actionPreview.total, actionPreview.currency)}</dd></div>{actionKind === "send" && <div><dt>Destinatario</dt><dd>{actionPreview.supplierEmail || "Sin email configurado"}</dd></div>}{actionKind === "confirm" && <div><dt>Albarán nativo</dt><dd>{actionPreview.willCreateReceipt ? `Sí · ${actionPreview.receiptProductLines} líneas de producto` : "No · solo servicios"}</dd></div>}</dl>{actionKind === "send" && !actionPreview.supplierEmail && <div className="purchase-modal-error" role="alert">El proveedor no tiene correo. Odoo no permitiría completar el envío.</div>}<div className="purchase-modal-warning"><AlertTriangle size={18}/>Simulación LAB: esta acción está interceptada y no enviará correos ni confirmará el pedido real.</div><div className="purchase-modal-actions"><button onClick={() => { setActionPreview(null); setActionKind(null); }} type="button">Cerrar</button><button className="primary" disabled={actionKind === "send" && !actionPreview.supplierEmail} onClick={() => { setMessage(actionKind === "send" ? "Simulación completada: Odoo no envió ningún correo." : "Simulación completada: Odoo no confirmó el pedido ni creó el albarán."); setActionPreview(null); setActionKind(null); }} type="button">{actionKind === "send" ? "Simular envío" : "Simular confirmación"}</button></div></div></div>}
     </section>
   );
 }

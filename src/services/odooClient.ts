@@ -16,6 +16,7 @@ import type {
   InventoryReceptionsPayload,
   PurchaseReceptionsPayload,
   PurchaseQuotationDraftLine,
+  PurchaseOrderActionPreview,
   ReceptionOperator,
   ReceptionSession,
   PendingReceipt,
@@ -852,6 +853,12 @@ export const odooClient = {
     });
     const payload = await readJson<{ ok?: boolean; ref?: string; message?: string }>(response);
     if (!response.ok || !payload.ok) throw new Error(payload.message ?? "No se pudo guardar el presupuesto en Odoo");
+    return payload;
+  },
+  async getPendingPurchaseActionPreview(orderId: string) {
+    const response = await fetch(receptionsApiPath(`/api/odoo/pending-purchases/action-preview?orderId=${encodeURIComponent(orderId)}`));
+    const payload = await readJson<PurchaseOrderActionPreview & { message?: string }>(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo preparar la acción de compra");
     return payload;
   },
   async getInventoryReceptions() {

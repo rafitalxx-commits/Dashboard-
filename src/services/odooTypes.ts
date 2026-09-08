@@ -424,6 +424,19 @@ export type PurchaseQuotationDraftLine = {
   expectedDate: string;
 };
 
+export type PurchaseOrderActionPreview = {
+  orderId: string;
+  ref: string;
+  state: string;
+  supplier: string;
+  supplierEmail: string;
+  lineCount: number;
+  total: number;
+  currency: string;
+  willCreateReceipt: boolean;
+  receiptProductLines: number;
+};
+
 export type InventoryReceptionLine = {
   id: string;
   productId?: string;
