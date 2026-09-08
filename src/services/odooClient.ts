@@ -884,11 +884,12 @@ export const odooClient = {
     if (!response.ok || !payload.receipt) throw new Error(payload.message ?? "No se pudo guardar el pedido pendiente por recibir");
     return payload;
   },
-  async getReceptionHistory() {
-    const response = await fetch(receptionsApiPath("/api/odoo/reception-history"));
-    const payload = await readJson<{ entries?: import("./odooTypes").ReceptionHistory[]; message?: string }>(response);
+  async getReceptionHistory(page = 1, limit = 25) {
+    const offset = Math.max(0, page - 1) * limit;
+    const response = await fetch(receptionsApiPath(`/api/odoo/reception-history?limit=${limit}&offset=${offset}`));
+    const payload = await readJson<Partial<import("./odooTypes").ReceptionHistoryPage> & { message?: string }>(response);
     if (!response.ok) throw new Error(payload.message ?? "No se pudo leer el historial de recepciones");
-    return payload.entries ?? [];
+    return { entries: payload.entries ?? [], total: payload.total ?? 0, limit: payload.limit ?? limit, offset: payload.offset ?? offset };
   },
   async saveReceptionHistory(input: Omit<import("./odooTypes").ReceptionHistory, "id" | "createdAt">) {
     const response = await fetch(receptionsApiPath("/api/odoo/reception-history"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });

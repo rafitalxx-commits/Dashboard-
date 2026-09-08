@@ -1194,7 +1194,13 @@ function odooReadOnlyApi(env: Record<string, string>) {
           const user = auth.getSessionUser(request.headers.cookie);
           if (!user || !user.permissions.includes("products")) { sendJson(response, 401, { message: "Login requerido" }); return; }
           try {
-            if (request.method === "GET") { sendJson(response, 200, { entries: pendingReceipts.listHistory() }); return; }
+            if (request.method === "GET") {
+              const url = new URL(request.url ?? "/", "http://local");
+              const limit = Number(url.searchParams.get("limit") ?? 25);
+              const offset = Number(url.searchParams.get("offset") ?? 0);
+              sendJson(response, 200, pendingReceipts.listHistory({ limit, offset }));
+              return;
+            }
             if (request.method === "POST") { sendJson(response, 201, pendingReceipts.saveHistory(await readJsonBody(request))); return; }
             sendJson(response, 405, { message: "Metodo no permitido" });
           } catch (error) { sendJson(response, 400, { message: error instanceof Error ? error.message : "No se pudo guardar el historial" }); }
@@ -6303,11 +6309,14 @@ async function getOdooInventoryReceptions(
   );
   const purchaseReferences = purchaseIds.length
     ? (await executeKw(config, uid, "purchase.order", "read", [purchaseIds], {
-        fields: ["id", "partner_ref"],
-      })) as Array<{ id: number; partner_ref?: string | false }>
+        fields: ["id", "partner_ref", "order_type"],
+      })) as Array<{ id: number; partner_ref?: string | false; order_type?: [number, string] | false }>
     : [];
   const supplierRefsByPurchaseId = new Map(
     purchaseReferences.map((purchase) => [purchase.id, cleanText(purchase.partner_ref)]),
+  );
+  const orderTypesByPurchaseId = new Map(
+    purchaseReferences.map((purchase) => [purchase.id, getRelationName(purchase.order_type)]),
   );
   const productIds = Array.from(
     new Set(
@@ -6377,6 +6386,8 @@ async function getOdooInventoryReceptions(
           : state === "draft"
             ? "Borrador"
             : "Otra";
+    const orderType = orderTypesByPurchaseId.get(getRelationId(picking.purchase_id) ?? -1) || "";
+    const isImportation = cleanText(orderType).toLocaleLowerCase("es") === "rebastecimiento";
     return {
       id: String(picking.id),
       ref: picking.name || `Recepción #${picking.id}`,
@@ -6385,6 +6396,8 @@ async function getOdooInventoryReceptions(
       supplierRef:
         supplierRefsByPurchaseId.get(getRelationId(picking.purchase_id) ?? -1) || undefined,
       supplier: getRelationName(picking.partner_id) || "Proveedor sin nombre",
+      orderType: orderType || undefined,
+      isImportation,
       scheduledDate: cleanText(picking.scheduled_date),
       state,
       status,

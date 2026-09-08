@@ -477,6 +477,8 @@ export type InventoryReception = {
   purchaseRef: string;
   supplierRef?: string;
   supplier: string;
+  orderType?: string;
+  isImportation: boolean;
   scheduledDate: string;
   state: string;
   status: "Esperando" | "Pendiente" | "Borrador" | "Otra";
@@ -485,6 +487,13 @@ export type InventoryReception = {
   expectedQty: number;
   processedQty: number;
   pendingQty: number;
+};
+
+export type ReceptionHistoryPage = {
+  entries: ReceptionHistory[];
+  total: number;
+  limit: number;
+  offset: number;
 };
 
 export type InventoryReceptionsPayload = {

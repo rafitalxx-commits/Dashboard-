@@ -92,6 +92,24 @@ try {
   assert.equal(saved.receipt.purchaseRef, "P04924");
   assert.deepEqual(saved.receipt.lines.map((line) => [line.sku, line.pendingQty]), [["TEBBDE27", 30], ["TE4517PO", 15]]);
   assert.equal(pendingReceipts.list().length, 1);
+  for (let index = 0; index < 30; index += 1) {
+    pendingReceipts.saveHistory({
+      receptionId: `history-${index}`,
+      receptionRef: `ALM/IN/${String(index).padStart(5, "0")}`,
+      purchaseRef: `P${index}`,
+      supplier: "Proveedor",
+      operatorId: "OP005",
+      operatorName: "Rafa",
+      outcome: "total",
+      lines: [],
+    });
+  }
+  const firstHistoryPage = pendingReceipts.listHistory({ limit: 25, offset: 0 });
+  const secondHistoryPage = pendingReceipts.listHistory({ limit: 25, offset: 25 });
+  assert.equal(firstHistoryPage.entries.length, 25);
+  assert.equal(secondHistoryPage.entries.length, 6);
+  assert.equal(firstHistoryPage.total, 31);
+  assert.equal(pendingReceipts.listHistory({ limit: Number.NaN }).limit, 25);
 } finally {
   rmSync(testDir, { recursive: true, force: true });
 }

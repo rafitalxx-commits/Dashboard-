@@ -75,9 +75,19 @@ export function createPendingReceipts(options: { dataDir?: string } = {}) {
     const store = read(); const now = new Date().toISOString();
     const history: ReceptionHistory = { ...input, id: `history-${input.receptionId}-${Date.now()}`, createdAt: now };
     store.history = [history, ...store.history.filter((item) => item.receptionId !== input.receptionId)];
-    write(store); return { history, entries: store.history };
+    write(store); return { history, total: store.history.length };
   };
-  const listHistory = () => read().history.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const listHistory = ({ limit = 25, offset = 0 }: { limit?: number; offset?: number } = {}) => {
+    const history = read().history.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    const safeLimit = Number.isFinite(limit) ? Math.min(100, Math.max(1, Math.trunc(limit))) : 25;
+    const safeOffset = Number.isFinite(offset) ? Math.max(0, Math.trunc(offset)) : 0;
+    return {
+      entries: history.slice(safeOffset, safeOffset + safeLimit),
+      total: history.length,
+      limit: safeLimit,
+      offset: safeOffset,
+    };
+  };
   return { list, save, listHistory, saveHistory };
 }
 
