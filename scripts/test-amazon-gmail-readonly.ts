@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { syncAmazonMessagesFromGmail } from "../backend/amazonMessages/gmailSync.ts";
 import { createAmazonMessagesRepository } from "../backend/amazonMessages/repository.ts";
-import type { GmailReadonlySource } from "../backend/amazonMessages/gmailClient.ts";
+import {
+  shouldFallbackToGog,
+  type GmailReadonlySource,
+} from "../backend/amazonMessages/gmailClient.ts";
 import type { AmazonMessagesActor } from "../backend/amazonMessages/schema.ts";
 import {
   resolveOdooOrderContext,
@@ -87,6 +90,17 @@ Date: Sat, 20 Jun 2026 18:05:00 +0200
 Danke, bitte pruefen Sie die Sendungsnummer.`;
 
 try {
+  assert.equal(
+    shouldFallbackToGog("unauthorized_client: Unauthorized"),
+    true,
+    "OAuth unauthorized_client should use the configured gog fallback",
+  );
+  assert.equal(
+    shouldFallbackToGog("Gmail API rate limit exceeded"),
+    false,
+    "unrelated Gmail API errors must not be hidden by the fallback",
+  );
+
   const missing = await syncAmazonMessagesFromGmail(repository, actor, {
     config: {
       account: "juanitoopenclaw@gmail.com",

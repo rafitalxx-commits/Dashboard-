@@ -245,17 +245,19 @@ export function createGmailReadonlySourceWithGogFallback(
         return await apiSource.listLabelMessages(input);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (
-          !/invalid_grant|expired|revoked|Faltan credenciales Gmail OAuth readonly|Campo Gmail requerido/i.test(
-            message,
-          )
-        ) {
+        if (!shouldFallbackToGog(message)) {
           throw error;
         }
         return gogSource.listLabelMessages(input);
       }
     },
   };
+}
+
+export function shouldFallbackToGog(message: string) {
+  return /invalid_grant|unauthorized_client|expired|revoked|Faltan credenciales Gmail OAuth readonly|Campo Gmail requerido/i.test(
+    message,
+  );
 }
 
 export function createGmailApiDraftSource(
