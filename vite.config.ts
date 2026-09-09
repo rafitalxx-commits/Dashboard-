@@ -31,7 +31,10 @@ import {
   isCompleteExpeditionOrderReference,
 } from "./backend/expeditionOrderReference";
 import { formatOdooMadrid } from "./backend/odooDateTime";
-import { createProductCatalog } from "./backend/products/catalog";
+import {
+  createProductCatalog,
+  formatCatalogProductName,
+} from "./backend/products/catalog";
 import { createProductInventories } from "./backend/products/inventories";
 import { createProductLocations, parseLocationCode } from "./backend/products/locations";
 import { createPendingReceipts } from "./backend/receptions/pendingReceipts";
@@ -6621,7 +6624,7 @@ async function getOdooPurchaseReceptions(env: Record<string, string>) {
         id: String(line.id),
         productId: productId ? String(productId) : undefined,
         name:
-          cleanText(product?.name) ||
+          formatCatalogProductName(product) ||
           stripProductCode(relationName) ||
           cleanText(line.name) ||
           "Producto sin nombre",
@@ -6715,7 +6718,7 @@ async function getOdooPurchaseProductOptions(
     const suggestedPrice = Number(supplier?.price ?? 0);
     const suggestedDiscount = Number(supplier?.discount ?? 0);
     const suggestedNetPrice = Number(supplier?.price_discounted ?? (suggestedPrice * (1 - suggestedDiscount / 100)));
-    return { id: String(product.id), name: cleanText(product.name) || cleanText(product.display_name), sku: cleanText(product.default_code), barcode: cleanText(product.barcode), imageUrl: formatProductImage(product.image_128), uom: getRelationName((product as ProductRecord & { uom_po_id?: false | [number, string] }).uom_po_id) || getRelationName(product.uom_id) || "uds", stockTotal: Number(product.qty_available ?? 0), suggestedPrice, suggestedDiscount, suggestedNetPrice, supplierPriceFound: Boolean(supplier), supplierMinQty: Number(supplier?.min_qty ?? 0), supplierCurrency: getRelationName(supplier?.currency_id as false | [number, string]) || getRelationName(order?.currency_id) || "EUR", supplierDelay: Number(supplier?.delay ?? 0), costMethod: costMethodByCategory.get(getRelationId((product as ProductRecord & { categ_id?: false | [number, string] }).categ_id) ?? 0) || "standard" };
+    return { id: String(product.id), name: formatCatalogProductName(product), sku: cleanText(product.default_code), barcode: cleanText(product.barcode), imageUrl: formatProductImage(product.image_128), uom: getRelationName((product as ProductRecord & { uom_po_id?: false | [number, string] }).uom_po_id) || getRelationName(product.uom_id) || "uds", stockTotal: Number(product.qty_available ?? 0), suggestedPrice, suggestedDiscount, suggestedNetPrice, supplierPriceFound: Boolean(supplier), supplierMinQty: Number(supplier?.min_qty ?? 0), supplierCurrency: getRelationName(supplier?.currency_id as false | [number, string]) || getRelationName(order?.currency_id) || "EUR", supplierDelay: Number(supplier?.delay ?? 0), costMethod: costMethodByCategory.get(getRelationId((product as ProductRecord & { categ_id?: false | [number, string] }).categ_id) ?? 0) || "standard" };
   }) };
 }
 

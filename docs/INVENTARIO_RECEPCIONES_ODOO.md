@@ -60,6 +60,10 @@ presupuesto en `product.supplierinfo`, respetando variante, plantilla, cantidad
 mínima, vigencia y moneda. Un precio cero o inexistente se trata como tarifa no
 válida y exige introducir un precio manual.
 
+Los nombres de producto siguen el mismo formato que el Catálogo. Cuando existe
+una variante se muestran únicamente sus valores entre paréntesis, por ejemplo
+`Rollo cable (Marrón)`, sin anteponer nombres de atributo como `Color:`.
+
 La búsqueda ofrece sugerencias mientras se escribe y admite términos separados
 por espacios o unidos por `+`; todos los términos deben coincidir. La confirmación final ofrece
 `Aceptar` y `Aceptar y enviar email`: ambas usan la confirmación nativa del

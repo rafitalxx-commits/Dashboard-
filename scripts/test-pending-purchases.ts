@@ -24,6 +24,11 @@ assert.match(purchaseView, /stockTotal: product\.stockTotal/);
 const viteConfig = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
 assert.match(viteConfig, /"qty_available"/);
 assert.match(viteConfig, /stockTotal: Number\(product\.qty_available \?\? 0\)/);
+assert.equal(
+  viteConfig.match(/formatCatalogProductName\(product\)/g)?.length,
+  2,
+);
 console.log("Compras pendientes: selección de tarifa de proveedor verificada");
 console.log("Compras pendientes: descarte local y cancelación real protegidos contra regresiones");
 console.log("Compras pendientes: stock total Odoo presente en búsquedas y líneas");
+console.log("Compras pendientes: valores de variante visibles sin el nombre del atributo");

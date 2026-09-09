@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  formatCatalogProductName,
   reconcileCatalogProducts,
   type CatalogProduct,
 } from "../backend/products/catalog.ts";
@@ -47,6 +48,26 @@ assert.deepEqual(
 const full = reconcileCatalogProducts(previous, [renamed], [1], true);
 assert.deepEqual(full, [renamed]);
 
+assert.equal(
+  formatCatalogProductName({
+    display_name:
+      "[LH15200M] Rollo cable 200 m 1,5 mm² Libre de Halógeno (Marrón)",
+    default_code: "LH15200M",
+    name: "Rollo cable 200 m 1,5 mm² Libre de Halógeno",
+  }),
+  "Rollo cable 200 m 1,5 mm² Libre de Halógeno (Marrón)",
+);
+assert.doesNotMatch(
+  formatCatalogProductName({
+    display_name: "[REF] Producto (Marrón, 2 metros)",
+    default_code: "REF",
+  }),
+  /Color:|Longitud:/,
+);
+
 console.log(
   "Catálogo: renombrados actualizados y archivados retirados en sincronización incremental y completa",
+);
+console.log(
+  "Catálogo y Compras: variantes formateadas solo con sus valores",
 );

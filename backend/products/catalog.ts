@@ -67,6 +67,8 @@ const catalogName = (product: any) => {
     .trim();
   return withoutReference || raw;
 };
+export const formatCatalogProductName = (product: unknown) =>
+  catalogName(product);
 const relationId = (value: unknown) =>
   Array.isArray(value) && Number.isInteger(value[0])
     ? Number(value[0])
