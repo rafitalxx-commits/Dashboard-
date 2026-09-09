@@ -279,6 +279,9 @@ export type AmazonDraftRequestRecord = {
   confidence?: number;
   warnings: string[];
   errorMessage?: string;
+  trigger?: "MANUAL" | "AUTO_GMAIL";
+  sourceMessageId?: string;
+  gmailMessageId?: string;
   externalSend: false;
 };
 

@@ -181,6 +181,61 @@ export function createAmazonMessagesRepository(options: RepositoryOptions = {}) 
     });
   }
 
+  function enqueueAgentDraftRequest(
+    store: AmazonMessagesStore,
+    actor: AmazonMessagesActor,
+    conversation: AmazonConversationRecord,
+    input: {
+      trigger: "MANUAL" | "AUTO_GMAIL";
+      sourceMessageId?: string;
+      gmailMessageId?: string;
+    },
+  ) {
+    if (input.sourceMessageId) {
+      const existing = store.draftRequests.find(
+        (item) => item.sourceMessageId === input.sourceMessageId,
+      );
+      if (existing) return existing;
+    }
+    const now = new Date().toISOString();
+    const request: AmazonDraftRequestRecord = {
+      requestId: `draft-request-${Date.now()}-${store.draftRequests.length + 1}`,
+      conversationId: conversation.conversationId,
+      status: "PENDING",
+      requestedBy: actor.name,
+      requestedAt: now,
+      updatedBy: actor.name,
+      updatedAt: now,
+      warnings: [],
+      trigger: input.trigger,
+      sourceMessageId: input.sourceMessageId,
+      gmailMessageId: input.gmailMessageId,
+      externalSend: false,
+    };
+    conversation.workflowStatus =
+      conversation.workflowStatus === "RESUELTO" ||
+      conversation.workflowStatus === "CERRADO"
+        ? conversation.workflowStatus
+        : "EN_REVISION";
+    conversation.status = legacyStatusFromWorkflow(conversation.workflowStatus);
+    conversation.updatedAt = now;
+    conversation.lastActivityAt = now;
+    store.draftRequests.push(request);
+    appendAudit(store, actor, {
+      conversationId: conversation.conversationId,
+      entityType: "agent_draft_request",
+      entityId: request.requestId,
+      eventType:
+        input.trigger === "AUTO_GMAIL"
+          ? "agent_draft_automatically_requested"
+          : "agent_draft_requested",
+      detail: `${
+        input.trigger === "AUTO_GMAIL" ? "Solicitud automatica" : "Solicitud manual"
+      } de borrador para agente creada. external_send=false; sin envio externo.`,
+    });
+    return request;
+  }
+
   function recoverStaleHermesDraftRequests(
     store: AmazonMessagesStore,
     actor: AmazonMessagesActor,
@@ -275,6 +330,9 @@ export function createAmazonMessagesRepository(options: RepositoryOptions = {}) 
         assignments: store.operatorAssignments.filter(
           (item) => item.conversationId === conversationId,
         ),
+        draftRequests: store.draftRequests
+          .filter((item) => item.conversationId === conversationId)
+          .reverse(),
       };
     },
     updateConversationWorkflow(
@@ -1496,7 +1554,6 @@ export function createAmazonMessagesRepository(options: RepositoryOptions = {}) 
       assertNoWorkflowExternalSend(input);
       const store = readStore();
       const conversation = ensureConversation(store, conversationId);
-      const now = new Date().toISOString();
       recoverStaleHermesDraftRequests(store, actor);
       const active = store.draftRequests.find(
         (item) =>
@@ -1504,34 +1561,8 @@ export function createAmazonMessagesRepository(options: RepositoryOptions = {}) 
           (item.status === "PENDING" || item.status === "IN_PROGRESS"),
       );
       if (active) return active;
-
-      const request: AmazonDraftRequestRecord = {
-        requestId: `draft-request-${Date.now()}-${store.draftRequests.length + 1}`,
-        conversationId,
-        status: "PENDING",
-        requestedBy: actor.name,
-        requestedAt: now,
-        updatedBy: actor.name,
-        updatedAt: now,
-        warnings: [],
-        externalSend: false,
-      };
-      conversation.workflowStatus =
-        conversation.workflowStatus === "RESUELTO" ||
-        conversation.workflowStatus === "CERRADO"
-          ? conversation.workflowStatus
-          : "EN_REVISION";
-      conversation.status = legacyStatusFromWorkflow(conversation.workflowStatus);
-      conversation.updatedAt = now;
-      conversation.lastActivityAt = now;
-      store.draftRequests.push(request);
-      appendAudit(store, actor, {
-        conversationId,
-        entityType: "hermes_draft_request",
-        entityId: request.requestId,
-        eventType: "hermes_draft_requested",
-        detail:
-          "Solicitud de borrador Hermes creada. external_send=false; sin envio externo.",
+      const request = enqueueAgentDraftRequest(store, actor, conversation, {
+        trigger: "MANUAL",
       });
       writeStore(store);
       return request;
@@ -2164,6 +2195,14 @@ export function createAmazonMessagesRepository(options: RepositoryOptions = {}) 
       conversation.messageCount += 1;
       conversation.lastMessageAt = parsed.receivedAt;
       conversation.updatedAt = new Date().toISOString();
+
+      if (parsed.notificationType === "BBC_MESSAGE_SENT_TO_MERCHANT") {
+        enqueueAgentDraftRequest(store, actor, conversation, {
+          trigger: "AUTO_GMAIL",
+          sourceMessageId: parsed.messageId,
+          gmailMessageId: input.gmailMessageId,
+        });
+      }
 
       store.classifications.push({
         classificationId: `cls-${Date.now()}-${store.classifications.length + 1}`,

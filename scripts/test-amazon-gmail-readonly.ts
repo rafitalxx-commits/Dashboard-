@@ -188,6 +188,26 @@ try {
     (item) => item.conversationId === conversation.conversationId,
   );
   assert.equal(importedMessages.length, 2, "two non-duplicate messages should persist");
+  assert.equal(
+    store.draftRequests.length,
+    2,
+    "each non-duplicate customer message should enqueue an automatic agent draft",
+  );
+  assert.ok(store.draftRequests.every((request) => request.status === "PENDING"));
+  assert.ok(
+    store.draftRequests.every((request) => request.trigger === "AUTO_GMAIL"),
+  );
+  assert.deepEqual(
+    store.draftRequests.map((request) => request.gmailMessageId),
+    ["gmail-1", "gmail-2"],
+  );
+  assert.equal(detail.draftRequests.length, 2);
+  assert.ok(
+    store.auditLogs.some(
+      (item) => item.eventType === "agent_draft_automatically_requested",
+    ),
+    "automatic agent request should be audited",
+  );
   assert.ok(
     store.attachments.some((item) => item.sanitizedName === "foto-paquete.jpg"),
     "attachment metadata should persist",
@@ -215,6 +235,23 @@ try {
     store.gmailSync?.errorCount,
     0,
     "OAuth preflight failure is recorded in sync history, not import errorCount",
+  );
+
+  await repository.importGmailMessage(actor, {
+    gmailMessageId: "gmail-system-notice",
+    rawEmail: `Message-ID: <gmail-system-notice@example.amazon.com>
+X-Space-Notification-Type: BRC_SELLER_NOTIFICATION
+From: Amazon Seller Central <donotreply@amazon.com>
+To: Juanito <juanitoopenclaw@gmail.com>
+Subject: Aviso automatico de Amazon
+Date: Sat, 20 Jun 2026 18:10:00 +0200
+
+Este es un aviso automatico de Seller Central.`,
+  });
+  assert.equal(
+    repository.readStoreForTests().draftRequests.length,
+    2,
+    "Amazon system notifications must not enqueue an agent draft",
   );
 
   const autoResult = await syncAmazonMessagesFromGmail(repository, actor, {

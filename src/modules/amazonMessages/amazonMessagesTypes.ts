@@ -469,6 +469,14 @@ export type AmazonConversation = {
   matchConfidence: AmazonMatchConfidence;
   messages: AmazonSupportMessage[];
   draft?: AmazonAiDraft;
+  agentDraftRequest?: {
+    id: string;
+    status: "PENDING" | "IN_PROGRESS" | "COMPLETED" | "FAILED";
+    requestedAt: string;
+    updatedAt: string;
+    trigger?: "MANUAL" | "AUTO_GMAIL";
+    errorMessage?: string;
+  };
   pendingReply?: AmazonPendingReply;
   audit: AmazonAuditEvent[];
   context: AmazonConversationContext;

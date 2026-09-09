@@ -250,6 +250,17 @@ type BackendConversationDetail = {
   classifications?: BackendClassificationRecord[];
   auditLogs?: BackendAuditLogRecord[];
   pendingReplies?: BackendPendingReplyRecord[];
+  draftRequests?: BackendAgentDraftRequestRecord[];
+};
+
+type BackendAgentDraftRequestRecord = {
+  requestId: string;
+  conversationId: string;
+  status: "PENDING" | "IN_PROGRESS" | "COMPLETED" | "FAILED";
+  requestedAt: string;
+  updatedAt: string;
+  trigger?: "MANUAL" | "AUTO_GMAIL";
+  errorMessage?: string;
 };
 
 type BackendInternalDraftRecord = {
@@ -268,7 +279,7 @@ type BackendInternalDraftRecord = {
   generatedAt: string;
   updatedBy: string;
   updatedAt: string;
-  source: "Gmail readonly" | "SMART_DRAFT";
+  source: "Gmail readonly" | "SMART_DRAFT" | "AGENT_API" | "HERMES_DRAFT";
   templateId?: string;
   knowledgeExampleIds?: string[];
   detectedLanguage?: string;
@@ -564,6 +575,7 @@ export function AmazonMessagesView({ orders, currentUser }: Props) {
   const [gmailSyncStatus, setGmailSyncStatus] = useState<GmailSyncStatus | null>(null);
   const [gmailSyncMessage, setGmailSyncMessage] = useState("Auto-sync cada 30 min.");
   const [manualSyncRunning, setManualSyncRunning] = useState(false);
+  const [agentRequestRunning, setAgentRequestRunning] = useState(false);
 
   async function fetchBackendConversationList() {
     const response = await fetch("/api/amazon-messages/conversations");
@@ -858,6 +870,64 @@ export function AmazonMessagesView({ orders, currentUser }: Props) {
   const selected =
     decoratedConversations.find((conversation) => conversation.id === selectedId) ??
     decoratedConversations[0];
+
+  useEffect(() => {
+    const request = selected?.agentDraftRequest;
+    if (
+      conversationSourceMode !== "real" ||
+      !selected?.id ||
+      (request?.status !== "PENDING" && request?.status !== "IN_PROGRESS")
+    ) {
+      return;
+    }
+    let mounted = true;
+    const poll = window.setInterval(async () => {
+      try {
+        const detailResponse = await fetch(
+          `/api/amazon-messages/conversations/${selected.id}`,
+        );
+        if (!detailResponse.ok) throw new Error(`API ${detailResponse.status}`);
+        const detail = (await detailResponse.json()) as BackendConversationDetail;
+        const detailedConversation = adaptBackendConversation(detail);
+        const draftResponse = await fetch(
+          `/api/amazon-messages/conversations/${selected.id}/draft`,
+        );
+        const draft = draftResponse.ok
+          ? adaptBackendDraft(
+              (await draftResponse.json()) as BackendInternalDraftRecord,
+              detailedConversation,
+            )
+          : undefined;
+        if (!mounted) return;
+        setRealConversations((current) =>
+          current?.map((conversation) =>
+            conversation.id === selected.id
+              ? { ...conversation, ...detailedConversation, draft: conversation.draft }
+              : conversation,
+          ) ?? current,
+        );
+        if (draft) {
+          setInternalDrafts((current) => ({ ...current, [selected.id]: draft }));
+          setDraftSourceMode("backend");
+          setDraftSourceMessage("Borrador del agente listo para revision. No se envio nada.");
+        } else if (detailedConversation.agentDraftRequest?.status === "FAILED") {
+          setDraftSourceMessage("El agente no pudo generar el borrador. No se envio nada.");
+        }
+      } catch (error) {
+        if (mounted) {
+          setDraftSourceMessage(
+            error instanceof Error
+              ? `No se pudo consultar el estado del agente (${error.message}).`
+              : "No se pudo consultar el estado del agente.",
+          );
+        }
+      }
+    }, 2_000);
+    return () => {
+      mounted = false;
+      window.clearInterval(poll);
+    };
+  }, [conversationSourceMode, selected?.agentDraftRequest?.status, selected?.id]);
   const workflowStats = buildWorkflowStats(decoratedConversations);
   const smartDraftStats = buildSmartDraftStats(decoratedConversations);
 
@@ -1413,6 +1483,41 @@ export function AmazonMessagesView({ orders, currentUser }: Props) {
     }
   }
 
+  async function requestAgentDraft(conversation: AmazonConversation) {
+    if (agentRequestRunning) return;
+    setAgentRequestRunning(true);
+    setDraftSourceMessage("Enviando el mensaje al agente para analisis...");
+    try {
+      const response = await fetch(
+        `/api/amazon-messages/conversations/${conversation.id}/draft/hermes-request`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ externalSend: false }),
+        },
+      );
+      if (!response.ok) throw new Error(`API ${response.status}`);
+      const request = (await response.json()) as BackendAgentDraftRequestRecord;
+      setRealConversations((current) =>
+        current?.map((item) =>
+          item.id === conversation.id
+            ? { ...item, agentDraftRequest: adaptAgentDraftRequest(request) }
+            : item,
+        ) ?? current,
+      );
+      setDraftSourceMode("backend");
+      setDraftSourceMessage("Solicitud recibida. El agente esta analizando el mensaje.");
+    } catch (error) {
+      setDraftSourceMessage(
+        error instanceof Error
+          ? `No se pudo solicitar el borrador al agente (${error.message}).`
+          : "No se pudo solicitar el borrador al agente.",
+      );
+    } finally {
+      setAgentRequestRunning(false);
+    }
+  }
+
   async function changeWorkflowStatus(
     conversation: AmazonConversation,
     workflowStatus: AmazonWorkflowStatus,
@@ -1758,6 +1863,8 @@ export function AmazonMessagesView({ orders, currentUser }: Props) {
             onReopenConversation={() => reopenConversation(selected)}
             onGenerateDraft={() => void generateInternalDraft(selected)}
             onGenerateSmartDraft={() => void generateSmartDraft(selected)}
+            onRequestAgentDraft={() => void requestAgentDraft(selected)}
+            agentRequestRunning={agentRequestRunning}
             onApplyTemplate={(templateId) =>
               void applyInternalTemplate(selected, templateId)
             }
@@ -1849,6 +1956,8 @@ function ConversationDetail({
   onChangeReviewNote,
   onGenerateDraft,
   onGenerateSmartDraft,
+  onRequestAgentDraft,
+  agentRequestRunning,
   onApplyTemplate,
   onSaveKnowledge,
   onReviewDraft,
@@ -1873,6 +1982,8 @@ function ConversationDetail({
   onChangeReviewNote: (value: string) => void;
   onGenerateDraft: () => void;
   onGenerateSmartDraft: () => void;
+  onRequestAgentDraft: () => void;
+  agentRequestRunning: boolean;
   onApplyTemplate: (templateId: string) => void;
   onSaveKnowledge: (templateId?: string) => void;
   onReviewDraft: (
@@ -2214,7 +2325,24 @@ function ConversationDetail({
                 <Brain size={15} />
                 Generar borrador inteligente
               </button>
+              <button
+                aria-busy={agentRequestRunning}
+                disabled={
+                  agentRequestRunning ||
+                  conversation.agentDraftRequest?.status === "PENDING" ||
+                  conversation.agentDraftRequest?.status === "IN_PROGRESS"
+                }
+                onClick={onRequestAgentDraft}
+                type="button"
+              >
+                <RefreshCw
+                  className={agentRequestRunning ? "amazon-agent-spinner" : undefined}
+                  size={15}
+                />
+                {agentRequestRunning ? "Solicitando..." : "Solicitar al agente"}
+              </button>
             </div>
+            <AgentDraftStatus request={conversation.agentDraftRequest} />
             <div className="amazon-template-apply-row">
               <select
                 aria-label="Plantilla interna"
@@ -2755,6 +2883,48 @@ function ConversationDetail({
           />
         </aside>
       </div>
+    </div>
+  );
+}
+
+function AgentDraftStatus({
+  request,
+}: {
+  request?: AmazonConversation["agentDraftRequest"];
+}) {
+  if (!request) {
+    return (
+      <div className="amazon-agent-draft-status idle" aria-live="polite">
+        <Bot size={16} />
+        <span>Agente pendiente de solicitud</span>
+      </div>
+    );
+  }
+  const active = request.status === "PENDING" || request.status === "IN_PROGRESS";
+  const label =
+    request.status === "PENDING"
+      ? "Analizando · solicitud en cola"
+      : request.status === "IN_PROGRESS"
+        ? "Analizando · agente trabajando"
+        : request.status === "COMPLETED"
+          ? "Borrador listo para revision"
+          : "Error al generar el borrador";
+  return (
+    <div
+      className={`amazon-agent-draft-status ${request.status.toLowerCase()}`}
+      aria-live="polite"
+    >
+      {active ? (
+        <RefreshCw className="amazon-agent-spinner" size={16} />
+      ) : request.status === "COMPLETED" ? (
+        <CheckCircle2 size={16} />
+      ) : (
+        <AlertTriangle size={16} />
+      )}
+      <span>{label}</span>
+      {request.status === "FAILED" && request.errorMessage ? (
+        <small>{request.errorMessage}</small>
+      ) : null}
     </div>
   );
 }
@@ -3485,6 +3655,17 @@ function adaptBackendDraft(
   };
 }
 
+function adaptAgentDraftRequest(record: BackendAgentDraftRequestRecord) {
+  return {
+    id: record.requestId,
+    status: record.status,
+    requestedAt: record.requestedAt,
+    updatedAt: record.updatedAt,
+    trigger: record.trigger,
+    errorMessage: record.errorMessage,
+  };
+}
+
 function buildInternalDraftAuditEvent(
   conversation: AmazonConversation,
 ): AmazonAuditEvent {
@@ -3910,6 +4091,9 @@ function adaptBackendConversation(
     matchConfidence: record.odooOrderId ? "strong" : "unmatched",
     messages: supportMessages,
     draft: undefined,
+    agentDraftRequest: detail.draftRequests?.[0]
+      ? adaptAgentDraftRequest(detail.draftRequests[0])
+      : undefined,
     pendingReply: detail.pendingReplies?.[0]
       ? adaptBackendPendingReply(detail.pendingReplies[0])
       : undefined,
