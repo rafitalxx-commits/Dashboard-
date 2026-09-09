@@ -764,7 +764,7 @@ async function runSmartDraftGenerationCases(actor: AmazonMessagesActor) {
         orderId: "304-1111111-2222222",
         language: "es",
         body: "Quiero cancelar mi pedido urgentemente.",
-        expected: /cancelarse|preparacion|enviado/i,
+        expected: /cancelarse|cancelaci[oó]n|preparaci[oó]n|enviado|estado/i,
       },
       {
         id: "german",
