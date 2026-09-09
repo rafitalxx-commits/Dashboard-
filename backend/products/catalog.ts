@@ -32,6 +32,7 @@ type Store = {
     full: boolean;
     scanned: number;
     changed: number;
+    removed?: number;
   };
 };
 type Rpc = (service: string, method: string, args: unknown[]) => Promise<any>;
@@ -72,6 +73,26 @@ const relationId = (value: unknown) =>
     : undefined;
 const relationName = (value: unknown) =>
   Array.isArray(value) ? clean(value[1]) : "";
+
+export function reconcileCatalogProducts(
+  previous: CatalogProduct[],
+  refreshed: CatalogProduct[],
+  activeProductIds: Iterable<number>,
+  full: boolean,
+) {
+  const activeIds = new Set(activeProductIds);
+  const next = new Map<number, CatalogProduct>(
+    (full ? [] : previous.filter((product) => activeIds.has(product.id))).map(
+      (product) => [product.id, product],
+    ),
+  );
+  refreshed.forEach((product) => {
+    if (activeIds.has(product.id)) next.set(product.id, product);
+  });
+  return [...next.values()].sort((left, right) =>
+    left.name.localeCompare(right.name, "es"),
+  );
+}
 
 export function createProductCatalog(env: Record<string, string>) {
   const dataDir =
@@ -167,11 +188,14 @@ export function createProductCatalog(env: Record<string, string>) {
         if (!stockLocationId)
           throw new Error("No se encontró la ubicación Odoo ALM/Stock");
         const since =
-          !full && before.sync.lastFinishedAt
-            ? before.sync.lastFinishedAt.replace("T", " ").slice(0, 19)
+          !full && (before.sync.lastStartedAt || before.sync.lastFinishedAt)
+            ? (before.sync.lastStartedAt || before.sync.lastFinishedAt || "")
+                .replace("T", " ")
+                .slice(0, 19)
             : "";
-        const productDomain: unknown[] = [["active", "=", true]];
-        if (since) productDomain.push(["write_date", ">=", since]);
+        const productDomain: unknown[] = since
+          ? [["write_date", ">=", since]]
+          : [["active", "=", true]];
         const changedProducts = await kw(
           "product.product",
           "search_read",
@@ -186,13 +210,14 @@ export function createProductCatalog(env: Record<string, string>) {
               "uom_id",
               "type",
               "product_tmpl_id",
+              "active",
               "write_date",
               "incoming_qty",
               "outgoing_qty",
               "virtual_available",
               "qty_available",
             ],
-            context: { location: stockLocationId },
+            context: { location: stockLocationId, active_test: false },
             limit: full ? 20000 : 5000,
             order: "id asc",
           },
@@ -218,6 +243,23 @@ export function createProductCatalog(env: Record<string, string>) {
         const changedIds = new Set<number>(
           changedProducts.map((p: any) => p.id),
         );
+        const changedTemplates = since
+          ? await kw(
+              "product.template",
+              "search_read",
+              [[["write_date", ">=", since]]],
+              {
+                fields: ["id", "product_variant_ids"],
+                context: { active_test: false },
+                limit: 20000,
+              },
+            )
+          : [];
+        changedTemplates.forEach((template: any) =>
+          (template.product_variant_ids || []).forEach((id: number) =>
+            changedIds.add(id),
+          ),
+        );
         changedQuants.forEach((q: any) => {
           const id = relationId(q.product_id);
           if (id) changedIds.add(id);
@@ -235,18 +277,29 @@ export function createProductCatalog(env: Record<string, string>) {
                   "uom_id",
                   "type",
                   "product_tmpl_id",
+                  "active",
                   "write_date",
                   "incoming_qty",
                   "outgoing_qty",
                   "virtual_available",
                   "qty_available",
                 ],
-                context: { location: stockLocationId },
+                context: { location: stockLocationId, active_test: false },
               })
             : [];
+        const activeProductIds = new Set<number>(
+          await kw("product.product", "search", [[["active", "=", true]]], {
+            context: { active_test: false },
+            limit: 20000,
+          }),
+        );
+        const activeProducts = products.filter(
+          (product: any) =>
+            product.active !== false && activeProductIds.has(product.id),
+        );
         const templateIds = [
           ...new Set(
-            products
+            activeProducts
               .map((p: any) => relationId(p.product_tmpl_id))
               .filter(Boolean),
           ),
@@ -311,15 +364,22 @@ export function createProductCatalog(env: Record<string, string>) {
           const id = relationId(b.product_tmpl_id);
           if (id) bomByTemplate.set(id, [...(bomByTemplate.get(id) || []), b]);
         });
-        const quants = await kw(
-          "stock.quant",
-          "search_read",
-          [[["location_id", "child_of", stockLocationId]]],
-          {
-            fields: ["product_id", "quantity", "reserved_quantity"],
-            limit: 30000,
-          },
-        );
+        const quantRefreshDomain: unknown[] = [
+          ["location_id", "child_of", stockLocationId],
+        ];
+        if (!full && activeProducts.length) {
+          quantRefreshDomain.push([
+            "product_id",
+            "in",
+            activeProducts.map((product: any) => product.id),
+          ]);
+        }
+        const quants = activeProducts.length
+          ? await kw("stock.quant", "search_read", [quantRefreshDomain], {
+              fields: ["product_id", "quantity", "reserved_quantity"],
+              limit: 30000,
+            })
+          : [];
         const stockByProduct = new Map<
           number,
           { onHand: number; reserved: number }
@@ -332,62 +392,80 @@ export function createProductCatalog(env: Record<string, string>) {
           prior.reserved += Number(q.reserved_quantity || 0);
           stockByProduct.set(id, prior);
         });
-        const old = new Map(before.products.map((p) => [p.id, p]));
-        products.forEach((p: any) => {
-          const templateId = relationId(p.product_tmpl_id);
-          const template = templateId
-            ? templateById.get(templateId)
-            : undefined;
-          const stock = stockByProduct.get(p.id) || { onHand: 0, reserved: 0 };
-          const productBoms = templateId
-            ? bomByTemplate.get(templateId) || []
-            : [];
-          const previous = old.get(p.id);
-          old.set(p.id, {
-            id: p.id,
-            templateId,
-            name: catalogName(p),
-            reference: clean(p.default_code),
-            barcode: clean(p.barcode),
-            uom: relationName(p.uom_id),
-            type: clean(p.type),
-            onHand: stock.onHand,
-            reserved: Number(p.outgoing_qty || stock.reserved || 0),
-            incoming: Number(p.incoming_qty || 0),
-            forecast: Number(p.virtual_available || 0),
-            mto: Boolean(
-              (template?.route_ids || []).some((id: number) =>
-                mtoRoutes.has(id),
+        const previousById = new Map(
+          before.products.map((product) => [product.id, product]),
+        );
+        const refreshedProducts = activeProducts.map(
+          (p: any): CatalogProduct => {
+            const templateId = relationId(p.product_tmpl_id);
+            const template = templateId
+              ? templateById.get(templateId)
+              : undefined;
+            const stock = stockByProduct.get(p.id) || {
+              onHand: 0,
+              reserved: 0,
+            };
+            const productBoms = templateId
+              ? bomByTemplate.get(templateId) || []
+              : [];
+            const previous = previousById.get(p.id);
+            return {
+              id: p.id,
+              templateId,
+              name: catalogName(p),
+              reference: clean(p.default_code),
+              barcode: clean(p.barcode),
+              uom: relationName(p.uom_id),
+              type: clean(p.type),
+              onHand: stock.onHand,
+              reserved: Number(p.outgoing_qty || stock.reserved || 0),
+              incoming: Number(p.incoming_qty || 0),
+              forecast: Number(p.virtual_available || 0),
+              mto: Boolean(
+                (template?.route_ids || []).some((id: number) =>
+                  mtoRoutes.has(id),
+                ),
               ),
-            ),
-            isKit: productBoms.length > 0,
-            componentCount: productBoms.reduce(
-              (n: number, b: any) => n + (b.bom_line_ids?.length || 0),
-              0,
-            ),
-            physicalLocations: previous?.physicalLocations || [],
-            supplierNames:
-              suppliersByTemplate.get(templateId || -1) ||
-              previous?.supplierNames ||
-              [],
-            updatedAt: clean(p.write_date),
-          });
-        });
+              isKit: productBoms.length > 0,
+              componentCount: productBoms.reduce(
+                (n: number, b: any) => n + (b.bom_line_ids?.length || 0),
+                0,
+              ),
+              physicalLocations: previous?.physicalLocations || [],
+              supplierNames:
+                suppliersByTemplate.get(templateId || -1) ||
+                previous?.supplierNames ||
+                [],
+              updatedAt: clean(p.write_date),
+            };
+          },
+        );
+        const reconciledProducts = reconcileCatalogProducts(
+          before.products,
+          refreshedProducts,
+          activeProductIds,
+          full,
+        );
+        const reconciledIds = new Set(
+          reconciledProducts.map((product) => product.id),
+        );
+        const removed = before.products.filter(
+          (product) => !reconciledIds.has(product.id),
+        ).length;
         const now = new Date().toISOString();
         return {
           version: 1 as const,
           updatedAt: now,
-          products: [...old.values()].sort((a, b) =>
-            a.name.localeCompare(b.name, "es"),
-          ),
+          products: reconciledProducts,
           sync: {
             status: "ok" as const,
             lastStartedAt: startedAt,
             lastFinishedAt: now,
-            message: `ALM/Stock · ${old.size} productos`,
+            message: `ALM/Stock · ${reconciledProducts.length} productos · ${removed} retirados`,
             full: full || !before.sync.full,
             scanned: products.length,
             changed: changedIds.size,
+            removed,
           },
         };
       });

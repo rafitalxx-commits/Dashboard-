@@ -101,15 +101,18 @@ export function ProductsCatalogView({
       setLoading(false);
     }
   };
-  useEffect(() => {
-    void load();
-  }, []);
-  const sync = async () => {
+  const sync = async (full = true, background = false) => {
     setSyncing(true);
-    setMessage("");
+    setMessage(
+      background
+        ? "Sincronizando cambios de Odoo en segundo plano…"
+        : "Actualizando todo el catálogo desde Odoo…",
+    );
     try {
-      setCatalog(
-        await odooClient.syncProductCatalog(catalog.sync.status === "never"),
+      const next = await odooClient.syncProductCatalog(full);
+      setCatalog(next);
+      setMessage(
+        `${background ? "Sincronización automática" : "Actualización completa"}: ${next.sync.scanned} revisados, ${next.sync.changed} modificados y ${next.sync.removed || 0} retirados.`,
       );
     } catch (e) {
       setMessage(e instanceof Error ? e.message : "No se pudo sincronizar");
@@ -117,6 +120,13 @@ export function ProductsCatalogView({
       setSyncing(false);
     }
   };
+  useEffect(() => {
+    const loadAndSync = async () => {
+      await load();
+      await sync(false, true);
+    };
+    void loadAndSync();
+  }, []);
   const syncLocationMovements = async () => {
     setSyncingLocations(true);
     setMessage("");
@@ -508,7 +518,7 @@ export function ProductsCatalogView({
           <button
             className="primary-button"
             disabled={syncing}
-            onClick={() => void sync()}
+            onClick={() => void sync(true, false)}
           >
             <RefreshCw size={16} className={syncing ? "spin" : ""} />
             {catalog.sync.status === "never"
@@ -517,7 +527,7 @@ export function ProductsCatalogView({
           </button>
         </div>
       </header>
-      {message && <p className="products-message">{message}</p>}
+      {message && <p className="products-message" role="status">{message}</p>}
       <div className="products-kpis">
         <Kpi
           label="Productos"

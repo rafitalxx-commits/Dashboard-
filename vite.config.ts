@@ -169,6 +169,8 @@ type ProductRecord = {
   display_name?: string | false;
   default_code?: string | false;
   barcode?: string | false;
+  uom_id?: false | [number, string];
+  qty_available?: number;
 };
 
 type BomRecord = {
@@ -6588,6 +6590,8 @@ async function getOdooPurchaseReceptions(env: Record<string, string>) {
           "product_tmpl_id",
           "categ_id",
           "uom_po_id",
+          "uom_id",
+          "qty_available",
         ],
       })) as ProductRecord[])
     : [];
@@ -6631,7 +6635,8 @@ async function getOdooPurchaseReceptions(env: Record<string, string>) {
         discount: Number(line.discount ?? 0),
         priceUnitDiscounted: Number(line.price_unit_discounted ?? (Number(line.price_unit ?? 0) * (1 - Number(line.discount ?? 0) / 100))),
         subtotal: Number(line.price_subtotal ?? (orderedQty * Number(line.price_unit ?? 0))),
-        uom: "uds",
+        stockTotal: Number(product?.qty_available ?? 0),
+        uom: getRelationName(product?.uom_id) || "uds",
         costMethod: costMethodByCategory.get(getRelationId((product as ProductRecord & { categ_id?: false | [number, string] } | undefined)?.categ_id) ?? 0) || "standard",
         expectedDate: cleanText(line.date_planned),
       };
@@ -6693,7 +6698,7 @@ async function getOdooPurchaseProductOptions(
   const term = cleanText(input.query);
   const domain: unknown[] = [["purchase_ok", "=", true]];
   for (const token of term.split(/[+\s]+/).map((part) => part.trim()).filter(Boolean)) domain.push("|", "|", ["default_code", "ilike", token], ["barcode", "ilike", token], ["name", "ilike", token]);
-  const products = await executeKw(config, uid, "product.product", "search_read", [domain], { fields: ["id", "name", "display_name", "default_code", "barcode", "image_128", "product_tmpl_id", "categ_id", "uom_po_id"], limit: 25 }) as ProductRecord[];
+  const products = await executeKw(config, uid, "product.product", "search_read", [domain], { fields: ["id", "name", "display_name", "default_code", "barcode", "image_128", "product_tmpl_id", "categ_id", "uom_po_id", "uom_id", "qty_available"], limit: 25 }) as ProductRecord[];
   const templateIds = products.map((product) => getRelationId(product.product_tmpl_id)).filter((id): id is number => Boolean(id));
   const today = new Date().toISOString().slice(0, 10);
   const supplierRows = templateIds.length && partnerId ? await executeKw(config, uid, "product.supplierinfo", "search_read", [[
@@ -6710,7 +6715,7 @@ async function getOdooPurchaseProductOptions(
     const suggestedPrice = Number(supplier?.price ?? 0);
     const suggestedDiscount = Number(supplier?.discount ?? 0);
     const suggestedNetPrice = Number(supplier?.price_discounted ?? (suggestedPrice * (1 - suggestedDiscount / 100)));
-    return { id: String(product.id), name: cleanText(product.name) || cleanText(product.display_name), sku: cleanText(product.default_code), barcode: cleanText(product.barcode), imageUrl: formatProductImage(product.image_128), uom: getRelationName((product as ProductRecord & { uom_po_id?: false | [number, string] }).uom_po_id) || "uds", suggestedPrice, suggestedDiscount, suggestedNetPrice, supplierPriceFound: Boolean(supplier), supplierMinQty: Number(supplier?.min_qty ?? 0), supplierCurrency: getRelationName(supplier?.currency_id as false | [number, string]) || getRelationName(order?.currency_id) || "EUR", supplierDelay: Number(supplier?.delay ?? 0), costMethod: costMethodByCategory.get(getRelationId((product as ProductRecord & { categ_id?: false | [number, string] }).categ_id) ?? 0) || "standard" };
+    return { id: String(product.id), name: cleanText(product.name) || cleanText(product.display_name), sku: cleanText(product.default_code), barcode: cleanText(product.barcode), imageUrl: formatProductImage(product.image_128), uom: getRelationName((product as ProductRecord & { uom_po_id?: false | [number, string] }).uom_po_id) || getRelationName(product.uom_id) || "uds", stockTotal: Number(product.qty_available ?? 0), suggestedPrice, suggestedDiscount, suggestedNetPrice, supplierPriceFound: Boolean(supplier), supplierMinQty: Number(supplier?.min_qty ?? 0), supplierCurrency: getRelationName(supplier?.currency_id as false | [number, string]) || getRelationName(order?.currency_id) || "EUR", supplierDelay: Number(supplier?.delay ?? 0), costMethod: costMethodByCategory.get(getRelationId((product as ProductRecord & { categ_id?: false | [number, string] }).categ_id) ?? 0) || "standard" };
   }) };
 }
 

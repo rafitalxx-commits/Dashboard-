@@ -29,7 +29,8 @@
     "test:dhl-preproduction": "node --experimental-strip-types scripts/test-dhl-preproduction.ts",
     "test:inventory-zone-sync": "node --experimental-strip-types scripts/test-inventory-zone-sync.ts",
     "test:receptions": "node --experimental-strip-types scripts/test-reception-phase-2.ts && node --experimental-strip-types scripts/test-reception-phase-3.ts && node --experimental-strip-types scripts/test-reception-phase-4.ts && node --experimental-strip-types scripts/test-reception-phase-5.ts",
-    "test:pending-purchases": "node --experimental-strip-types scripts/test-pending-purchases.ts"
+    "test:pending-purchases": "node --experimental-strip-types scripts/test-pending-purchases.ts",
+    "test:product-catalog-sync": "node --experimental-strip-types scripts/test-product-catalog-sync.ts"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.5.2",

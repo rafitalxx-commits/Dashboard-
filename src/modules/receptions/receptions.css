@@ -73,6 +73,7 @@
 .reception-product-results button:first-child { border-top: 0; }
 .reception-product-results span { display: grid; gap: 3px; }
 .reception-product-results small { color: #687a75; }
+.purchase-line-stock { color: #26745f; font-weight: 700; }
 .reception-editor-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .reception-editor-actions .primary { background: #173f39; color: #fff; }
 .purchase-modal-backdrop { align-items: center; background: rgba(10, 30, 27, .62); display: flex; inset: 0; justify-content: center; padding: 20px; position: fixed; z-index: 1000; }

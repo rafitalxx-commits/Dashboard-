@@ -37,6 +37,7 @@ export type CatalogStore = {
     full: boolean;
     scanned: number;
     changed: number;
+    removed?: number;
   };
 };
 export type CatalogProductDetail = {
@@ -375,6 +376,7 @@ export type PurchaseReceptionLine = {
   discount: number;
   priceUnitDiscounted: number;
   subtotal: number;
+  stockTotal: number;
   description?: string;
   costMethod: "average" | "fifo" | "standard" | string;
 };
@@ -412,6 +414,7 @@ export type PurchaseProductOption = {
   barcode: string;
   imageUrl?: string;
   uom: string;
+  stockTotal: number;
   suggestedPrice: number;
   suggestedDiscount: number;
   suggestedNetPrice: number;

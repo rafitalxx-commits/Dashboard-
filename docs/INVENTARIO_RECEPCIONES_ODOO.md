@@ -39,6 +39,8 @@ Datos visibles:
 - importe y moneda del PO;
 - imagen, nombre, SKU y EAN del producto;
 - cantidad pedida, recibida y pendiente.
+- stock total actual de Odoo (product.product.qty_available) en la línea y
+  en las sugerencias al añadir productos.
 
 La pantalla permite buscar por PO, proveedor, SKU o EAN y filtrar por estado. Se apoya en `purchase.order`, `purchase.order.line` y `product.product`.
 
@@ -81,6 +83,20 @@ línea. Antes de escribir vuelve a comprobar el estado y la composición del
 presupuesto para impedir que se sobrescriban cambios realizados en paralelo.
 En LAB, `ODOO_WRITE_ENABLED=false` bloquea la operación antes de la primera
 escritura; la prueba real requiere autorización y un presupuesto concreto.
+
+## Sincronización del catálogo de productos (LAB)
+
+Al abrir Productos → Catálogo, el Dashboard muestra primero la caché local y
+lanza después una sincronización incremental en segundo plano. Así la apertura
+no espera a Odoo. Esta sincronización también revisa las plantillas modificadas
+y el conjunto actual de productos activos para actualizar nombres y retirar del
+Dashboard los productos archivados.
+
+El botón Actualizar Odoo ejecuta una reconciliación completa y autoritativa:
+reemplaza los datos antiguos por los productos activos actuales y muestra los
+totales revisados, modificados y retirados. Las búsquedas del editor de compras
+no dependen de esta caché: obtienen el stock total dentro de la misma consulta
+de producto a Odoo.
 
 ## Punto 1: Recepciones de Inventario en solo lectura
 
