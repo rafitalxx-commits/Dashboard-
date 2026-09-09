@@ -58,11 +58,16 @@ presupuesto en `product.supplierinfo`, respetando variante, plantilla, cantidad
 mínima, vigencia y moneda. Un precio cero o inexistente se trata como tarifa no
 válida y exige introducir un precio manual.
 
-La búsqueda ofrece sugerencias mientras se escribe y admite términos unidos por
-`+`; todos los términos deben coincidir. La confirmación final ofrece
+La búsqueda ofrece sugerencias mientras se escribe y admite términos separados
+por espacios o unidos por `+`; todos los términos deben coincidir. La confirmación final ofrece
 `Aceptar` y `Aceptar y enviar email`: ambas usan la confirmación nativa del
 pedido y dejan que Odoo genere el albarán; la segunda añade después el envío
-nativo al correo del proveedor. En LAB ambas operaciones están interceptadas.
+nativo al correo del proveedor. En LAB la confirmación sigue interceptada. La
+cancelación de un presupuesto persistido usa la acción nativa de Odoo, conserva
+el histórico y recarga la lista solo después de que Odoo confirme el estado
+`cancel`; el servidor mantiene la operación bloqueada mientras
+`ODOO_WRITE_ENABLED=false`. Un presupuesto nuevo que todavía solo existe en la
+interfaz puede descartarse localmente sin llamar a Odoo.
 
 El precio definitivo se guarda en `purchase.order.line.price_unit`, de modo
 que forme parte del histórico real de compras. El Dashboard no escribirá

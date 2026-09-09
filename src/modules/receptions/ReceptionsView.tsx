@@ -43,6 +43,7 @@ export function PendingPurchasesView() {
   const [confirming, setConfirming] = useState<PurchaseReception | null>(null);
   const [saving, setSaving] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [actionError, setActionError] = useState("");
   const [actionPreview, setActionPreview] = useState<PurchaseOrderActionPreview | null>(null);
   const [actionKind, setActionKind] = useState<"confirm" | "cancel" | null>(null);
   const [creating, setCreating] = useState(false);
@@ -96,6 +97,7 @@ export function PendingPurchasesView() {
 
   const previewAction = async (reception: PurchaseReception, kind: "confirm" | "cancel") => {
     setActionLoading(`${reception.id}-${kind}`);
+    setActionError("");
     setMessage("");
     try {
       setActionPreview(await odooClient.getPendingPurchaseActionPreview(reception.id));
@@ -140,6 +142,24 @@ export function PendingPurchasesView() {
     setMessage(`Nuevo presupuesto para ${vendor.name}. Añade al menos un producto.`);
   };
 
+  const discardLocalQuotation = (reception: PurchaseReception) => {
+    setPayload((current) => current ? {
+      ...current,
+      receptions: current.receptions.filter((item) => item.id !== reception.id),
+      total: Math.max(0, current.total - 1),
+    } : current);
+    setDrafts((current) => {
+      const next = { ...current };
+      delete next[reception.id];
+      return next;
+    });
+    setEditing(null);
+    setExpanded(null);
+    setProductResults([]);
+    setProductQuery("");
+    setMessage(`Borrador local de ${reception.supplier} descartado. No se había creado en Odoo.`);
+  };
+
   const simulateConfirmation = async (sendEmail: boolean) => {
     if (!actionPreview || actionLoading) return;
     setActionLoading("modal");
@@ -152,16 +172,18 @@ export function PendingPurchasesView() {
     } finally { setActionLoading(null); }
   };
 
-  const simulateCancellation = async () => {
+  const cancelQuotation = async () => {
     if (!actionPreview || actionLoading) return;
     setActionLoading("modal");
+    setActionError("");
     try {
-      await odooClient.cancelPendingPurchase(actionPreview.orderId, true);
-      setMessage("Simulación completada: Odoo cancelaría el presupuesto. Las reglas de abastecimiento podrán volver a generarlo si persiste la necesidad.");
+      const result = await odooClient.cancelPendingPurchase(actionPreview.orderId);
+      setMessage(`${result.ref || actionPreview.ref} cancelado en Odoo. Se conserva su historial y desaparecerá de Compras pendientes.`);
       setActionPreview(null);
       setActionKind(null);
+      await load();
     } catch (failure) {
-      setMessage(failure instanceof Error ? failure.message : "No se pudo simular la cancelación");
+      setActionError(failure instanceof Error ? failure.message : "No se pudo cancelar el presupuesto en Odoo");
     } finally {
       setActionLoading(null);
     }
@@ -310,7 +332,7 @@ export function PendingPurchasesView() {
                       </div>
                     ))}
                   </div>
-                  {isEditing && <div className="reception-editor-footer"><div className="reception-product-search"><label><Search size={16}/><input onChange={(event) => setProductQuery(event.target.value)} placeholder="Referencia, nombre o EAN · combina palabras con espacios" value={productQuery}/>{productLoading && <RefreshCw className="spin" size={16}/>}</label><label className="product-search-quantity">Cantidad<input min="0.01" onChange={(event) => setProductQuantity(Math.max(.01, Number(event.target.value)))} step="0.01" type="number" value={productQuantity}/></label></div>{productResults.length > 0 && <div className="reception-product-results">{productResults.map((product) => <button key={product.id} onClick={() => { const line: PurchaseReceptionLine = { id: `new-${product.id}-${Date.now()}`, productId: product.id, name: product.name, description: product.name, sku: product.sku, barcode: product.barcode, imageUrl: product.imageUrl, orderedQty: productQuantity, receivedQty: 0, pendingQty: productQuantity, priceUnit: product.suggestedPrice, discount: product.suggestedDiscount, priceUnitDiscounted: product.suggestedNetPrice, subtotal: productQuantity * product.suggestedNetPrice, uom: product.uom, expectedDate: reception.expectedDate, costMethod: product.costMethod }; setDrafts((current) => ({ ...current, [reception.id]: [...visibleLines, line] })); setProductResults([]); setProductQuery(""); setProductQuantity(1); setMessage(product.supplierPriceFound ? `Producto añadido con tarifa de ${reception.supplier}: ${formatMoney(product.suggestedPrice, product.supplierCurrency || reception.currency)}${product.suggestedDiscount ? ` − ${formatQty(product.suggestedDiscount)}% = ${formatMoney(product.suggestedNetPrice, product.supplierCurrency || reception.currency)}` : ""}.` : `Producto añadido con precio 0; queda pendiente de factura.`); }} type="button"><Plus size={16}/><span><strong>{product.sku || "Sin referencia"} · {product.name}</strong><small>{product.supplierPriceFound ? `Tarifa ${formatMoney(product.suggestedPrice, product.supplierCurrency || reception.currency)}${product.suggestedDiscount ? ` − ${formatQty(product.suggestedDiscount)}% · neto ${formatMoney(product.suggestedNetPrice, product.supplierCurrency || reception.currency)}` : ""}${product.supplierMinQty ? ` desde ${product.supplierMinQty} uds.` : ""}` : "Sin tarifa · precio pendiente de factura (0)"}</small></span></button>)}</div>}<div className="reception-editor-actions"><button onClick={() => { setEditing(null); setProductResults([]); setMessage("Cambios descartados. Odoo no se ha modificado."); }} type="button">Cancelar cambios</button><button className="primary" disabled={visibleLines.length === 0 || visibleLines.some((line) => line.orderedQty <= 0)} onClick={() => { setSaveError(""); setConfirming(reception); }} type="button"><Save size={16}/>Revisar cambios</button></div></div>}
+                  {isEditing && <div className="reception-editor-footer"><div className="reception-product-search"><label><Search size={16}/><input onChange={(event) => setProductQuery(event.target.value)} placeholder="Referencia, nombre o EAN · combina palabras con espacios" value={productQuery}/>{productLoading && <RefreshCw className="spin" size={16}/>}</label><label className="product-search-quantity">Cantidad<input min="0.01" onChange={(event) => setProductQuantity(Math.max(.01, Number(event.target.value)))} step="0.01" type="number" value={productQuantity}/></label></div>{productResults.length > 0 && <div className="reception-product-results">{productResults.map((product) => <button key={product.id} onClick={() => { const line: PurchaseReceptionLine = { id: `new-${product.id}-${Date.now()}`, productId: product.id, name: product.name, description: product.name, sku: product.sku, barcode: product.barcode, imageUrl: product.imageUrl, orderedQty: productQuantity, receivedQty: 0, pendingQty: productQuantity, priceUnit: product.suggestedPrice, discount: product.suggestedDiscount, priceUnitDiscounted: product.suggestedNetPrice, subtotal: productQuantity * product.suggestedNetPrice, uom: product.uom, expectedDate: reception.expectedDate, costMethod: product.costMethod }; setDrafts((current) => ({ ...current, [reception.id]: [...visibleLines, line] })); setProductResults([]); setProductQuery(""); setProductQuantity(1); setMessage(product.supplierPriceFound ? `Producto añadido con tarifa de ${reception.supplier}: ${formatMoney(product.suggestedPrice, product.supplierCurrency || reception.currency)}${product.suggestedDiscount ? ` − ${formatQty(product.suggestedDiscount)}% = ${formatMoney(product.suggestedNetPrice, product.supplierCurrency || reception.currency)}` : ""}.` : `Producto añadido con precio 0; queda pendiente de factura.`); }} type="button"><Plus size={16}/><span><strong>{product.sku || "Sin referencia"} · {product.name}</strong><small>{product.supplierPriceFound ? `Tarifa ${formatMoney(product.suggestedPrice, product.supplierCurrency || reception.currency)}${product.suggestedDiscount ? ` − ${formatQty(product.suggestedDiscount)}% · neto ${formatMoney(product.suggestedNetPrice, product.supplierCurrency || reception.currency)}` : ""}${product.supplierMinQty ? ` desde ${product.supplierMinQty} uds.` : ""}` : "Sin tarifa · precio pendiente de factura (0)"}</small></span></button>)}</div>}<div className="reception-editor-actions"><button className={reception.id.startsWith("new-") ? "danger" : undefined} onClick={() => { if (reception.id.startsWith("new-")) { discardLocalQuotation(reception); return; } setEditing(null); setProductResults([]); setMessage("Cambios descartados. Odoo no se ha modificado."); }} type="button">{reception.id.startsWith("new-") ? "Descartar presupuesto" : "Cancelar cambios"}</button><button className="primary" disabled={visibleLines.length === 0 || visibleLines.some((line) => line.orderedQty <= 0)} onClick={() => { setSaveError(""); setConfirming(reception); }} type="button"><Save size={16}/>Revisar cambios</button></div></div>}
                 </div>
               )}
             </article>
@@ -333,7 +355,7 @@ export function PendingPurchasesView() {
           </div>
         </div>;
       })()}
-      {actionPreview && actionKind === "cancel" && <div aria-labelledby="purchase-action-title" aria-modal="true" className="purchase-modal-backdrop" role="dialog"><div className="purchase-modal"><h3 id="purchase-action-title">Cancelar presupuesto</h3><p>Se cancelará <strong>{actionPreview.ref}</strong> en Odoo. Las reglas de abastecimiento podrán generar otro presupuesto si vuelve a existir necesidad.</p><div className="purchase-modal-warning"><AlertTriangle size={18}/>Esta acción no elimina el documento ni sus datos históricos.</div><div className="purchase-modal-actions"><button disabled={Boolean(actionLoading)} onClick={() => { setActionPreview(null); setActionKind(null); }} type="button">Volver</button><button className="danger" disabled={Boolean(actionLoading)} onClick={() => void simulateCancellation()} type="button">{actionLoading ? "Cancelando…" : "Aceptar cancelación"}</button></div></div></div>}
+      {actionPreview && actionKind === "cancel" && <div aria-labelledby="purchase-action-title" aria-modal="true" className="purchase-modal-backdrop" role="dialog"><div aria-busy={Boolean(actionLoading)} className="purchase-modal"><h3 id="purchase-action-title">Cancelar presupuesto</h3><p>Se cancelará <strong>{actionPreview.ref}</strong> en Odoo. Las reglas de abastecimiento podrán generar otro presupuesto si vuelve a existir necesidad.</p><div className="purchase-modal-warning"><AlertTriangle size={18}/>Esta acción no elimina el documento ni sus datos históricos.</div>{actionError && <div className="purchase-modal-error" role="alert"><AlertTriangle size={18}/><span><strong>No se pudo cancelar en Odoo.</strong><br/>{actionError} Revisa el estado del presupuesto y vuelve a intentarlo.</span></div>}<div className="purchase-modal-actions"><button disabled={Boolean(actionLoading)} onClick={() => { setActionPreview(null); setActionKind(null); setActionError(""); }} type="button">Volver</button><button className="danger" disabled={Boolean(actionLoading)} onClick={() => void cancelQuotation()} type="button">{actionLoading ? <><RefreshCw className="spin" size={16}/>Cancelando en Odoo…</> : "Aceptar cancelación"}</button></div></div></div>}
       {actionPreview && actionKind === "confirm" && <div aria-labelledby="purchase-action-title" aria-modal="true" className="purchase-modal-backdrop" role="dialog"><div className="purchase-modal"><h3 id="purchase-action-title">Confirmar pedido de compra</h3><p><strong>{actionPreview.ref}</strong> · {actionPreview.supplier}</p><dl><div><dt>Líneas</dt><dd>{actionPreview.lineCount}</dd></div><div><dt>Total</dt><dd>{formatMoney(actionPreview.total, actionPreview.currency)}</dd></div><div><dt>Albarán nativo</dt><dd>{actionPreview.willCreateReceipt ? `Sí · ${actionPreview.receiptProductLines} líneas de producto` : "No · solo servicios"}</dd></div><div><dt>Email proveedor</dt><dd>{actionPreview.supplierEmail || "Sin email configurado"}</dd></div></dl>{!actionPreview.supplierEmail && <div className="purchase-modal-error" role="alert">El proveedor no tiene email en su ficha de contacto. Puedes confirmar, pero no enviar el correo.</div>}<div className="purchase-modal-warning"><AlertTriangle size={18}/>«Aceptar y enviar email» usará la plantilla nativa “Purchase: Purchase Order”, que genera y adjunta el PDF del pedido con proveedor, líneas y precios.</div><div className="purchase-modal-actions"><button disabled={Boolean(actionLoading)} onClick={() => { setActionPreview(null); setActionKind(null); }} type="button">Cancelar</button><button className="primary" disabled={Boolean(actionLoading)} onClick={() => void simulateConfirmation(false)} type="button">{actionLoading ? "Comprobando…" : "Aceptar"}</button><button className="primary" disabled={Boolean(actionLoading) || !actionPreview.supplierEmail} onClick={() => void simulateConfirmation(true)} type="button">{actionLoading ? "Comprobando…" : "Aceptar y enviar email"}</button></div></div></div>}
     </section>
   );

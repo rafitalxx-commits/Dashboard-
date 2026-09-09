@@ -6728,7 +6728,7 @@ async function getOdooPurchaseActionPreview(env: Record<string, string>, orderId
   const config = getOdooConfig(env);
   const uid = await authenticate(config);
   const [order] = await executeKw(config, uid, "purchase.order", "read", [[orderId]], { fields: ["id", "name", "state", "partner_id", "currency_id", "amount_total"] }) as OdooPurchaseOrderRecord[];
-  if (!order || !["draft", "sent"].includes(order.state || "")) throw new Error("El presupuesto ya no se puede enviar ni confirmar");
+  if (!order || !["draft", "sent"].includes(order.state || "")) throw new Error("El presupuesto ya no se puede modificar porque no está en borrador ni enviado");
   const partnerId = getRelationId(order.partner_id);
   const [partner] = partnerId ? await executeKw(config, uid, "res.partner", "read", [[partnerId]], { fields: ["id", "name", "email"] }) as Array<{ id: number; name?: string; email?: string | false }> : [];
   const lines = await executeKw(config, uid, "purchase.order.line", "search_read", [[

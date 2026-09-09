@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { chooseSupplierPrice } from "../backend/purchases/supplierPricing.ts";
 
 const rows = [
@@ -10,4 +11,13 @@ assert.equal(chooseSupplierPrice(101, 10, rows)?.price, 10);
 assert.equal(chooseSupplierPrice(102, 10, rows)?.price_discounted, undefined);
 assert.equal(chooseSupplierPrice(102, 10, rows)?.price, 8);
 assert.equal(chooseSupplierPrice(101, 99, rows), undefined);
+
+const purchaseView = readFileSync(new URL("../src/modules/receptions/ReceptionsView.tsx", import.meta.url), "utf8");
+assert.match(purchaseView, /cancelPendingPurchase\(actionPreview\.orderId\)/);
+assert.doesNotMatch(purchaseView, /cancelPendingPurchase\(actionPreview\.orderId, true\)/);
+assert.match(purchaseView, /Cancelando en Odoo…/);
+assert.match(purchaseView, /role="alert"/);
+assert.match(purchaseView, /Descartar presupuesto/);
+assert.match(purchaseView, /Borrador local de .* descartado\. No se había creado en Odoo/);
 console.log("Compras pendientes: selección de tarifa de proveedor verificada");
+console.log("Compras pendientes: descarte local y cancelación real protegidos contra regresiones");

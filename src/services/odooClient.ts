@@ -883,7 +883,7 @@ export const odooClient = {
     const response = await fetch(receptionsApiPath("/api/odoo/pending-purchases/cancel"), {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ orderId, simulate }),
     });
-    const payload = await readJson<{ ok?: boolean; ref?: string; simulated?: boolean; message?: string }>(response);
+    const payload = await readJson<{ ok?: boolean; ref?: string; state?: string; simulated?: boolean; message?: string }>(response);
     if (!response.ok || !payload.ok) throw new Error(payload.message ?? "No se pudo cancelar el presupuesto");
     return payload;
   },
