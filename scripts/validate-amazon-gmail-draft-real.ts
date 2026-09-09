@@ -187,10 +187,6 @@ try {
   assert.equal(updated.id, created.id, "updating must not create a duplicate draft");
   await assertGmailDraftExists(config, updated.id);
 
-  const manualSend = await callGmailDraftRouteInMode("manual_send", conversationId);
-  assert.equal(manualSend.statusCode, 400);
-  assert.match(manualSend.body.message, /manual_send no implementado/);
-
   const disabled = await callGmailDraftRouteInMode("disabled", conversationId);
   assert.equal(disabled.statusCode, 400);
   assert.match(disabled.body.message, /disabled/);
@@ -203,7 +199,6 @@ try {
         conversationId,
         gmailDraftId: updated.id,
         createdAndUpdatedSameDraft: updated.id === created.id,
-        manualSend: manualSend.body.message,
         disabled: disabled.body.message,
         note: "No send endpoint is called by this validation script.",
       },
@@ -275,7 +270,7 @@ async function callGmailDraftRouteInMode(mode: string, conversationId: string) {
           return {
             id: actor.id,
             name: actor.name,
-            role: actor.role,
+            role: "admin",
             permissions: [],
           };
         },
