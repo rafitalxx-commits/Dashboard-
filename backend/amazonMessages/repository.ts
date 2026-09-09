@@ -29,6 +29,7 @@ import type {
 } from "./schema.ts";
 import { rolePermissions } from "./schema.ts";
 import { parseAmazonEmail } from "../../src/modules/amazonMessages/amazonEmailParser.ts";
+import { compactAmazonMessageContent } from "./contentCompaction.ts";
 import type { ParsedAmazonEmail } from "../../src/modules/amazonMessages/amazonMessagesTypes.ts";
 import {
   resolveOdooOrderContext,
@@ -2146,7 +2147,7 @@ export function createAmazonMessagesRepository(options: RepositoryOptions = {}) 
         normalizedHash: parsed.normalizedHash,
         sender: parsed.from,
         direction: "inbound",
-        content: parsed.cleanBody,
+        content: compactAmazonMessageContent(parsed.cleanBody).content,
         classification: parsed.operationalQueue,
         language: parsed.language,
         createdAt: parsed.receivedAt,

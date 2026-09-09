@@ -17,6 +17,8 @@
     "diagnose:v2-hito-b4-orders-payload": "node scripts/v2-hito-b4-orders-v2-payload-diagnostic.mjs",
     "test:amazon-backend": "node --experimental-strip-types scripts/test-amazon-messages-backend.ts",
     "test:amazon-gmail": "node --experimental-strip-types scripts/test-amazon-gmail-readonly.ts",
+    "test:amazon-store-compaction": "node --experimental-strip-types scripts/test-amazon-store-compaction.ts",
+    "analyze:amazon-store": "node --experimental-strip-types scripts/compact-amazon-messages-store.ts",
     "test:amazon-outbound-security": "node --experimental-strip-types scripts/test-amazon-outbound-security.ts",
     "test:amazon-manual-send-mock": "node --experimental-strip-types scripts/test-amazon-manual-send-mock.ts",
     "test:amazon-final-send": "node --experimental-strip-types scripts/test-amazon-final-send.ts",
