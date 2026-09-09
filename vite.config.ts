@@ -6432,7 +6432,7 @@ async function getOdooInventoryReceptions(
           stripProductCode(relationName) ||
           cleanText(move.name) ||
           "Producto sin nombre",
-        description: cleanText(line.name),
+        description: cleanText(move.name),
         sku: cleanText(product?.default_code) || getProductCode(relationName),
         barcode: cleanText(product?.barcode),
         imageUrl: formatProductImage(product?.image_128),

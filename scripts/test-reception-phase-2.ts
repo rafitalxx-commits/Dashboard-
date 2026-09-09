@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { buildSaleOrderAllocationsByReceptionMove, buildSaleOrderRefsByReceptionMove } from "../backend/receptions/traceability.ts";
 import { allocatedQuantity, isLocationPlanBalanced } from "../src/modules/receptions/locationPlan.ts";
 
@@ -77,4 +78,20 @@ assert.equal(isLocationPlanBalanced({
   allocations: [{ id: "empty", location: "", quantity: 200 }],
 }), false, "requires a real location for every quantity");
 
+const viteConfig = readFileSync(
+  new URL("../vite.config.ts", import.meta.url),
+  "utf8",
+);
+assert.match(
+  viteConfig,
+  /description: cleanText\(move\.name\)/,
+  "maps the reception description from the current stock move",
+);
+assert.doesNotMatch(
+  viteConfig,
+  /description: cleanText\(line\.name\)/,
+  "never references an undefined purchase line while mapping stock moves",
+);
+
 console.log("Recepciones Fase 2: trazabilidad y reparto verificados");
+console.log("Recepciones Fase 2: descripción de movimientos protegida contra regresiones");
