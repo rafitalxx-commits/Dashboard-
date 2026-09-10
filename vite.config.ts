@@ -719,13 +719,35 @@ function odooReadOnlyApi(env: Record<string, string>) {
               return;
             }
             if (request.method === "POST" && url.pathname === "/sync") {
-              sendJson(
-                response,
-                200,
-                await productCatalog.sync(
-                  url.searchParams.get("full") === "true",
-                ),
+              const rawCatalog = await productCatalog.sync(
+                url.searchParams.get("full") === "true",
               );
+              const locs = productLocations.summary().locations;
+              sendJson(response, 200, {
+                ...rawCatalog,
+                products: rawCatalog.products.map((product: any) => {
+                  const productLocs = locs.filter(
+                    (loc: any) => loc.productId === product.id,
+                  );
+                  const preferred = productLocs.find(
+                    (loc: any) => loc.preferred,
+                  );
+                  return {
+                    ...product,
+                    physicalLocations: productLocs.map((loc: any) => loc.code),
+                    locationSummary: {
+                      preferredCode: preferred?.code,
+                      preferredQuantity: preferred?.quantity,
+                      replenishmentMin: preferred?.replenishmentMin,
+                      needsReplenishment: Boolean(
+                        preferred &&
+                        preferred.replenishmentMin !== undefined &&
+                        preferred.quantity <= preferred.replenishmentMin,
+                      ),
+                    },
+                  };
+                }),
+              });
               return;
             }
             if (request.method !== "GET") {

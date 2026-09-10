@@ -83,13 +83,29 @@ export function reconcileCatalogProducts(
   full: boolean,
 ) {
   const activeIds = new Set(activeProductIds);
+  const prevById = new Map(
+    previous.map((product) => [product.id, product]),
+  );
   const next = new Map<number, CatalogProduct>(
     (full ? [] : previous.filter((product) => activeIds.has(product.id))).map(
       (product) => [product.id, product],
     ),
   );
   refreshed.forEach((product) => {
-    if (activeIds.has(product.id)) next.set(product.id, product);
+    if (!activeIds.has(product.id)) return;
+    const prev = prevById.get(product.id);
+    // Odoo does not store Dashboard-managed fields (physicalLocations,
+    // supplierNames).  Carry them forward from the previous catalog snapshot
+    // so a sync never wipes out locally curated location assignments.
+    next.set(product.id, {
+      ...product,
+      physicalLocations: product.physicalLocations.length
+        ? product.physicalLocations
+        : prev?.physicalLocations ?? [],
+      supplierNames: product.supplierNames.length
+        ? product.supplierNames
+        : prev?.supplierNames ?? [],
+    });
   });
   return [...next.values()].sort((left, right) =>
     left.name.localeCompare(right.name, "es"),

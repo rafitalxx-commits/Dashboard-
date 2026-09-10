@@ -164,11 +164,11 @@ export function ProductsCatalogView({
           return false;
         if (supplier && !(p.supplierNames || []).includes(supplier))
           return false;
-        if (
-          locationFilter &&
-          !p.physicalLocations.includes(locationFilter.trim().toUpperCase())
-        )
-          return false;
+        if (locationFilter) {
+          const locationTerm = locationFilter.trim().toUpperCase();
+          if (!p.physicalLocations.some((loc) => loc === locationTerm || loc.startsWith(locationTerm)))
+            return false;
+        }
         if (filter === "stock") return p.onHand > 0;
         if (filter === "empty") return p.onHand <= 0;
         if (filter === "mto") return p.mto;
