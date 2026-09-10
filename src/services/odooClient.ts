@@ -37,6 +37,7 @@ type DashboardPermission =
   | "products"
   | "settings"
   | "odooWrite"
+  | "amazonMessages"
   | "amazonMessagesSendFinal";
 type DashboardUser = {
   id: string;

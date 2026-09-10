@@ -244,6 +244,7 @@ type DashboardPermission =
   | "products"
   | "settings"
   | "odooWrite"
+  | "amazonMessages"
   | "amazonMessagesSendFinal";
 type StoredDashboardUser = {
   id: string;
@@ -3674,6 +3675,7 @@ function permissionsForRole(role: DashboardUserRole): DashboardPermission[] {
       "products",
       "settings",
       "odooWrite",
+      "amazonMessages",
       "amazonMessagesSendFinal",
     ];
   }
@@ -3693,6 +3695,7 @@ function normalizePermissions(values: DashboardPermission[]) {
     "products",
     "settings",
     "odooWrite",
+    "amazonMessages",
     "amazonMessagesSendFinal",
   ]);
   return Array.from(new Set(values.filter((value) => allowed.has(value))));
@@ -3705,6 +3708,9 @@ function migrateStoredUserPermissions(user: StoredDashboardUser): StoredDashboar
     !permissions.includes("expeditions")
   ) {
     permissions.push("expeditions");
+  }
+  if (user.role === "admin" && !permissions.includes("amazonMessages")) {
+    permissions.push("amazonMessages");
   }
   return permissions.join("|") === user.permissions.join("|")
     ? user

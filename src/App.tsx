@@ -198,8 +198,7 @@ const navItems = [
     label: "Amazon Messages",
     icon: MessagesSquare,
     view: "amazonMessages",
-    permission: "orders",
-    productionNav: false,
+    permission: "amazonMessages",
   },
   {
     label: "Configuracion",
@@ -250,6 +249,7 @@ type DashboardPermission =
   | "products"
   | "settings"
   | "odooWrite"
+  | "amazonMessages"
   | "amazonMessagesSendFinal";
 type DashboardUser = {
   id: string;
@@ -394,6 +394,7 @@ const permissionLabels: Record<DashboardPermission, string> = {
   products: "Productos / stock",
   settings: "Configuracion",
   odooWrite: "Acciones Odoo",
+  amazonMessages: "Amazon Messages: acceso y borradores",
   amazonMessagesSendFinal: "Amazon Messages: envio final",
 };
 const editablePermissions: DashboardPermission[] = [
@@ -407,6 +408,7 @@ const editablePermissions: DashboardPermission[] = [
   "products",
   "settings",
   "odooWrite",
+  "amazonMessages",
   "amazonMessagesSendFinal",
 ];
 

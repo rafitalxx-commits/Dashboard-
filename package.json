@@ -20,6 +20,7 @@
     "test:amazon-store-compaction": "node --experimental-strip-types scripts/test-amazon-store-compaction.ts",
     "test:amazon-agent-draft-auto": "node --experimental-strip-types scripts/test-amazon-agent-draft-auto.ts",
     "test:amazon-agent-draft-worker": "node --experimental-strip-types scripts/test-amazon-agent-draft-worker.ts",
+    "test:amazon-production-access": "node --experimental-strip-types scripts/test-amazon-production-access.ts",
     "analyze:amazon-store": "node --experimental-strip-types scripts/compact-amazon-messages-store.ts",
     "test:amazon-outbound-security": "node --experimental-strip-types scripts/test-amazon-outbound-security.ts",
     "test:amazon-manual-send-mock": "node --experimental-strip-types scripts/test-amazon-manual-send-mock.ts",
