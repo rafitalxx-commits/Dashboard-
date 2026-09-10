@@ -14,6 +14,7 @@ import {
 } from "./gmailClient.ts";
 import type { GmailFinalDraftSendSource } from "./gmailClient.ts";
 import type { AmazonOutboundMode } from "./schema.ts";
+import { ensureAmazonMessagesAgentDraftWorker } from "./agentDraftWorker.ts";
 
 type MiddlewareServer = {
   middlewares: {
@@ -54,6 +55,26 @@ export function registerAmazonMessagesRoutes(
     name: "Amazon Gmail Auto Sync",
     role: "ADMIN",
   });
+  ensureAmazonMessagesAgentDraftWorker(
+    repository,
+    {
+      id: "juanito-agent-draft-worker",
+      name: "Juanito Agent Draft Worker",
+      role: "AGENTE_IA",
+      permissions: [
+        "amazonMessages:read",
+        "amazonMessages:manage",
+        "amazonMessages:aiDraft",
+      ],
+    },
+    {
+      enabled:
+        process.env.AMAZON_MESSAGES_AGENT_DRAFT_WORKER_ENABLED === "true",
+      intervalMs: Number(
+        process.env.AMAZON_MESSAGES_AGENT_DRAFT_WORKER_INTERVAL_MS ?? 15_000,
+      ),
+    },
+  );
 
   server.middlewares.use("/api/amazon-messages", async (request, response) => {
     const actor = actorFromDashboardUser(
