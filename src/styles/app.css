@@ -414,6 +414,35 @@ td small,
   color: #ffffff;
 }
 
+/* Selector de fechas: 1/4/7/Rango en fila horizontal (movil y PC). */
+.segmented-control.range-chips {
+  flex-direction: row;
+  grid-template-columns: none;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.segmented-control.range-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.segmented-control.range-chips button {
+  flex: 1 1 auto;
+  justify-content: center;
+  min-width: 64px;
+}
+
+.range-bar .custom-range {
+  flex-direction: row;
+  grid-template-columns: none;
+}
+
+.range-bar .custom-range input {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
 .custom-range input {
   min-height: 42px;
   border: 1px solid #cbd5e1;
@@ -858,8 +887,39 @@ td small,
 }
 
 .order-kpis {
-  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
 }
+
+.order-kpis .kpi {
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.order-kpis .kpi span,
+.order-kpis .kpi small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.order-kpis .kpi strong {
+  margin: 3px 0 1px;
+  font-size: 21px;
+}
+
+.order-kpis .kpi { box-shadow: 0 2px 7px rgba(15, 23, 42, .07); }
+.order-kpis .kpi span { color: #334155; font-weight: 800; }
+.order-kpis .kpi strong { font-weight: 900; letter-spacing: -.02em; }
+.order-kpis .kpi small { color: #475569; font-weight: 700; }
+.kpi-blue { background: #e8f3ff; background: linear-gradient(135deg, #dff0ff, #eff8ff); border-color: #82bdf2; }
+.kpi-blue strong { color: #124a8b; }
+.kpi-violet { background: #f0ebff; background: linear-gradient(135deg, #eae3ff, #f7f4ff); border-color: #bca5f2; }
+.kpi-violet strong { color: #5b21b6; }
+.kpi-amber { background: #fff4d6; background: linear-gradient(135deg, #ffefbf, #fff9e8); border-color: #edbd55; }
+.kpi-amber strong { color: #92400e; }
+.kpi-rose { background: #ffe8ed; background: linear-gradient(135deg, #ffe0e8, #fff4f6); border-color: #ef9caf; }
+.kpi-rose strong { color: #a61b43; }
 
 .dashboard-kpis {
   grid-template-columns: repeat(5, minmax(150px, 1fr));
@@ -1277,6 +1337,17 @@ td small,
   margin: 8px 0 4px;
   font-size: 24px;
 }
+
+/* Estas reglas van después del fondo base de .kpi: de otro modo el blanco
+   general ganaría en cascada y las tarjetas de Pedidos parecerían iguales. */
+.order-kpis .kpi.kpi-blue { background: linear-gradient(135deg, #dff0ff, #eff8ff); border-color: #82bdf2; }
+.order-kpis .kpi.kpi-blue strong { color: #124a8b; }
+.order-kpis .kpi.kpi-violet { background: linear-gradient(135deg, #eae3ff, #f7f4ff); border-color: #bca5f2; }
+.order-kpis .kpi.kpi-violet strong { color: #5b21b6; }
+.order-kpis .kpi.kpi-amber { background: linear-gradient(135deg, #ffefbf, #fff9e8); border-color: #edbd55; }
+.order-kpis .kpi.kpi-amber strong { color: #92400e; }
+.order-kpis .kpi.kpi-rose { background: linear-gradient(135deg, #ffe0e8, #fff4f6); border-color: #ef9caf; }
+.order-kpis .kpi.kpi-rose strong { color: #a61b43; }
 
 .panel-header {
   margin-bottom: 12px;
@@ -1858,6 +1929,86 @@ td {
 .selected-row .icon-button {
   border-color: #2f7db3;
   color: #155e9b;
+}
+
+/* Sales that require a supplier purchase need a stronger, unmistakable cue. */
+.purchase-alert-icon {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  border-color: #ea580c;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #f97316, #dc2626);
+  color: #fff;
+  box-shadow: 0 4px 10px rgba(234, 88, 12, .28);
+}
+
+.purchase-alert-icon:hover,
+.selected-row .purchase-alert-icon {
+  border-color: #9a3412;
+  background: linear-gradient(135deg, #ea580c, #b91c1c);
+  color: #fff;
+  box-shadow: 0 7px 15px rgba(194, 65, 12, .36);
+  transform: translateY(-1px);
+}
+
+.purchase-alert-icon:focus-visible {
+  outline: 3px solid #fdba74;
+  outline-offset: 2px;
+}
+
+.purchase-alert-icon b {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  min-width: 17px;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  background: #7f1d1d;
+  color: #fff;
+  font-size: 10px;
+  line-height: 15px;
+  text-align: center;
+}
+
+/* The purchase editor must retain the sales list context, so it is always a
+   right-side panel rather than an expanded row below the table. */
+.sales-purchase-drawer-backdrop {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  background: rgba(15, 23, 42, .38);
+}
+
+.sales-purchase-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(780px, 100vw);
+  overflow: auto;
+  border-left: 1px solid #cbd5e1;
+  background: #fff;
+  box-shadow: -18px 0 44px rgba(15, 23, 42, .25);
+  padding: 20px;
+}
+
+.sales-purchase-drawer .receptions-view { padding: 0; }
+.sales-purchase-drawer-header { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid #e2e8f0; padding: 0 0 16px; }
+.sales-purchase-drawer-header small { color: #64748b; font-weight: 800; text-transform: uppercase; }
+.sales-purchase-drawer-header h2 { margin: 5px 0; font-size: 22px; }
+.sales-purchase-drawer-header p { margin: 0; color: #64748b; }
+.sales-purchase-drawer-header button { width: 38px; height: 38px; border: 0; background: transparent; color: #475569; font-size: 28px; cursor: pointer; }
+.sales-purchase-alert-list { display: grid; gap: 9px; padding-top: 16px; }
+.sales-purchase-alert-list > button { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid #e2e8f0; border-radius: 9px; background: #fff; padding: 13px; text-align: left; color: #334155; cursor: pointer; font: inherit; }
+.sales-purchase-alert-list > button:hover { border-color: #ea580c; background: #fff7ed; }
+.sales-purchase-alert-list strong, .sales-purchase-alert-list small { display: block; }
+.sales-purchase-alert-list small { margin-top: 3px; color: #64748b; }
+.sales-purchase-alert-list > button > span:last-child { color: #c2410c; font-size: 12px; font-weight: 800; }
+
+@media (max-width: 640px) {
+  .sales-purchase-drawer { width: 100%; padding: 16px; }
+  .sales-purchase-drawer-header h2 { font-size: 20px; }
 }
 
 .order-detail-row td {

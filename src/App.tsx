@@ -55,6 +55,7 @@ import type {
   DashboardRow,
   DashboardSummary,
   Order,
+  SalesPurchaseAlert,
   OrdersSyncStats,
   OrdersV2Performance,
 } from "./services/odooTypes";
@@ -347,13 +348,8 @@ const odooDeliveryOptions = [
 ];
 const rangePresets = [
   { label: "1 dia", value: "1d" },
-  { label: "Ayer", value: "yesterday" },
+  { label: "4 dias", value: "4d" },
   { label: "7 dias", value: "7d" },
-  { label: "30 dias", value: "30d" },
-  { label: "1 mes", value: "1m" },
-  { label: "Este mes", value: "thisMonth" },
-  { label: "Mes anterior", value: "previousMonth" },
-  { label: "1 ano", value: "1y" },
   { label: "Rango", value: "custom" },
 ] as const;
 type RangePreset = (typeof rangePresets)[number]["value"];
@@ -464,7 +460,7 @@ function App() {
   }>({ key: "date", direction: "desc" });
   const [odooActionMessage, setOdooActionMessage] = useState("");
   const [odooActionLoading, setOdooActionLoading] = useState(false);
-  const [rangePreset, setRangePreset] = useState<RangePreset>("1d");
+  const [rangePreset, setRangePreset] = useState<RangePreset>("4d");
   const [customFrom, setCustomFrom] = useState(todayIso());
   const [customTo, setCustomTo] = useState(todayIso());
   const [page, setPage] = useState(1);
@@ -482,6 +478,9 @@ function App() {
     activeView === "dashboard" || activeView === "dashboardV2";
   const isOrdersView = activeView === "orders" || activeView === "ordersV2";
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  const [salesPurchaseAlerts, setSalesPurchaseAlerts] = useState<SalesPurchaseAlert[]>([]);
+  const [salesPurchaseAlertsLoading, setSalesPurchaseAlertsLoading] = useState(false);
+  const [selectedPurchaseAlertId, setSelectedPurchaseAlertId] = useState<string | null>(null);
   const [orderDetailsById, setOrderDetailsById] = useState<
     Record<string, Order>
   >({});
@@ -539,6 +538,15 @@ function App() {
     [customFrom, customTo, rangePreset],
   );
   const serverSearch = query.trim();
+  // Delivery, print and Odoo status are resolved in the browser.  Loading
+  // every server block first prevents a filter from silently omitting matches
+  // that happen to be on later blocks.
+  const needsCompleteOrderDataset =
+    Boolean(serverSearch) ||
+    selectedChannels.length > 0 ||
+    delivery !== "Todos" ||
+    printed !== "Todos" ||
+    odooDelivery !== "Todos";
 
   const navigateToView = (view: ActiveView) => {
     setActiveView(view);
@@ -652,25 +660,29 @@ function App() {
     setSyncSummary(`${isV2View ? "Pedidos V2" : "Pedidos"}: ${dateRange.from} a ${dateRange.to}`);
     setSelectedOrderId(null);
 
-    const offset = (serverPage - 1) * pageSize;
+    const batchSize = 500;
+    const offset = needsCompleteOrderDataset ? 0 : (serverPage - 1) * pageSize;
+    const limit = needsCompleteOrderDataset ? batchSize : pageSize;
+    const loadOrderBlock = (blockOffset: number) => isV2View
+      ? odooClient.getOrdersV2({ ...dateRange, limit, offset: blockOffset, search: serverSearch })
+      : odooClient.getOrders({ ...dateRange, limit, offset: blockOffset, search: serverSearch });
 
-    const ordersRequest = isV2View ? odooClient.getOrdersV2({
-      ...dateRange,
-      limit: pageSize,
-      offset,
-      search: serverSearch,
-    }) : odooClient.getOrders({
-      ...dateRange,
-      limit: pageSize,
-      offset,
-      search: serverSearch,
-    });
-    ordersRequest.then((result) => {
+    void loadOrderBlock(offset).then(async (result) => {
       if (!mounted) return;
 
       if (result.mode === "live") {
         const total = result.total ?? result.orders.length;
-        setOrders(result.orders);
+        const loaded = new Map(result.orders.map((order) => [order.id, order]));
+        if (needsCompleteOrderDataset) {
+          for (let blockOffset = result.orders.length; blockOffset < total; blockOffset += batchSize) {
+            const next = await loadOrderBlock(blockOffset);
+            if (!mounted || next.mode !== "live" || next.orders.length === 0) break;
+            next.orders.forEach((order) => loaded.set(order.id, order));
+          }
+        }
+        if (!mounted) return;
+        const loadedOrders = Array.from(loaded.values());
+        setOrders(loadedOrders);
         setServerTotal(total);
         setDataMode("live");
         if (result.cache?.sync) {
@@ -681,11 +693,13 @@ function App() {
         }
         setConnectionMessage(
           result.source === "dashboard-cache"
-            ? `${isV2View ? "Cache V2" : "Cache Dashboard"} · ${result.orders.length} de ${total} pedidos`
-            : `Odoo real · ${result.orders.length} de ${total} pedidos`,
+            ? `${isV2View ? "Cache V2" : "Cache Dashboard"} · ${loadedOrders.length} de ${total} pedidos`
+            : `Odoo real · ${loadedOrders.length} de ${total} pedidos`,
         );
         setSyncSummary(
-          result.cache?.updatedAt
+          needsCompleteOrderDataset
+            ? `Filtro: ${loadedOrders.length} pedidos cargados de todos los bloques`
+            : result.cache?.updatedAt
             ? `Cache ${formatSyncTime(result.cache.updatedAt)} · bloque ${serverPage}`
             : `Rango ${dateRange.from} a ${dateRange.to} · bloque ${serverPage} · ultimos: ${result.orders
                 .slice(0, 3)
@@ -711,11 +725,26 @@ function App() {
     isDashboardView,
     isOrdersView,
     isV2View,
+    needsCompleteOrderDataset,
     orderRefreshKey,
     pageSize,
     serverPage,
     serverSearch,
   ]);
+
+  useEffect(() => {
+    if (authMode !== "logged-in" || !isOrdersView) return;
+    let mounted = true;
+    setSalesPurchaseAlertsLoading(true);
+    odooClient.getSalesPurchaseAlerts().then((payload) => {
+      if (mounted) setSalesPurchaseAlerts(payload.alerts);
+    }).catch(() => {
+      if (mounted) setSalesPurchaseAlerts([]);
+    }).finally(() => {
+      if (mounted) setSalesPurchaseAlertsLoading(false);
+    });
+    return () => { mounted = false; };
+  }, [authMode, isOrdersView, orderRefreshKey]);
 
   useEffect(() => {
     if (authMode !== "logged-in" || !isDashboardView) return;
@@ -878,7 +907,9 @@ function App() {
 
       return [
         ...fulfillmentOptions,
-        ...Array.from(new Set(orders.map((order) => order.channel))),
+        ...Array.from(new Set(orders.map((order) => order.channel))).filter(
+          (channel) => !isAmazonTodoelectricoChannel(channel),
+        ),
       ];
     },
     [orders],
@@ -943,10 +974,12 @@ function App() {
   );
   const pageCount = Math.max(1, Math.ceil(sortedOrders.length / pageSize));
   const currentPage = Math.min(page, pageCount);
-  const visibleOrders = sortedOrders.slice(
-    (currentPage - 1) * pageSize,
-    currentPage * pageSize,
-  );
+  const visibleOrders = needsCompleteOrderDataset
+    ? sortedOrders
+    : sortedOrders.slice(
+        (currentPage - 1) * pageSize,
+        currentPage * pageSize,
+      );
   const selectedPrintOrders = sortedOrders
     .filter((order) => selectedPrintOrderIds.includes(order.id))
     .map((order) => printContextById[order.id] ?? orderDetailsById[order.id] ?? order);
@@ -962,9 +995,6 @@ function App() {
   const canMoveBack = serverPage > 1;
   const canMoveForward = serverPage * pageSize < serverTotal;
 
-  const deliveredCount = filteredOrders.filter((order) =>
-    isDelivered(getEffectiveDeliveryStatus(order)),
-  ).length;
   const printedCount = filteredOrders.filter((order) => order.deliveryPrinted).length;
   const unprintedConfirmed = filteredOrders.filter(
     (order) =>
@@ -972,9 +1002,17 @@ function App() {
       !isDelivered(getEffectiveDeliveryStatus(order)) &&
       order.status !== "Bloqueado",
   ).length;
+  const purchaseAlertsBySaleId = useMemo(() => {
+    const result = new Map<string, SalesPurchaseAlert[]>();
+    salesPurchaseAlerts.forEach((alert) => alert.saleOrderIds.forEach((saleId) => {
+      result.set(saleId, [...(result.get(saleId) ?? []), alert]);
+    }));
+    return result;
+  }, [salesPurchaseAlerts]);
 
   const updateFilter = (setter: (value: string) => void, value: string) => {
     setter(value);
+    setServerPage(1);
     setPage(1);
     setSelectedPrintOrderIds([]);
   };
@@ -984,6 +1022,7 @@ function App() {
     setDelivery("Todos");
     setPrinted("Todos");
     setOdooDelivery("Todos");
+    setServerPage(1);
     setPage(1);
     setSelectedPrintOrderIds([]);
   };
@@ -993,6 +1032,7 @@ function App() {
         ? current.filter((value) => value !== option)
         : [...current, option],
     );
+    setServerPage(1);
     setPage(1);
     setSelectedPrintOrderIds([]);
   };
@@ -1684,7 +1724,7 @@ function App() {
         {showOrderRange && (
           <>
             <section className="range-bar">
-              <div className="segmented-control" aria-label="Rango de fechas">
+              <div className="segmented-control range-chips" aria-label="Rango de fechas">
                 {rangePresets.map((preset) => (
                   <button
                     className={rangePreset === preset.value ? "active" : ""}
@@ -1967,22 +2007,21 @@ function App() {
                     : filteredOrders.length.toString()
                 }
                 detail={`${orders.length} pedidos ${dataMode === "live" ? "Odoo" : "demo"}`}
+                tone="blue"
               />
               <Kpi
-                title="Entregados"
-                value={deliveredCount.toString()}
-                detail="visibles entregados"
-              />
-              <Kpi
-                  title="Print alb."
+                title="Print alb."
                 value={printedCount.toString()}
                 detail="visibles impresos"
+                tone="violet"
               />
               <Kpi
                 title="Sin imprimir"
                 value={unprintedConfirmed.toString()}
                 detail="visibles pendientes"
+                tone="amber"
               />
+              <Kpi title="Compras por realizar" value={salesPurchaseAlertsLoading ? "..." : salesPurchaseAlerts.length.toString()} detail="presupuestos vinculados a ventas" onClick={() => setSelectedPurchaseAlertId("list")} tone="rose" />
             </section>
 
             <section className="panel orders-panel">
@@ -2218,13 +2257,14 @@ function App() {
                         onSort={toggleOrderSort}
                         sortKey="total"
                       />
+                      <th>Compra</th>
                       <th>Detalle</th>
                     </tr>
                   </thead>
                   <tbody>
                     {dataMode === "loading" && (
                       <tr>
-                        <td className="empty-state" colSpan={12}>
+                        <td className="empty-state" colSpan={13}>
                           Cargando pedidos reales desde Odoo...
                         </td>
                       </tr>
@@ -2234,6 +2274,7 @@ function App() {
                       const deliveryStatus = getEffectiveDeliveryStatus(order);
                       const delivered = isDelivered(deliveryStatus);
                       const isSelected = selectedOrderId === order.id;
+                      const linkedPurchases = purchaseAlertsBySaleId.get(order.odooRef) ?? [];
 
                       return (
                         <Fragment key={order.id}>
@@ -2292,6 +2333,7 @@ function App() {
                             <td>
                               <strong>{money(order.total)}</strong>
                             </td>
+                            <td>{linkedPurchases.length > 0 && <button aria-label={`Abrir compra pendiente de ${order.id}`} className="icon-button purchase-alert-icon" onClick={() => setSelectedPurchaseAlertId(linkedPurchases[0].purchaseId)} title={linkedPurchases.map((item) => item.purchaseRef).join(", ")} type="button"><ShoppingCart size={16} />{linkedPurchases.length > 1 && <b>{linkedPurchases.length}</b>}</button>}</td>
                             <td>
                               <button
                                 aria-expanded={isSelected}
@@ -2309,7 +2351,7 @@ function App() {
                           </tr>
                           {isSelected && (
                             <tr className="order-detail-row">
-                              <td colSpan={11}>
+                              <td colSpan={13}>
                                 <OrderDetailPanel
                                   loading={detailedOrder.items.length === 0}
                                   order={detailedOrder}
@@ -2322,7 +2364,7 @@ function App() {
                     })}
                     {dataMode !== "loading" && visibleOrders.length === 0 && (
                       <tr>
-                        <td className="empty-state" colSpan={11}>
+                        <td className="empty-state" colSpan={13}>
                           No hay pedidos visibles con los filtros actuales.
                           <button onClick={clearFilters} type="button">
                             Limpiar filtros
@@ -2350,11 +2392,12 @@ function App() {
 
               <footer className="pagination">
                 <span>
-                  Mostrando {serverFrom}-{serverTo} de {serverTotal} pedidos
-                  Odoo
+                  {needsCompleteOrderDataset
+                    ? `Filtro aplicado: ${sortedOrders.length} pedidos de todos los bloques`
+                    : `Mostrando ${serverFrom}-${serverTo} de ${serverTotal} pedidos Odoo`}
                 </span>
                 <div>
-                  <label className="page-size-select">
+                  {!needsCompleteOrderDataset && <label className="page-size-select">
                     Pedidos
                     <select
                       onChange={(event) => {
@@ -2371,8 +2414,8 @@ function App() {
                         </option>
                       ))}
                     </select>
-                  </label>
-                  <button
+                  </label>}
+                  {!needsCompleteOrderDataset && <button
                     disabled={!canMoveBack}
                     onClick={() => {
                       setServerPage((value) => Math.max(1, value - 1));
@@ -2381,9 +2424,9 @@ function App() {
                     type="button"
                   >
                     <ChevronLeft size={17} />
-                  </button>
-                  <strong>Bloque {serverPage}</strong>
-                  <button
+                  </button>}
+                  {!needsCompleteOrderDataset && <strong>Bloque {serverPage}</strong>}
+                  {!needsCompleteOrderDataset && <button
                     disabled={!canMoveForward}
                     onClick={() => {
                       setServerPage((value) => value + 1);
@@ -2392,10 +2435,11 @@ function App() {
                     type="button"
                   >
                     <ChevronRight size={17} />
-                  </button>
+                  </button>}
                 </div>
               </footer>
             </section>
+            {selectedPurchaseAlertId && <SalesPurchaseDrawer alerts={salesPurchaseAlerts} onClose={() => setSelectedPurchaseAlertId(null)} onOpenPurchase={(purchaseId) => setSelectedPurchaseAlertId(purchaseId)} purchaseId={selectedPurchaseAlertId === "list" ? null : selectedPurchaseAlertId} />}
           </>
         ) : (
           <RestrictedModuleView
@@ -5133,18 +5177,28 @@ function Kpi({
   title,
   value,
   detail,
+  onClick,
+  tone,
 }: {
   title: string;
   value: string;
   detail: string;
+  onClick?: () => void;
+  tone?: "blue" | "violet" | "amber" | "rose";
 }) {
+  const content = <><span>{title}</span><strong>{value}</strong><small>{detail}</small></>;
+  const className = `kpi${tone ? ` kpi-${tone}` : ""}`;
+  if (onClick) return <button className={`${className} kpi-button`} onClick={onClick} type="button">{content}</button>;
   return (
-    <article className="kpi">
-      <span>{title}</span>
-      <strong>{value}</strong>
-      <small>{detail}</small>
+    <article className={className}>
+      {content}
     </article>
   );
+}
+
+function SalesPurchaseDrawer({ alerts, onClose, onOpenPurchase, purchaseId }: { alerts: SalesPurchaseAlert[]; onClose: () => void; onOpenPurchase: (purchaseId: string) => void; purchaseId: string | null }) {
+  useEffect(() => { const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); }; window.addEventListener("keydown", onKeyDown); return () => window.removeEventListener("keydown", onKeyDown); }, [onClose]);
+  return <div className="sales-purchase-drawer-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><aside aria-label="Compras pendientes de realizar" className="sales-purchase-drawer">{purchaseId ? <PendingPurchasesView onClose={onClose} orderId={purchaseId} /> : <><header className="sales-purchase-drawer-header"><div><small>Ventas · compras vinculadas</small><h2>Compras por realizar</h2><p>Solo presupuestos enlazados por Odoo a ventas aún sin imprimir.</p></div><button aria-label="Cerrar" onClick={onClose} type="button">×</button></header><div className="sales-purchase-alert-list">{alerts.length === 0 ? <p>No hay compras pendientes vinculadas.</p> : alerts.map((alert) => <button key={alert.purchaseId} onClick={() => onOpenPurchase(alert.purchaseId)} type="button"><span><strong>{alert.purchaseRef}</strong><small>{alert.supplier} · {alert.state === "sent" ? "Enviado" : "Borrador"}</small></span><span>{alert.saleOrderRefs.join(" · ")}</span></button>)}</div></>}</aside></div>;
 }
 
 function Status({ value }: { value: string }) {
@@ -5527,6 +5581,15 @@ function matchesChannelOption(order: Order, option: string) {
   return order.channel === option;
 }
 
+function isAmazonTodoelectricoChannel(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, " ") === "amazon todoelectrico";
+}
+
 function permissionsForRole(role: DashboardUserRole): DashboardPermission[] {
   if (role === "admin") return [...editablePermissions];
   if (role === "printer") return ["dashboard", "orders", "expeditions", "odooWrite"];
@@ -5616,22 +5679,8 @@ function getDateRange(
 
   const today = new Date();
   const from = new Date(today);
-  if (preset === "yesterday") {
-    from.setDate(today.getDate() - 1);
-    return normalizeRange(toIsoDate(from), toIsoDate(from));
-  }
+  if (preset === "4d") from.setDate(today.getDate() - 3);
   if (preset === "7d") from.setDate(today.getDate() - 6);
-  if (preset === "30d") from.setDate(today.getDate() - 29);
-  if (preset === "1m") from.setMonth(today.getMonth() - 1);
-  if (preset === "thisMonth") {
-    from.setDate(1);
-  }
-  if (preset === "previousMonth") {
-    from.setMonth(today.getMonth() - 1, 1);
-    const to = new Date(today.getFullYear(), today.getMonth(), 0);
-    return normalizeRange(toIsoDate(from), toIsoDate(to));
-  }
-  if (preset === "1y") from.setFullYear(today.getFullYear() - 1);
 
   return normalizeRange(toIsoDate(from), toIsoDate(today));
 }

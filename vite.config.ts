@@ -139,6 +139,7 @@ type OdooOrderLine = {
 type OdooPurchaseOrderRecord = {
   id: number;
   name?: string;
+  origin?: string | false;
   partner_id?: false | [number, string];
   date_order?: string | false;
   date_planned?: string | false;
@@ -151,6 +152,8 @@ type OdooPurchaseOrderRecord = {
 type OdooPurchaseLineRecord = {
   id: number;
   order_id?: false | [number, string];
+  sale_order_id?: false | [number, string];
+  sale_line_id?: false | [number, string];
   product_id?: false | [number, string];
   name?: string;
   product_qty?: number;
@@ -1176,6 +1179,26 @@ function odooReadOnlyApi(env: Record<string, string>) {
                   error instanceof Error ? error.message : "Error leyendo Odoo",
               }),
             );
+          }
+        },
+      );
+
+      server.middlewares.use(
+        "/api/odoo/sales-purchase-alerts",
+        async (request, response) => {
+          const user = auth.getSessionUser(request.headers.cookie);
+          if (!user || !user.permissions.includes("orders")) {
+            sendJson(response, 401, { message: "Login requerido" });
+            return;
+          }
+          if (request.method !== "GET") {
+            sendJson(response, 405, { message: "Metodo no permitido" });
+            return;
+          }
+          try {
+            sendJson(response, 200, await getOdooSalesPurchaseAlerts(env));
+          } catch (error) {
+            sendJson(response, 500, { message: error instanceof Error ? error.message : "No se pudieron leer las compras vinculadas a ventas" });
           }
         },
       );
@@ -6527,6 +6550,164 @@ async function getOdooInventoryReceptions(
     ),
   };
 }
+
+async function getOdooSalesPurchaseAlerts(env: Record<string, string>) {
+  const config = getOdooConfig(env);
+  if (!config.url || !config.database || !config.username || !config.apiKey) {
+    throw new Error("Faltan variables de conexión con Odoo");
+  }
+  const uid = await authenticate(config);
+  const purchases = (await executeKw(
+    config,
+    uid,
+    "purchase.order",
+    "search_read",
+    [[["state", "in", ["draft", "sent"]]]],
+    {
+      fields: ["id", "name", "origin", "partner_id", "state", "amount_total", "currency_id", "order_line"],
+      order: "date_order asc, id asc",
+      limit: 400,
+    },
+  )) as OdooPurchaseOrderRecord[];
+  if (!purchases.length) return { mode: "live" as const, total: 0, alerts: [] };
+
+  const purchaseIds = purchases.map((purchase) => purchase.id);
+  const lines = (await executeKw(
+    config,
+    uid,
+    "purchase.order.line",
+    "search_read",
+    [[["order_id", "in", purchaseIds], ["display_type", "=", false]]],
+    { fields: ["id", "order_id", "sale_order_id", "sale_line_id"], limit: 4000 },
+  )) as OdooPurchaseLineRecord[];
+  const saleOrderIdsByPurchaseId = new Map<number, Set<number>>();
+  const addSaleOrder = (purchaseId: number, saleOrderId?: number) => {
+    if (!saleOrderId) return;
+    const ids = saleOrderIdsByPurchaseId.get(purchaseId) ?? new Set<number>();
+    ids.add(saleOrderId);
+    saleOrderIdsByPurchaseId.set(purchaseId, ids);
+  };
+
+  // Odoo can link an MTO purchase quotation only through its explicit
+  // `origin` reference (for example, "S101094"). This is still an Odoo
+  // relation—not a product/SKU guess—and covers quotations whose move chain
+  // has not yet been materialised on the purchase line.
+  const originRefsByPurchaseId = new Map<number, string[]>();
+  purchases.forEach((purchase) => {
+    const refs = String(purchase.origin ?? "")
+      .split(/[\n,]/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (refs.length) originRefsByPurchaseId.set(purchase.id, refs);
+  });
+  const originRefs = Array.from(new Set(Array.from(originRefsByPurchaseId.values()).flat()));
+  if (originRefs.length) {
+    const originSales = (await executeKw(
+      config,
+      uid,
+      "sale.order",
+      "search_read",
+      [[["name", "in", originRefs]]],
+      { fields: ["id", "name"], limit: originRefs.length },
+    )) as Array<{ id: number; name?: string }>;
+    const originSaleIdByRef = new Map(
+      originSales.filter((sale) => sale.name).map((sale) => [sale.name as string, sale.id]),
+    );
+    originRefsByPurchaseId.forEach((refs, purchaseId) => {
+      refs.forEach((ref) => addSaleOrder(purchaseId, originSaleIdByRef.get(ref)));
+    });
+  }
+  const purchaseIdByLineId = new Map(
+    lines.map((line) => [line.id, getRelationId(line.order_id)]),
+  );
+  lines.forEach((line) => addSaleOrder(
+    getRelationId(line.order_id) ?? 0,
+    getRelationId(line.sale_order_id),
+  ));
+
+  // MTO can be represented only by stock moves. Follow the explicit move
+  // destination relation and obtain the sale line from that chain.
+  const purchaseLineIds = lines.map((line) => line.id);
+  const moves = purchaseLineIds.length
+    ? ((await executeKw(
+        config,
+        uid,
+        "stock.move",
+        "search_read",
+        [[["purchase_line_id", "in", purchaseLineIds]]],
+        { fields: ["id", "purchase_line_id", "sale_line_id", "move_dest_ids"], limit: 5000 },
+      )) as OdooMoveRecord[])
+    : [];
+  const destinationIds = Array.from(new Set(moves.flatMap((move) => move.move_dest_ids ?? [])));
+  const destinationMoves = destinationIds.length
+    ? ((await executeKw(
+        config,
+        uid,
+        "stock.move",
+        "read",
+        [destinationIds],
+        { fields: ["id", "sale_line_id"] },
+      )) as OdooMoveRecord[])
+    : [];
+  const destinationSaleLineByMoveId = new Map(
+    destinationMoves.map((move) => [move.id, getRelationId(move.sale_line_id)]),
+  );
+  const saleLineToPurchaseIds = new Map<number, Set<number>>();
+  const addSaleLine = (purchaseId: number | undefined, saleLineId?: number) => {
+    if (!purchaseId || !saleLineId) return;
+    const ids = saleLineToPurchaseIds.get(saleLineId) ?? new Set<number>();
+    ids.add(purchaseId);
+    saleLineToPurchaseIds.set(saleLineId, ids);
+  };
+  lines.forEach((line) => addSaleLine(getRelationId(line.order_id), getRelationId(line.sale_line_id)));
+  moves.forEach((move) => {
+    const purchaseId = purchaseIdByLineId.get(getRelationId(move.purchase_line_id) ?? 0);
+    addSaleLine(purchaseId, getRelationId(move.sale_line_id));
+    (move.move_dest_ids ?? []).forEach((moveId) => addSaleLine(purchaseId, destinationSaleLineByMoveId.get(moveId)));
+  });
+  const saleLineIds = Array.from(saleLineToPurchaseIds.keys());
+  const saleLines = saleLineIds.length
+    ? ((await executeKw(config, uid, "sale.order.line", "read", [saleLineIds], {
+        fields: ["id", "order_id"],
+      })) as Array<{ id: number; order_id?: false | [number, string] }>)
+    : [];
+  saleLines.forEach((line) => {
+    const saleOrderId = getRelationId(line.order_id);
+    (saleLineToPurchaseIds.get(line.id) ?? []).forEach((purchaseId) => addSaleOrder(purchaseId, saleOrderId));
+  });
+
+  const allSaleOrderIds = Array.from(new Set(Array.from(saleOrderIdsByPurchaseId.values()).flatMap((ids) => Array.from(ids))));
+  const sales = allSaleOrderIds.length
+    ? ((await executeKw(config, uid, "sale.order", "read", [allSaleOrderIds], {
+        fields: ["id", "name", "state", "delivery_is_printed"],
+      })) as Array<{ id: number; name?: string; state?: string; delivery_is_printed?: boolean }>)
+    : [];
+  const eligibleSales = new Map(
+    sales.filter((sale) => ["sale", "done"].includes(sale.state ?? "") && sale.delivery_is_printed !== true).map((sale) => [sale.id, sale]),
+  );
+  const lineCountByPurchaseId = new Map<number, number>();
+  lines.forEach((line) => {
+    const id = getRelationId(line.order_id);
+    if (id) lineCountByPurchaseId.set(id, (lineCountByPurchaseId.get(id) ?? 0) + 1);
+  });
+  const alerts = purchases.flatMap((purchase) => {
+    const matchingSales = Array.from(saleOrderIdsByPurchaseId.get(purchase.id) ?? []).map((id) => eligibleSales.get(id)).filter(Boolean) as Array<{ id: number; name?: string }>;
+    if (!matchingSales.length) return [];
+    return [{
+      purchaseId: String(purchase.id),
+      purchaseRef: purchase.name || `PO #${purchase.id}`,
+      supplier: getRelationName(purchase.partner_id) || "Proveedor sin nombre",
+      state: purchase.state === "sent" ? "sent" as const : "draft" as const,
+      saleOrderIds: matchingSales.map((sale) => `#${sale.id}`),
+      saleOrderRefs: matchingSales.map((sale) => sale.name || `SO #${sale.id}`),
+      lineCount: lineCountByPurchaseId.get(purchase.id) ?? 0,
+      amountTotal: Number(purchase.amount_total ?? 0),
+      currency: getRelationName(purchase.currency_id) || "EUR",
+    }];
+  });
+  return { mode: "live" as const, total: alerts.length, alerts };
+}
+
 
 async function getOdooPurchaseReceptions(env: Record<string, string>) {
   const config = getOdooConfig(env);

@@ -13,8 +13,8 @@ assert.equal(chooseSupplierPrice(102, 10, rows)?.price, 8);
 assert.equal(chooseSupplierPrice(101, 99, rows), undefined);
 
 const purchaseView = readFileSync(new URL("../src/modules/receptions/ReceptionsView.tsx", import.meta.url), "utf8");
-assert.match(purchaseView, /cancelPendingPurchase\(actionPreview\.orderId\)/);
-assert.doesNotMatch(purchaseView, /cancelPendingPurchase\(actionPreview\.orderId, true\)/);
+assert.match(purchaseView, /cancelPendingPurchase\(\s*actionPreview\.orderId\s*,?\s*\)/);
+assert.doesNotMatch(purchaseView, /cancelPendingPurchase\(\s*actionPreview\.orderId\s*,\s*true\s*\)/);
 assert.match(purchaseView, /Cancelando en Odoo…/);
 assert.match(purchaseView, /role="alert"/);
 assert.match(purchaseView, /Descartar presupuesto/);
@@ -22,13 +22,42 @@ assert.match(purchaseView, /Borrador local de .* descartado\. No se había cread
 assert.match(purchaseView, /Stock total Odoo:/);
 assert.match(purchaseView, /stockTotal: product\.stockTotal/);
 const viteConfig = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
+const odooClient = readFileSync(new URL("../src/services/odooClient.ts", import.meta.url), "utf8");
+const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const appStyles = readFileSync(new URL("../src/styles/app.css", import.meta.url), "utf8");
 assert.match(viteConfig, /"qty_available"/);
 assert.match(viteConfig, /stockTotal: Number\(product\.qty_available \?\? 0\)/);
 assert.equal(
   viteConfig.match(/formatCatalogProductName\(product\)/g)?.length,
   2,
 );
+assert.match(viteConfig, /"origin", "partner_id", "state"/);
+assert.match(viteConfig, /originRefsByPurchaseId/);
+assert.match(viteConfig, /\[\[\["name", "in", originRefs\]\]\]/);
+assert.match(odooClient, /fetch\(receptionsApiPath\("\/api\/odoo\/sales-purchase-alerts"\)\)/);
+assert.match(app, /className="icon-button purchase-alert-icon"/);
+assert.match(app, /className="sales-purchase-drawer"/);
+assert.match(appStyles, /\.sales-purchase-drawer\s*\{\s*position:\s*absolute/);
+assert.match(appStyles, /\.purchase-alert-icon\s*\{/);
+assert.match(appStyles, /\.order-kpis \.kpi span \{ color: #334155; font-weight: 800; \}/);
+assert.match(appStyles, /\.kpi-rose \{ background: #ffe8ed;/);
+assert.match(app, /\{ label: "4 dias", value: "4d" \}/);
+assert.match(app, /className="segmented-control range-chips"/);
+assert.doesNotMatch(app, /\{ label: "Ayer", value: "yesterday" \}/);
+assert.doesNotMatch(app, /\{ label: "30 dias"/);
+assert.doesNotMatch(app, /preset === "yesterday"/);
+assert.match(appStyles, /\.segmented-control\.range-chips\s*\{\s*flex-direction:\s*row/);
+assert.match(appStyles, /\.range-bar \.custom-range\s*\{\s*flex-direction:\s*row/);
+assert.match(app, /useState<RangePreset>\("4d"\)/);
+assert.match(app, /const needsCompleteOrderDataset/);
+assert.match(app, /Filtro aplicado: \$\{sortedOrders\.length\} pedidos de todos los bloques/);
+assert.match(odooClient, /fetch\(receptionsApiPath\(`\/api\/odoo\/orders\?/);
 console.log("Compras pendientes: selección de tarifa de proveedor verificada");
 console.log("Compras pendientes: descarte local y cancelación real protegidos contra regresiones");
 console.log("Compras pendientes: stock total Odoo presente en búsquedas y líneas");
 console.log("Compras pendientes: valores de variante visibles sin el nombre del atributo");
+console.log("Compras pendientes: enlaces explícitos de origen venta→compra visibles en alertas");
+console.log("Compras pendientes: alertas usan la API aislada del LAB");
+console.log("Compras pendientes: carrito destacado y panel lateral verificados");
+console.log("Pedidos: filtros agregan todos los bloques y el rango inicial es de cuatro días");
+console.log("Pedidos: selector de fechas horizontal 1/4/7/Rango en movil y PC");

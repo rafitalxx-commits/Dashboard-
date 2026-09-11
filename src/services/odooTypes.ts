@@ -200,7 +200,22 @@ export type Order = {
       checkedAt?: string;
     };
   };
+  pendingPurchases?: Array<{ id: string; ref: string; supplier: string; state: "draft" | "sent" }>;
 };
+
+export type SalesPurchaseAlert = {
+  purchaseId: string;
+  purchaseRef: string;
+  supplier: string;
+  state: "draft" | "sent";
+  saleOrderIds: string[];
+  saleOrderRefs: string[];
+  lineCount: number;
+  amountTotal: number;
+  currency: string;
+};
+
+export type SalesPurchaseAlertsPayload = { mode: "live" | "demo"; total: number; alerts: SalesPurchaseAlert[] };
 
 export type DashboardRow = {
   label: string;

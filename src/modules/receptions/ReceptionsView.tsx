@@ -11,6 +11,7 @@ import {
   Save,
   CheckCircle2,
   Truck,
+  X,
 } from "lucide-react";
 import { odooClient } from "../../services/odooClient";
 import type {
@@ -25,18 +26,24 @@ import "./receptions.css";
 
 type StatusFilter = "Todos" | PurchaseReception["status"];
 
-export function PendingPurchasesView() {
-  const [payload, setPayload] = useState<PurchaseReceptionsPayload | null>(null);
+export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | null; onClose?: () => void } = {}) {
+  const [payload, setPayload] = useState<PurchaseReceptionsPayload | null>(
+    null,
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<StatusFilter>("Todos");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
-  const [drafts, setDrafts] = useState<Record<string, PurchaseReceptionLine[]>>({});
+  const [drafts, setDrafts] = useState<Record<string, PurchaseReceptionLine[]>>(
+    {},
+  );
   const [productQuery, setProductQuery] = useState("");
   const [productQuantity, setProductQuantity] = useState(1);
-  const [productResults, setProductResults] = useState<PurchaseProductOption[]>([]);
+  const [productResults, setProductResults] = useState<PurchaseProductOption[]>(
+    [],
+  );
   const [productLoading, setProductLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [saveError, setSaveError] = useState("");
@@ -44,12 +51,21 @@ export function PendingPurchasesView() {
   const [saving, setSaving] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [actionError, setActionError] = useState("");
-  const [actionPreview, setActionPreview] = useState<PurchaseOrderActionPreview | null>(null);
-  const [actionKind, setActionKind] = useState<"confirm" | "cancel" | null>(null);
+  const [actionPreview, setActionPreview] =
+    useState<PurchaseOrderActionPreview | null>(null);
+  const [actionKind, setActionKind] = useState<"confirm" | "cancel" | null>(
+    null,
+  );
   const [creating, setCreating] = useState(false);
   const [vendorQuery, setVendorQuery] = useState("");
-  const [vendorResults, setVendorResults] = useState<PurchaseVendorOption[]>([]);
+  const [vendorResults, setVendorResults] = useState<PurchaseVendorOption[]>(
+    [],
+  );
   const [vendorLoading, setVendorLoading] = useState(false);
+  const [vendorChanges, setVendorChanges] = useState<
+    Record<string, PurchaseVendorOption>
+  >({});
+  const [vendorSearchOpen, setVendorSearchOpen] = useState(false);
   const acceptRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -78,76 +94,167 @@ export function PendingPurchasesView() {
           quantity: line.orderedQty,
           priceUnit: line.priceUnit,
           discount: line.discount,
-          expectedDate: (line.expectedDate || confirming.expectedDate).slice(0, 10),
+          expectedDate: (line.expectedDate || confirming.expectedDate).slice(
+            0,
+            10,
+          ),
           description: line.description || line.name,
         })),
         [...originalIds].filter((id) => !currentIds.has(id)),
-        confirming.partnerId,
+        vendorChanges[confirming.id]?.id ?? confirming.partnerId,
       );
       setConfirming(null);
       setEditing(null);
-      setMessage(`${result.ref || confirming.ref} guardado en Odoo. Los precios quedan registrados en su histórico de compra.`);
+      setMessage(
+        `${result.ref || confirming.ref} guardado en Odoo. Los precios quedan registrados en su histórico de compra.`,
+      );
       await load();
     } catch (saveFailure) {
-      setSaveError(saveFailure instanceof Error ? saveFailure.message : "No se pudo guardar en Odoo");
+      setSaveError(
+        saveFailure instanceof Error
+          ? saveFailure.message
+          : "No se pudo guardar en Odoo",
+      );
     } finally {
       setSaving(false);
     }
   };
 
-  const previewAction = async (reception: PurchaseReception, kind: "confirm" | "cancel") => {
+  const previewAction = async (
+    reception: PurchaseReception,
+    kind: "confirm" | "cancel",
+  ) => {
     setActionLoading(`${reception.id}-${kind}`);
     setActionError("");
     setMessage("");
     try {
-      setActionPreview(await odooClient.getPendingPurchaseActionPreview(reception.id));
+      setActionPreview(
+        await odooClient.getPendingPurchaseActionPreview(reception.id),
+      );
       setActionKind(kind);
     } catch (failure) {
-      setMessage(failure instanceof Error ? failure.message : "No se pudo preparar la acción");
+      setMessage(
+        failure instanceof Error
+          ? failure.message
+          : "No se pudo preparar la acción",
+      );
     } finally {
       setActionLoading(null);
     }
   };
 
   useEffect(() => {
-    if (!creating) { setVendorResults([]); return; }
-    const timer = window.setTimeout(async () => {
-      setVendorLoading(true);
-      try { setVendorResults(await odooClient.getPurchaseVendors(vendorQuery)); }
-      catch (failure) { setMessage(failure instanceof Error ? failure.message : "No se pudieron buscar proveedores"); }
-      finally { setVendorLoading(false); }
-    }, vendorQuery.trim() ? 180 : 0);
+    if (!creating && !editing) {
+      setVendorResults([]);
+      return;
+    }
+    const timer = window.setTimeout(
+      async () => {
+        setVendorLoading(true);
+        try {
+          setVendorResults(await odooClient.getPurchaseVendors(vendorQuery));
+        } catch (failure) {
+          setMessage(
+            failure instanceof Error
+              ? failure.message
+              : "No se pudieron buscar proveedores",
+          );
+        } finally {
+          setVendorLoading(false);
+        }
+      },
+      vendorQuery.trim() ? 180 : 0,
+    );
     return () => window.clearTimeout(timer);
-  }, [creating, vendorQuery]);
+  }, [creating, editing, vendorQuery]);
 
   useEffect(() => {
-    if (!editing || productQuery.trim().length < 2) { setProductResults([]); return; }
+    if (!editing || productQuery.trim().length < 2) {
+      setProductResults([]);
+      return;
+    }
     const reception = payload?.receptions.find((item) => item.id === editing);
     if (!reception) return;
     const timer = window.setTimeout(async () => {
       setProductLoading(true);
-      try { setProductResults(await odooClient.getPendingPurchaseProducts(reception.id, productQuery, productQuantity, reception.partnerId)); }
-      catch (failure) { setMessage(failure instanceof Error ? failure.message : "No se pudieron buscar productos"); }
-      finally { setProductLoading(false); }
+      try {
+        setProductResults(
+          await odooClient.getPendingPurchaseProducts(
+            reception.id,
+            productQuery,
+            productQuantity,
+            vendorChanges[reception.id]?.id ?? reception.partnerId,
+          ),
+        );
+      } catch (failure) {
+        setMessage(
+          failure instanceof Error
+            ? failure.message
+            : "No se pudieron buscar productos",
+        );
+      } finally {
+        setProductLoading(false);
+      }
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [editing, payload, productQuery, productQuantity]);
+  }, [editing, payload, productQuery, productQuantity, vendorChanges]);
 
   const startNewQuotation = (vendor: PurchaseVendorOption) => {
     const id = `new-${Date.now()}`;
-    const reception: PurchaseReception = { id, ref: "Nuevo presupuesto", supplier: vendor.name, partnerId: vendor.id, orderDate: new Date().toISOString().slice(0, 10), expectedDate: new Date().toISOString().slice(0, 10), state: "draft", status: "Borrador", amountTotal: 0, currency: vendor.currency || "EUR", lines: [], orderedQty: 0, receivedQty: 0, pendingQty: 0 };
-    setPayload((current) => current ? { ...current, receptions: [reception, ...current.receptions], total: current.total + 1 } : { mode: "live", receptions: [reception], total: 1, pendingLines: 0, pendingUnits: 0 });
+    const reception: PurchaseReception = {
+      id,
+      ref: "Nuevo presupuesto",
+      supplier: vendor.name,
+      partnerId: vendor.id,
+      orderDate: new Date().toISOString().slice(0, 10),
+      expectedDate: new Date().toISOString().slice(0, 10),
+      state: "draft",
+      status: "Borrador",
+      amountTotal: 0,
+      currency: vendor.currency || "EUR",
+      lines: [],
+      orderedQty: 0,
+      receivedQty: 0,
+      pendingQty: 0,
+    };
+    setPayload((current) =>
+      current
+        ? {
+            ...current,
+            receptions: [reception, ...current.receptions],
+            total: current.total + 1,
+          }
+        : {
+            mode: "live",
+            receptions: [reception],
+            total: 1,
+            pendingLines: 0,
+            pendingUnits: 0,
+          },
+    );
     setDrafts((current) => ({ ...current, [id]: [] }));
-    setExpanded(id); setEditing(id); setCreating(false); setVendorQuery(""); setVendorResults([]);
-    setMessage(`Nuevo presupuesto para ${vendor.name}. Añade al menos un producto.`);
+    setExpanded(id);
+    setEditing(id);
+    setCreating(false);
+    setVendorQuery("");
+    setVendorResults([]);
+    setMessage(
+      `Nuevo presupuesto para ${vendor.name}. Añade al menos un producto.`,
+    );
   };
 
   const discardLocalQuotation = (reception: PurchaseReception) => {
-    setPayload((current) => current ? {
-      ...current,
-      receptions: current.receptions.filter((item) => item.id !== reception.id),
-      total: Math.max(0, current.total - 1),
-    } : current);
+    setPayload((current) =>
+      current
+        ? {
+            ...current,
+            receptions: current.receptions.filter(
+              (item) => item.id !== reception.id,
+            ),
+            total: Math.max(0, current.total - 1),
+          }
+        : current,
+    );
     setDrafts((current) => {
       const next = { ...current };
       delete next[reception.id];
@@ -157,19 +264,36 @@ export function PendingPurchasesView() {
     setExpanded(null);
     setProductResults([]);
     setProductQuery("");
-    setMessage(`Borrador local de ${reception.supplier} descartado. No se había creado en Odoo.`);
+    setMessage(
+      `Borrador local de ${reception.supplier} descartado. No se había creado en Odoo.`,
+    );
   };
 
   const simulateConfirmation = async (sendEmail: boolean) => {
     if (!actionPreview || actionLoading) return;
     setActionLoading("modal");
     try {
-      await odooClient.confirmPendingPurchase(actionPreview.orderId, sendEmail, true);
-      setMessage(sendEmail ? "Simulación completada: plantilla nativa, PDF del pedido y destinatario validados; no se envió ningún correo." : "Simulación completada: Odoo confirmaría el pedido y generaría el albarán nativo.");
-      setActionPreview(null); setActionKind(null);
+      await odooClient.confirmPendingPurchase(
+        actionPreview.orderId,
+        sendEmail,
+        true,
+      );
+      setMessage(
+        sendEmail
+          ? "Simulación completada: plantilla nativa, PDF del pedido y destinatario validados; no se envió ningún correo."
+          : "Simulación completada: Odoo confirmaría el pedido y generaría el albarán nativo.",
+      );
+      setActionPreview(null);
+      setActionKind(null);
     } catch (failure) {
-      setMessage(failure instanceof Error ? failure.message : "No se pudo simular la confirmación");
-    } finally { setActionLoading(null); }
+      setMessage(
+        failure instanceof Error
+          ? failure.message
+          : "No se pudo simular la confirmación",
+      );
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   const cancelQuotation = async () => {
@@ -177,13 +301,21 @@ export function PendingPurchasesView() {
     setActionLoading("modal");
     setActionError("");
     try {
-      const result = await odooClient.cancelPendingPurchase(actionPreview.orderId);
-      setMessage(`${result.ref || actionPreview.ref} cancelado en Odoo. Se conserva su historial y desaparecerá de Compras pendientes.`);
+      const result = await odooClient.cancelPendingPurchase(
+        actionPreview.orderId,
+      );
+      setMessage(
+        `${result.ref || actionPreview.ref} cancelado en Odoo. Se conserva su historial y desaparecerá de Compras pendientes.`,
+      );
       setActionPreview(null);
       setActionKind(null);
       await load();
     } catch (failure) {
-      setActionError(failure instanceof Error ? failure.message : "No se pudo cancelar el presupuesto en Odoo");
+      setActionError(
+        failure instanceof Error
+          ? failure.message
+          : "No se pudo cancelar el presupuesto en Odoo",
+      );
     } finally {
       setActionLoading(null);
     }
@@ -214,15 +346,20 @@ export function PendingPurchasesView() {
   const receptions = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase("es");
     return (payload?.receptions ?? []).filter((reception) => {
+      if (orderId && reception.id !== orderId) return false;
       if (status !== "Todos" && reception.status !== status) return false;
       if (!normalized) return true;
       return [
         reception.ref,
         reception.supplier,
-        ...reception.lines.flatMap((line) => [line.name, line.sku, line.barcode]),
+        ...reception.lines.flatMap((line) => [
+          line.name,
+          line.sku,
+          line.barcode,
+        ]),
       ].some((value) => value.toLocaleLowerCase("es").includes(normalized));
     });
-  }, [payload, query, status]);
+  }, [orderId, payload, query, status]);
 
   return (
     <section className="receptions-view">
@@ -230,19 +367,28 @@ export function PendingPurchasesView() {
         <div>
           <span className="receptions-kicker">Compras · Presupuestos Odoo</span>
           <h2>Compras pendientes</h2>
-          <p>Presupuestos pendientes que todavía pueden editarse antes de confirmar.</p>
+          <p>
+            Presupuestos pendientes que todavía pueden editarse antes de
+            confirmar.
+          </p>
         </div>
-        <div className="purchase-header-actions"><button onClick={() => setCreating(true)} type="button"><Plus size={17}/>Crear presupuesto</button><button className="receptions-refresh" disabled={loading} onClick={() => void load()} type="button">
-          <RefreshCw className={loading ? "spin" : ""} size={17} />
-          {loading ? "Actualizando" : "Actualizar"}
-        </button></div>
+        <div className="purchase-header-actions">
+          {onClose && <button aria-label="Cerrar panel" className="purchase-icon-action" onClick={onClose} title="Cerrar panel" type="button"><X size={18} /></button>}
+          <button aria-label="Crear presupuesto" className="purchase-icon-action" onClick={() => setCreating(true)} title="Crear presupuesto" type="button">
+            <Plus size={17} />
+          </button>
+          <button
+            aria-label={loading ? "Actualizando compras" : "Actualizar compras"}
+            className="receptions-refresh"
+            disabled={loading}
+            onClick={() => void load()}
+            title={loading ? "Actualizando compras" : "Actualizar compras"}
+            type="button"
+          >
+            <RefreshCw className={loading ? "spin" : ""} size={17} />
+          </button>
+        </div>
       </header>
-
-      <div className="receptions-kpis">
-        <ReceptionKpi label="Presupuestos pendientes" value={payload?.total ?? 0} />
-        <ReceptionKpi label="Líneas" value={payload?.pendingLines ?? 0} />
-        <ReceptionKpi label="Unidades solicitadas" value={formatQty(payload?.pendingUnits ?? 0)} />
-      </div>
 
       <div className="receptions-toolbar">
         <label className="receptions-search">
@@ -254,30 +400,46 @@ export function PendingPurchasesView() {
             value={query}
           />
         </label>
-        <div aria-label="Filtrar recepciones por estado" className="receptions-statuses">
-          {(["Todos", "Borrador", "Enviado"] as StatusFilter[]).map((option) => (
-            <button
-              className={status === option ? "active" : ""}
-              key={option}
-              onClick={() => setStatus(option)}
-              type="button"
-            >
-              {option}
-            </button>
-          ))}
+        <div
+          aria-label="Filtrar recepciones por estado"
+          className="receptions-statuses"
+        >
+          {(["Todos", "Borrador", "Enviado"] as StatusFilter[]).map(
+            (option) => (
+              <button
+                className={status === option ? "active" : ""}
+                key={option}
+                onClick={() => setStatus(option)}
+                type="button"
+              >
+                {option}
+              </button>
+            ),
+          )}
         </div>
       </div>
 
       {error && (
         <div className="receptions-message error">
           <AlertTriangle size={19} />
-          <div><strong>No se pudieron leer las compras pendientes</strong><span>{error}</span></div>
+          <div>
+            <strong>No se pudieron leer las compras pendientes</strong>
+            <span>{error}</span>
+          </div>
         </div>
       )}
-      {message && <div className="receptions-message" role="status"><Save size={19}/>{message}</div>}
+      {message && (
+        <div className="receptions-message" role="status">
+          <Save size={19} />
+          {message}
+        </div>
+      )}
 
       {loading && !payload && (
-        <div className="receptions-message"><RefreshCw className="spin" size={19} /> Leyendo pedidos de compra en Odoo…</div>
+        <div className="receptions-message">
+          <RefreshCw className="spin" size={19} /> Leyendo pedidos de compra en
+          Odoo…
+        </div>
       )}
 
       {!loading && !error && receptions.length === 0 && (
@@ -293,7 +455,11 @@ export function PendingPurchasesView() {
           const isExpanded = expanded === reception.id;
           const isEditing = editing === reception.id;
           const visibleLines = drafts[reception.id] ?? reception.lines;
-          const draftTotal = visibleLines.reduce((total, line) => total + line.orderedQty * netPrice(line.priceUnit, line.discount), 0);
+          const draftTotal = visibleLines.reduce(
+            (total, line) =>
+              total + line.orderedQty * netPrice(line.priceUnit, line.discount),
+            0,
+          );
           return (
             <article className="reception-card" key={reception.id}>
               <button
@@ -302,76 +468,827 @@ export function PendingPurchasesView() {
                 onClick={() => setExpanded(isExpanded ? null : reception.id)}
                 type="button"
               >
-                <span className={`reception-status ${statusClass(reception.status)}`}>{reception.status}</span>
-                <span className="reception-reference"><strong>{reception.ref}</strong><small>{reception.supplier}</small></span>
-                <span className="reception-progress"><small>Pendiente</small><strong>{formatQty(reception.pendingQty)} uds.</strong><span>{reception.lines.length} líneas</span></span>
-                {isExpanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+                <span
+                  className={`reception-status ${statusClass(reception.status)}`}
+                >
+                  {reception.status}
+                </span>
+                <span className="reception-reference">
+                  <strong>{reception.ref}</strong>
+                  <small>
+                    {vendorChanges[reception.id]?.name ?? reception.supplier}
+                  </small>
+                </span>
+                <span className="reception-progress">
+                  <small>Pendiente</small>
+                  <strong>{formatQty(reception.pendingQty)} uds.</strong>
+                  <span>{reception.lines.length} líneas</span>
+                </span>
+                {isExpanded ? (
+                  <ChevronUp size={20} />
+                ) : (
+                  <ChevronDown size={20} />
+                )}
               </button>
 
               {isExpanded && (
                 <div className="reception-detail">
                   <div className="reception-meta">
-                    <span><small>Pedido</small><strong>{formatDate(reception.orderDate)}</strong></span>
-                    <span><small>Estado Odoo</small><strong>{translateState(reception.state)}</strong></span>
-                    <span><small>Total líneas</small><strong>{formatMoney(isEditing ? draftTotal : reception.amountTotal, reception.currency)}</strong></span>
-                    {!isEditing ? <div className="purchase-order-actions"><button className="danger" disabled={Boolean(actionLoading)} onClick={() => void previewAction(reception, "cancel")} type="button">{actionLoading === `${reception.id}-cancel` ? <><RefreshCw className="spin" size={15}/>Comprobando…</> : "Cancelar presupuesto"}</button><button disabled={Boolean(actionLoading)} onClick={() => void previewAction(reception, "confirm")} type="button">{actionLoading === `${reception.id}-confirm` ? <><RefreshCw className="spin" size={15}/>Comprobando…</> : <><CheckCircle2 size={15}/>Confirmar pedido</>}</button><button className="reception-edit" onClick={() => { setEditing(reception.id); setDrafts((current) => ({ ...current, [reception.id]: reception.lines.map((line) => ({ ...line })) })); setMessage("Edición local iniciada. Odoo todavía no se ha modificado."); }} type="button">Editar presupuesto</button></div> : <span className="readonly-note"><Truck size={16}/>Cambios locales · sin enviar</span>}
+                    <span>
+                      <small>Pedido</small>
+                      <strong>{formatDate(reception.orderDate)}</strong>
+                    </span>
+                    <span>
+                      <small>Estado Odoo</small>
+                      <strong>{translateState(reception.state)}</strong>
+                    </span>
+                    <span>
+                      <small>Total líneas</small>
+                      <strong>
+                        {formatMoney(
+                          isEditing ? draftTotal : reception.amountTotal,
+                          reception.currency,
+                        )}
+                      </strong>
+                    </span>
+                    {!isEditing ? (
+                      <div className="purchase-order-actions">
+                        <button
+                          className="danger"
+                          disabled={Boolean(actionLoading)}
+                          onClick={() =>
+                            void previewAction(reception, "cancel")
+                          }
+                          type="button"
+                        >
+                          {actionLoading === `${reception.id}-cancel` ? (
+                            <>
+                              <RefreshCw className="spin" size={15} />
+                              Comprobando…
+                            </>
+                          ) : (
+                            "Cancelar presupuesto"
+                          )}
+                        </button>
+                        <button
+                          disabled={Boolean(actionLoading)}
+                          onClick={() =>
+                            void previewAction(reception, "confirm")
+                          }
+                          type="button"
+                        >
+                          {actionLoading === `${reception.id}-confirm` ? (
+                            <>
+                              <RefreshCw className="spin" size={15} />
+                              Comprobando…
+                            </>
+                          ) : (
+                            <>
+                              <CheckCircle2 size={15} />
+                              Confirmar pedido
+                            </>
+                          )}
+                        </button>
+                        <button
+                          className="reception-edit"
+                          onClick={() => {
+                            setEditing(reception.id);
+                            setDrafts((current) => ({
+                              ...current,
+                              [reception.id]: reception.lines.map((line) => ({
+                                ...line,
+                              })),
+                            }));
+                            setMessage(
+                              "Edición local iniciada. Odoo todavía no se ha modificado.",
+                            );
+                          }}
+                          type="button"
+                        >
+                          Editar presupuesto
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="purchase-vendor-edit">
+                        <span className="readonly-note">
+                          <Truck size={16} />
+                          Cambios locales · sin enviar
+                        </span>
+                        <button
+                          className="reception-edit"
+                          onClick={() => setVendorSearchOpen((open) => !open)}
+                          type="button"
+                        >
+                          <RefreshCw size={15} />
+                          {vendorChanges[reception.id]
+                            ? `Proveedor: ${vendorChanges[reception.id].name}`
+                            : "Cambiar proveedor"}
+                        </button>
+                      </div>
+                    )}
                   </div>
+                  {isEditing && vendorSearchOpen && (
+                    <div className="purchase-vendor-edit-search">
+                      <label className="purchase-vendor-search">
+                        <Search size={17} />
+                        <input
+                          onChange={(event) => setVendorQuery(event.target.value)}
+                          placeholder="Buscar otro proveedor…"
+                          value={vendorQuery}
+                        />
+                        {vendorLoading && <RefreshCw className="spin" size={16} />}
+                      </label>
+                      {vendorLoading && vendorResults.length === 0 && (
+                        <div className="purchase-search-state" role="status">
+                          <RefreshCw className="spin" size={16} />
+                          Buscando proveedores…
+                        </div>
+                      )}
+                      {!vendorLoading &&
+                        vendorResults.length === 0 &&
+                        vendorQuery.trim() !== "" && (
+                          <div className="purchase-search-state">
+                            No se encontró ningún proveedor con esta búsqueda.
+                          </div>
+                        )}
+                      {vendorResults.length > 0 && (
+                        <div className="reception-product-results">
+                          {vendorResults
+                            .filter((vendor) => vendor.id !== reception.partnerId)
+                            .map((vendor) => (
+                              <button
+                                key={vendor.id}
+                                onClick={() => {
+                                  setVendorChanges((current) => ({
+                                    ...current,
+                                    [reception.id]: vendor,
+                                  }));
+                                  setDrafts((current) => ({
+                                    ...current,
+                                    [reception.id]: [],
+                                  }));
+                                  setVendorSearchOpen(false);
+                                  setVendorQuery("");
+                                  setMessage(
+                                    `Proveedor cambiado a ${vendor.name}. Añade de nuevo los productos para tomar sus tarifas.`,
+                                  );
+                                }}
+                                type="button"
+                              >
+                                <Plus size={16} />
+                                <span>
+                                  <strong>{vendor.name}</strong>
+                                  <small>
+                                    {vendor.email || "Sin email configurado"}
+                                  </small>
+                                </span>
+                              </button>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <div className="reception-lines">
                     {visibleLines.map((line) => (
                       <div className="reception-line" key={line.id}>
                         <div className="reception-product-image">
-                          {line.imageUrl ? <img alt="" src={line.imageUrl} /> : <PackageOpen size={22} />}
+                          {line.imageUrl ? (
+                            <img alt="" src={line.imageUrl} />
+                          ) : (
+                            <PackageOpen size={22} />
+                          )}
                         </div>
                         <div className="reception-product-copy">
                           <strong>{line.name}</strong>
-                          <span>{line.sku || "Sin referencia"}{line.barcode ? ` · EAN ${line.barcode}` : ""}</span>
-                          <small className="purchase-line-stock">Stock total Odoo: {formatQty(line.stockTotal)} {line.uom}</small>
-                          {isEditing ? <label className="reception-line-description">Descripción<textarea onChange={(event) => setDrafts((current) => ({ ...current, [reception.id]: visibleLines.map((item) => item.id === line.id ? { ...item, description: event.target.value } : item) }))} rows={2} value={line.description || line.name}/></label> : line.description && line.description !== line.name ? <small>{line.description}</small> : null}
+                          <span>
+                            {line.sku || "Sin referencia"}
+                            {line.barcode ? ` · EAN ${line.barcode}` : ""}
+                          </span>
+                          <small className="purchase-line-stock">
+                            Stock total Odoo: {formatQty(line.stockTotal)}{" "}
+                            {line.uom}
+                          </small>
+                          {isEditing ? (
+                            <label className="reception-line-description">
+                              Descripción
+                              <textarea
+                                onChange={(event) =>
+                                  setDrafts((current) => ({
+                                    ...current,
+                                    [reception.id]: visibleLines.map((item) =>
+                                      item.id === line.id
+                                        ? {
+                                            ...item,
+                                            description: event.target.value,
+                                          }
+                                        : item,
+                                    ),
+                                  }))
+                                }
+                                rows={2}
+                                value={line.description || line.name}
+                              />
+                            </label>
+                          ) : line.description &&
+                            line.description !== line.name ? (
+                            <small>{line.description}</small>
+                          ) : null}
                         </div>
-                        {isEditing ? <><label className="reception-edit-field">Cantidad<input min="0.01" onChange={(event) => setDrafts((current) => ({ ...current, [reception.id]: visibleLines.map((item) => item.id === line.id ? recalculateLine({ ...item, orderedQty: Math.max(0, Number(event.target.value)), pendingQty: Math.max(0, Number(event.target.value)) }) : item) }))} step="0.01" type="number" value={line.orderedQty}/></label><label className="reception-edit-field">Precio compra<input min="0" onChange={(event) => setDrafts((current) => ({ ...current, [reception.id]: visibleLines.map((item) => item.id === line.id ? recalculateLine({ ...item, priceUnit: Math.max(0, Number(event.target.value)) }) : item) }))} step="0.0001" type="number" value={line.priceUnit}/></label><label className="reception-edit-field">Descuento %<input max="100" min="0" onChange={(event) => setDrafts((current) => ({ ...current, [reception.id]: visibleLines.map((item) => item.id === line.id ? recalculateLine({ ...item, discount: clampDiscount(Number(event.target.value)) }) : item) }))} step="0.01" type="number" value={line.discount}/><small>Neto {formatMoney(netPrice(line.priceUnit, line.discount), reception.currency)}</small></label><button aria-label={`Eliminar ${line.name}`} className="reception-remove-line" onClick={() => setDrafts((current) => ({ ...current, [reception.id]: visibleLines.filter((item) => item.id !== line.id) }))} type="button"><Trash2 size={17}/></button></> : <><Quantity label="Cantidad" value={line.orderedQty}/><Quantity label="Precio" value={line.priceUnit}/><Quantity label="Dto. %" value={line.discount}/><Quantity emphasis label="Subtotal" value={line.subtotal}/></>}
-                        {line.costMethod === "standard" && <small className="reception-cost-warning">Coste estándar: la compra queda en histórico, pero no cambia el coste automáticamente.</small>}
+                        {isEditing ? (
+                          <>
+                            <label className="reception-edit-field">
+                              Cantidad
+                              <input
+                                min="0.01"
+                                onChange={(event) =>
+                                  setDrafts((current) => ({
+                                    ...current,
+                                    [reception.id]: visibleLines.map((item) =>
+                                      item.id === line.id
+                                        ? recalculateLine({
+                                            ...item,
+                                            orderedQty: Math.max(
+                                              0,
+                                              Number(event.target.value),
+                                            ),
+                                            pendingQty: Math.max(
+                                              0,
+                                              Number(event.target.value),
+                                            ),
+                                          })
+                                        : item,
+                                    ),
+                                  }))
+                                }
+                                step="0.01"
+                                type="number"
+                                value={line.orderedQty}
+                              />
+                            </label>
+                            <label className="reception-edit-field">
+                              Precio compra
+                              <input
+                                min="0"
+                                onChange={(event) =>
+                                  setDrafts((current) => ({
+                                    ...current,
+                                    [reception.id]: visibleLines.map((item) =>
+                                      item.id === line.id
+                                        ? recalculateLine({
+                                            ...item,
+                                            priceUnit: Math.max(
+                                              0,
+                                              Number(event.target.value),
+                                            ),
+                                          })
+                                        : item,
+                                    ),
+                                  }))
+                                }
+                                step="0.0001"
+                                type="number"
+                                value={line.priceUnit}
+                              />
+                            </label>
+                            <label className="reception-edit-field">
+                              Descuento %
+                              <input
+                                max="100"
+                                min="0"
+                                onChange={(event) =>
+                                  setDrafts((current) => ({
+                                    ...current,
+                                    [reception.id]: visibleLines.map((item) =>
+                                      item.id === line.id
+                                        ? recalculateLine({
+                                            ...item,
+                                            discount: clampDiscount(
+                                              Number(event.target.value),
+                                            ),
+                                          })
+                                        : item,
+                                    ),
+                                  }))
+                                }
+                                step="0.01"
+                                type="number"
+                                value={line.discount}
+                              />
+                              <small>
+                                Neto{" "}
+                                {formatMoney(
+                                  netPrice(line.priceUnit, line.discount),
+                                  reception.currency,
+                                )}
+                              </small>
+                            </label>
+                            <button
+                              aria-label={`Eliminar ${line.name}`}
+                              className="reception-remove-line"
+                              onClick={() =>
+                                setDrafts((current) => ({
+                                  ...current,
+                                  [reception.id]: visibleLines.filter(
+                                    (item) => item.id !== line.id,
+                                  ),
+                                }))
+                              }
+                              type="button"
+                            >
+                              <Trash2 size={17} />
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <Quantity
+                              label="Cantidad"
+                              value={line.orderedQty}
+                            />
+                            <Quantity label="Precio" value={line.priceUnit} />
+                            <Quantity label="Dto. %" value={line.discount} />
+                            <Quantity
+                              emphasis
+                              label="Subtotal"
+                              value={line.subtotal}
+                            />
+                          </>
+                        )}
+                        {line.costMethod === "standard" && (
+                          <small className="reception-cost-warning">
+                            Coste estándar: la compra queda en histórico, pero
+                            no cambia el coste automáticamente.
+                          </small>
+                        )}
                       </div>
                     ))}
                   </div>
-                  {isEditing && <div className="reception-editor-footer"><div className="reception-product-search"><label><Search size={16}/><input onChange={(event) => setProductQuery(event.target.value)} placeholder="Referencia, nombre o EAN · combina palabras con espacios" value={productQuery}/>{productLoading && <RefreshCw className="spin" size={16}/>}</label><label className="product-search-quantity">Cantidad<input min="0.01" onChange={(event) => setProductQuantity(Math.max(.01, Number(event.target.value)))} step="0.01" type="number" value={productQuantity}/></label></div>{productResults.length > 0 && <div className="reception-product-results">{productResults.map((product) => <button key={product.id} onClick={() => { const line: PurchaseReceptionLine = { id: `new-${product.id}-${Date.now()}`, productId: product.id, name: product.name, description: product.name, sku: product.sku, barcode: product.barcode, imageUrl: product.imageUrl, orderedQty: productQuantity, receivedQty: 0, pendingQty: productQuantity, priceUnit: product.suggestedPrice, discount: product.suggestedDiscount, priceUnitDiscounted: product.suggestedNetPrice, subtotal: productQuantity * product.suggestedNetPrice, uom: product.uom, stockTotal: product.stockTotal, expectedDate: reception.expectedDate, costMethod: product.costMethod }; setDrafts((current) => ({ ...current, [reception.id]: [...visibleLines, line] })); setProductResults([]); setProductQuery(""); setProductQuantity(1); setMessage(product.supplierPriceFound ? `Producto añadido con tarifa de ${reception.supplier}: ${formatMoney(product.suggestedPrice, product.supplierCurrency || reception.currency)}${product.suggestedDiscount ? ` − ${formatQty(product.suggestedDiscount)}% = ${formatMoney(product.suggestedNetPrice, product.supplierCurrency || reception.currency)}` : ""}.` : `Producto añadido con precio 0; queda pendiente de factura.`); }} type="button"><Plus size={16}/><span><strong>{product.sku || "Sin referencia"} · {product.name}</strong><small>Stock total Odoo: {formatQty(product.stockTotal)} {product.uom} · {product.supplierPriceFound ? `Tarifa ${formatMoney(product.suggestedPrice, product.supplierCurrency || reception.currency)}${product.suggestedDiscount ? ` − ${formatQty(product.suggestedDiscount)}% · neto ${formatMoney(product.suggestedNetPrice, product.supplierCurrency || reception.currency)}` : ""}${product.supplierMinQty ? ` desde ${product.supplierMinQty} uds.` : ""}` : "Sin tarifa · precio pendiente de factura (0)"}</small></span></button>)}</div>}<div className="reception-editor-actions"><button className={reception.id.startsWith("new-") ? "danger" : undefined} onClick={() => { if (reception.id.startsWith("new-")) { discardLocalQuotation(reception); return; } setEditing(null); setProductResults([]); setMessage("Cambios descartados. Odoo no se ha modificado."); }} type="button">{reception.id.startsWith("new-") ? "Descartar presupuesto" : "Cancelar cambios"}</button><button className="primary" disabled={visibleLines.length === 0 || visibleLines.some((line) => line.orderedQty <= 0)} onClick={() => { setSaveError(""); setConfirming(reception); }} type="button"><Save size={16}/>Revisar cambios</button></div></div>}
+                  {isEditing && (
+                    <div className="reception-editor-footer">
+                      <div className="reception-product-search">
+                        <label>
+                          <Search size={16} />
+                          <input
+                            onChange={(event) =>
+                              setProductQuery(event.target.value)
+                            }
+                            placeholder="Referencia, nombre o EAN · combina palabras con espacios"
+                            value={productQuery}
+                          />
+                          {productLoading && (
+                            <RefreshCw className="spin" size={16} />
+                          )}
+                        </label>
+                        <label className="product-search-quantity">
+                          Cantidad
+                          <input
+                            min="0.01"
+                            onChange={(event) =>
+                              setProductQuantity(
+                                Math.max(0.01, Number(event.target.value)),
+                              )
+                            }
+                            step="0.01"
+                            type="number"
+                            value={productQuantity}
+                          />
+                        </label>
+                      </div>
+                      {productResults.length > 0 && (
+                        <div className="reception-product-results">
+                          {productResults.map((product) => (
+                            <button
+                              key={product.id}
+                              onClick={() => {
+                                const line: PurchaseReceptionLine = {
+                                  id: `new-${product.id}-${Date.now()}`,
+                                  productId: product.id,
+                                  name: product.name,
+                                  description: product.name,
+                                  sku: product.sku,
+                                  barcode: product.barcode,
+                                  imageUrl: product.imageUrl,
+                                  orderedQty: productQuantity,
+                                  receivedQty: 0,
+                                  pendingQty: productQuantity,
+                                  priceUnit: product.suggestedPrice,
+                                  discount: product.suggestedDiscount,
+                                  priceUnitDiscounted:
+                                    product.suggestedNetPrice,
+                                  subtotal:
+                                    productQuantity * product.suggestedNetPrice,
+                                  uom: product.uom,
+                                  stockTotal: product.stockTotal,
+                                  expectedDate: reception.expectedDate,
+                                  costMethod: product.costMethod,
+                                };
+                                setDrafts((current) => ({
+                                  ...current,
+                                  [reception.id]: [...visibleLines, line],
+                                }));
+                                setProductResults([]);
+                                setProductQuery("");
+                                setProductQuantity(1);
+                                setMessage(
+                                  product.supplierPriceFound
+                                    ? `Producto añadido con tarifa de ${reception.supplier}: ${formatMoney(product.suggestedPrice, product.supplierCurrency || reception.currency)}${product.suggestedDiscount ? ` − ${formatQty(product.suggestedDiscount)}% = ${formatMoney(product.suggestedNetPrice, product.supplierCurrency || reception.currency)}` : ""}.`
+                                    : `Producto añadido con precio 0; queda pendiente de factura.`,
+                                );
+                              }}
+                              type="button"
+                            >
+                              <Plus size={16} />
+                              <span>
+                                <strong>
+                                  {product.sku || "Sin referencia"} ·{" "}
+                                  {product.name}
+                                </strong>
+                                <small>
+                                  Stock total Odoo:{" "}
+                                  {formatQty(product.stockTotal)} {product.uom}{" "}
+                                  ·{" "}
+                                  {product.supplierPriceFound
+                                    ? `Tarifa ${formatMoney(product.suggestedPrice, product.supplierCurrency || reception.currency)}${product.suggestedDiscount ? ` − ${formatQty(product.suggestedDiscount)}% · neto ${formatMoney(product.suggestedNetPrice, product.supplierCurrency || reception.currency)}` : ""}${product.supplierMinQty ? ` desde ${product.supplierMinQty} uds.` : ""}`
+                                    : "Sin tarifa · precio pendiente de factura (0)"}
+                                </small>
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      <div className="reception-editor-actions">
+                        <button
+                          className={
+                            reception.id.startsWith("new-")
+                              ? "danger"
+                              : undefined
+                          }
+                          onClick={() => {
+                            if (reception.id.startsWith("new-")) {
+                              discardLocalQuotation(reception);
+                              return;
+                            }
+                            setEditing(null);
+                            setProductResults([]);
+                            setMessage(
+                              "Cambios descartados. Odoo no se ha modificado.",
+                            );
+                          }}
+                          type="button"
+                        >
+                          {reception.id.startsWith("new-")
+                            ? "Descartar presupuesto"
+                            : "Cancelar cambios"}
+                        </button>
+                        <button
+                          className="primary"
+                          disabled={
+                            visibleLines.length === 0 ||
+                            visibleLines.some((line) => line.orderedQty <= 0)
+                          }
+                          onClick={() => {
+                            setSaveError("");
+                            setConfirming(reception);
+                          }}
+                          type="button"
+                        >
+                          <Save size={16} />
+                          Revisar cambios
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </article>
           );
         })}
       </div>
-      {creating && <div aria-labelledby="new-purchase-title" aria-modal="true" className="purchase-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setCreating(false); }} role="dialog"><div className="purchase-modal"><h3 id="new-purchase-title">Crear presupuesto de compra</h3><p>Selecciona un proveedor sugerido o escribe para filtrar. El presupuesto seguirá en borrador.</p><label className="purchase-vendor-search"><Search size={17}/><input autoFocus onChange={(event) => setVendorQuery(event.target.value)} placeholder="Proveedor · combina palabras con espacios" value={vendorQuery}/>{vendorLoading && <RefreshCw className="spin" size={16}/>}</label>{vendorLoading && vendorResults.length === 0 && <div className="purchase-search-state" role="status"><RefreshCw className="spin" size={16}/>Buscando proveedores…</div>}{!vendorLoading && vendorResults.length === 0 && <div className="purchase-search-state">No se encontró ningún proveedor con esta búsqueda.</div>}{vendorResults.length > 0 && <div className="reception-product-results">{vendorResults.map((vendor) => <button key={vendor.id} onClick={() => startNewQuotation(vendor)} type="button"><Plus size={16}/><span><strong>{vendor.name}</strong><small>{vendor.email || "Sin email configurado"}</small></span></button>)}</div>}<div className="purchase-modal-actions"><button onClick={() => setCreating(false)} type="button">Cancelar</button></div></div></div>}
-      {confirming && (() => {
-        const lines = drafts[confirming.id] ?? [];
-        const total = lines.reduce((sum, line) => sum + line.orderedQty * netPrice(line.priceUnit, line.discount), 0);
-        return <div aria-labelledby="purchase-confirm-title" aria-modal="true" className="purchase-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setConfirming(null); }} role="dialog">
+      {creating && (
+        <div
+          aria-labelledby="new-purchase-title"
+          aria-modal="true"
+          className="purchase-modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setCreating(false);
+          }}
+          role="dialog"
+        >
           <div className="purchase-modal">
-            <h3 id="purchase-confirm-title">Guardar presupuesto en Odoo</h3>
-            <p>Se actualizará <strong>{confirming.ref}</strong>. Los precios quedarán guardados en el histórico real de compras.</p>
-            <dl><div><dt>Proveedor</dt><dd>{confirming.supplier}</dd></div><div><dt>Líneas</dt><dd>{lines.length}</dd></div><div><dt>Total</dt><dd>{formatMoney(total, confirming.currency)}</dd></div></dl>
-            {lines.some((line) => line.costMethod === "standard") && <div className="purchase-modal-warning"><AlertTriangle size={18}/>Hay productos de coste estándar: el precio quedará en el histórico, pero la recepción no actualizará automáticamente su coste.</div>}
-            {lines.some((line) => line.priceUnit === 0) && <div className="purchase-modal-warning"><AlertTriangle size={18}/>Hay {lines.filter((line) => line.priceUnit === 0).length} línea(s) con precio 0, pendientes de completar cuando llegue la factura. Odoo permitirá continuar.</div>}
-            {saveError && <div className="purchase-modal-error" role="alert">{saveError}</div>}
-            <div className="purchase-modal-actions"><button disabled={saving} onClick={() => setConfirming(null)} type="button">Cancelar</button><button className="primary" disabled={saving} onClick={() => void saveQuotation()} ref={acceptRef} type="button">{saving ? <><RefreshCw className="spin" size={16}/>Guardando en Odoo…</> : <><Save size={16}/>Guardar en Odoo</>}</button></div>
+            <h3 id="new-purchase-title">Crear presupuesto de compra</h3>
+            <p>
+              Selecciona un proveedor sugerido o escribe para filtrar. El
+              presupuesto seguirá en borrador.
+            </p>
+            <label className="purchase-vendor-search">
+              <Search size={17} />
+              <input
+                autoFocus
+                onChange={(event) => setVendorQuery(event.target.value)}
+                placeholder="Proveedor · combina palabras con espacios"
+                value={vendorQuery}
+              />
+              {vendorLoading && <RefreshCw className="spin" size={16} />}
+            </label>
+            {vendorLoading && vendorResults.length === 0 && (
+              <div className="purchase-search-state" role="status">
+                <RefreshCw className="spin" size={16} />
+                Buscando proveedores…
+              </div>
+            )}
+            {!vendorLoading && vendorResults.length === 0 && (
+              <div className="purchase-search-state">
+                No se encontró ningún proveedor con esta búsqueda.
+              </div>
+            )}
+            {vendorResults.length > 0 && (
+              <div className="reception-product-results">
+                {vendorResults.map((vendor) => (
+                  <button
+                    key={vendor.id}
+                    onClick={() => startNewQuotation(vendor)}
+                    type="button"
+                  >
+                    <Plus size={16} />
+                    <span>
+                      <strong>{vendor.name}</strong>
+                      <small>{vendor.email || "Sin email configurado"}</small>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="purchase-modal-actions">
+              <button onClick={() => setCreating(false)} type="button">
+                Cancelar
+              </button>
+            </div>
           </div>
-        </div>;
-      })()}
-      {actionPreview && actionKind === "cancel" && <div aria-labelledby="purchase-action-title" aria-modal="true" className="purchase-modal-backdrop" role="dialog"><div aria-busy={Boolean(actionLoading)} className="purchase-modal"><h3 id="purchase-action-title">Cancelar presupuesto</h3><p>Se cancelará <strong>{actionPreview.ref}</strong> en Odoo. Las reglas de abastecimiento podrán generar otro presupuesto si vuelve a existir necesidad.</p><div className="purchase-modal-warning"><AlertTriangle size={18}/>Esta acción no elimina el documento ni sus datos históricos.</div>{actionError && <div className="purchase-modal-error" role="alert"><AlertTriangle size={18}/><span><strong>No se pudo cancelar en Odoo.</strong><br/>{actionError} Revisa el estado del presupuesto y vuelve a intentarlo.</span></div>}<div className="purchase-modal-actions"><button disabled={Boolean(actionLoading)} onClick={() => { setActionPreview(null); setActionKind(null); setActionError(""); }} type="button">Volver</button><button className="danger" disabled={Boolean(actionLoading)} onClick={() => void cancelQuotation()} type="button">{actionLoading ? <><RefreshCw className="spin" size={16}/>Cancelando en Odoo…</> : "Aceptar cancelación"}</button></div></div></div>}
-      {actionPreview && actionKind === "confirm" && <div aria-labelledby="purchase-action-title" aria-modal="true" className="purchase-modal-backdrop" role="dialog"><div className="purchase-modal"><h3 id="purchase-action-title">Confirmar pedido de compra</h3><p><strong>{actionPreview.ref}</strong> · {actionPreview.supplier}</p><dl><div><dt>Líneas</dt><dd>{actionPreview.lineCount}</dd></div><div><dt>Total</dt><dd>{formatMoney(actionPreview.total, actionPreview.currency)}</dd></div><div><dt>Albarán nativo</dt><dd>{actionPreview.willCreateReceipt ? `Sí · ${actionPreview.receiptProductLines} líneas de producto` : "No · solo servicios"}</dd></div><div><dt>Email proveedor</dt><dd>{actionPreview.supplierEmail || "Sin email configurado"}</dd></div></dl>{!actionPreview.supplierEmail && <div className="purchase-modal-error" role="alert">El proveedor no tiene email en su ficha de contacto. Puedes confirmar, pero no enviar el correo.</div>}<div className="purchase-modal-warning"><AlertTriangle size={18}/>«Aceptar y enviar email» usará la plantilla nativa “Purchase: Purchase Order”, que genera y adjunta el PDF del pedido con proveedor, líneas y precios.</div><div className="purchase-modal-actions"><button disabled={Boolean(actionLoading)} onClick={() => { setActionPreview(null); setActionKind(null); }} type="button">Cancelar</button><button className="primary" disabled={Boolean(actionLoading)} onClick={() => void simulateConfirmation(false)} type="button">{actionLoading ? "Comprobando…" : "Aceptar"}</button><button className="primary" disabled={Boolean(actionLoading) || !actionPreview.supplierEmail} onClick={() => void simulateConfirmation(true)} type="button">{actionLoading ? "Comprobando…" : "Aceptar y enviar email"}</button></div></div></div>}
+        </div>
+      )}
+      {confirming &&
+        (() => {
+          const lines = drafts[confirming.id] ?? [];
+          const total = lines.reduce(
+            (sum, line) =>
+              sum + line.orderedQty * netPrice(line.priceUnit, line.discount),
+            0,
+          );
+          return (
+            <div
+              aria-labelledby="purchase-confirm-title"
+              aria-modal="true"
+              className="purchase-modal-backdrop"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget && !saving)
+                  setConfirming(null);
+              }}
+              role="dialog"
+            >
+              <div className="purchase-modal">
+                <h3 id="purchase-confirm-title">Guardar presupuesto en Odoo</h3>
+                <p>
+                  Se actualizará <strong>{confirming.ref}</strong>. Los precios
+                  quedarán guardados en el histórico real de compras.
+                </p>
+                <dl>
+                  <div>
+                    <dt>Proveedor</dt>
+                    <dd>
+                      {vendorChanges[confirming.id]?.name ?? confirming.supplier}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Líneas</dt>
+                    <dd>{lines.length}</dd>
+                  </div>
+                  <div>
+                    <dt>Total</dt>
+                    <dd>{formatMoney(total, confirming.currency)}</dd>
+                  </div>
+                </dl>
+                {lines.some((line) => line.costMethod === "standard") && (
+                  <div className="purchase-modal-warning">
+                    <AlertTriangle size={18} />
+                    Hay productos de coste estándar: el precio quedará en el
+                    histórico, pero la recepción no actualizará automáticamente
+                    su coste.
+                  </div>
+                )}
+                {lines.some((line) => line.priceUnit === 0) && (
+                  <div className="purchase-modal-warning">
+                    <AlertTriangle size={18} />
+                    Hay {
+                      lines.filter((line) => line.priceUnit === 0).length
+                    }{" "}
+                    línea(s) con precio 0, pendientes de completar cuando llegue
+                    la factura. Odoo permitirá continuar.
+                  </div>
+                )}
+                {saveError && (
+                  <div className="purchase-modal-error" role="alert">
+                    {saveError}
+                  </div>
+                )}
+                <div className="purchase-modal-actions">
+                  <button
+                    disabled={saving}
+                    onClick={() => setConfirming(null)}
+                    type="button"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    className="primary"
+                    disabled={saving}
+                    onClick={() => void saveQuotation()}
+                    ref={acceptRef}
+                    type="button"
+                  >
+                    {saving ? (
+                      <>
+                        <RefreshCw className="spin" size={16} />
+                        Guardando en Odoo…
+                      </>
+                    ) : (
+                      <>
+                        <Save size={16} />
+                        Guardar en Odoo
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+      {actionPreview && actionKind === "cancel" && (
+        <div
+          aria-labelledby="purchase-action-title"
+          aria-modal="true"
+          className="purchase-modal-backdrop"
+          role="dialog"
+        >
+          <div aria-busy={Boolean(actionLoading)} className="purchase-modal">
+            <h3 id="purchase-action-title">Cancelar presupuesto</h3>
+            <p>
+              Se cancelará <strong>{actionPreview.ref}</strong> en Odoo. Las
+              reglas de abastecimiento podrán generar otro presupuesto si vuelve
+              a existir necesidad.
+            </p>
+            <div className="purchase-modal-warning">
+              <AlertTriangle size={18} />
+              Esta acción no elimina el documento ni sus datos históricos.
+            </div>
+            {actionError && (
+              <div className="purchase-modal-error" role="alert">
+                <AlertTriangle size={18} />
+                <span>
+                  <strong>No se pudo cancelar en Odoo.</strong>
+                  <br />
+                  {actionError} Revisa el estado del presupuesto y vuelve a
+                  intentarlo.
+                </span>
+              </div>
+            )}
+            <div className="purchase-modal-actions">
+              <button
+                disabled={Boolean(actionLoading)}
+                onClick={() => {
+                  setActionPreview(null);
+                  setActionKind(null);
+                  setActionError("");
+                }}
+                type="button"
+              >
+                Volver
+              </button>
+              <button
+                className="danger"
+                disabled={Boolean(actionLoading)}
+                onClick={() => void cancelQuotation()}
+                type="button"
+              >
+                {actionLoading ? (
+                  <>
+                    <RefreshCw className="spin" size={16} />
+                    Cancelando en Odoo…
+                  </>
+                ) : (
+                  "Aceptar cancelación"
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {actionPreview && actionKind === "confirm" && (
+        <div
+          aria-labelledby="purchase-action-title"
+          aria-modal="true"
+          className="purchase-modal-backdrop"
+          role="dialog"
+        >
+          <div className="purchase-modal">
+            <h3 id="purchase-action-title">Confirmar pedido de compra</h3>
+            <p>
+              <strong>{actionPreview.ref}</strong> · {actionPreview.supplier}
+            </p>
+            <dl>
+              <div>
+                <dt>Líneas</dt>
+                <dd>{actionPreview.lineCount}</dd>
+              </div>
+              <div>
+                <dt>Total</dt>
+                <dd>
+                  {formatMoney(actionPreview.total, actionPreview.currency)}
+                </dd>
+              </div>
+              <div>
+                <dt>Albarán nativo</dt>
+                <dd>
+                  {actionPreview.willCreateReceipt
+                    ? `Sí · ${actionPreview.receiptProductLines} líneas de producto`
+                    : "No · solo servicios"}
+                </dd>
+              </div>
+              <div>
+                <dt>Email proveedor</dt>
+                <dd>
+                  {actionPreview.supplierEmail || "Sin email configurado"}
+                </dd>
+              </div>
+            </dl>
+            {!actionPreview.supplierEmail && (
+              <div className="purchase-modal-error" role="alert">
+                El proveedor no tiene email en su ficha de contacto. Puedes
+                confirmar, pero no enviar el correo.
+              </div>
+            )}
+            <div className="purchase-modal-warning">
+              <AlertTriangle size={18} />
+              «Aceptar y enviar email» usará la plantilla nativa “Purchase:
+              Purchase Order”, que genera y adjunta el PDF del pedido con
+              proveedor, líneas y precios.
+            </div>
+            <div className="purchase-modal-actions">
+              <button
+                disabled={Boolean(actionLoading)}
+                onClick={() => {
+                  setActionPreview(null);
+                  setActionKind(null);
+                }}
+                type="button"
+              >
+                Cancelar
+              </button>
+              <button
+                className="primary"
+                disabled={Boolean(actionLoading)}
+                onClick={() => void simulateConfirmation(false)}
+                type="button"
+              >
+                {actionLoading ? "Comprobando…" : "Aceptar"}
+              </button>
+              <button
+                className="primary"
+                disabled={
+                  Boolean(actionLoading) || !actionPreview.supplierEmail
+                }
+                onClick={() => void simulateConfirmation(true)}
+                type="button"
+              >
+                {actionLoading ? "Comprobando…" : "Aceptar y enviar email"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
 
-function ReceptionKpi({ label, value }: { label: string; value: number | string }) {
-  return <div><span>{label}</span><strong>{value}</strong></div>;
-}
-
-function Quantity({ emphasis, label, value }: { emphasis?: boolean; label: string; value: number }) {
-  return <div className={`reception-quantity ${emphasis ? "emphasis" : ""}`}><small>{label}</small><strong>{formatQty(value)}</strong></div>;
+function Quantity({
+  emphasis,
+  label,
+  value,
+}: {
+  emphasis?: boolean;
+  label: string;
+  value: number;
+}) {
+  return (
+    <div className={`reception-quantity ${emphasis ? "emphasis" : ""}`}>
+      <small>{label}</small>
+      <strong>{formatQty(value)}</strong>
+    </div>
+  );
 }
 
 function formatQty(value: number) {
-  return new Intl.NumberFormat("es-ES", { maximumFractionDigits: 2 }).format(value);
+  return new Intl.NumberFormat("es-ES", { maximumFractionDigits: 2 }).format(
+    value,
+  );
 }
 
 function formatDate(value: string) {
@@ -379,12 +1296,19 @@ function formatDate(value: string) {
   const date = new Date(`${value.slice(0, 10)}T12:00:00`);
   return Number.isNaN(date.getTime())
     ? value
-    : new Intl.DateTimeFormat("es-ES", { day: "2-digit", month: "short", year: "numeric" }).format(date);
+    : new Intl.DateTimeFormat("es-ES", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+      }).format(date);
 }
 
 function formatMoney(value: number, currency: string) {
   try {
-    return new Intl.NumberFormat("es-ES", { style: "currency", currency: currency || "EUR" }).format(value);
+    return new Intl.NumberFormat("es-ES", {
+      style: "currency",
+      currency: currency || "EUR",
+    }).format(value);
   } catch {
     return `${formatQty(value)} ${currency}`.trim();
   }
@@ -400,7 +1324,11 @@ function netPrice(priceUnit: number, discount = 0) {
 
 function recalculateLine(line: PurchaseReceptionLine): PurchaseReceptionLine {
   const priceUnitDiscounted = netPrice(line.priceUnit, line.discount);
-  return { ...line, priceUnitDiscounted, subtotal: line.orderedQty * priceUnitDiscounted };
+  return {
+    ...line,
+    priceUnitDiscounted,
+    subtotal: line.orderedQty * priceUnitDiscounted,
+  };
 }
 
 function statusClass(status: PurchaseReception["status"]) {
@@ -408,5 +1336,12 @@ function statusClass(status: PurchaseReception["status"]) {
 }
 
 function translateState(state: string) {
-  return ({ draft: "Presupuesto", sent: "Presupuesto enviado" } as Record<string, string>)[state] ?? state;
+  return (
+    (
+      { draft: "Presupuesto", sent: "Presupuesto enviado" } as Record<
+        string,
+        string
+      >
+    )[state] ?? state
+  );
 }

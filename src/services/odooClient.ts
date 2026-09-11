@@ -734,7 +734,7 @@ export const odooClient = {
       if (params?.offset) query.set("offset", params.offset.toString());
       if (params?.search) query.set("search", params.search);
 
-      const response = await fetch(`/api/odoo/orders?${query.toString()}`);
+      const response = await fetch(receptionsApiPath(`/api/odoo/orders?${query.toString()}`));
       if (!response.ok) {
         throw new Error(`Odoo API returned ${response.status}`);
       }
@@ -778,7 +778,7 @@ export const odooClient = {
     if (params?.offset) query.set("offset", params.offset.toString());
     if (params?.search) query.set("search", params.search);
 
-    const response = await fetch(`/api/odoo/orders/v2?${query.toString()}`);
+    const response = await fetch(receptionsApiPath(`/api/odoo/orders/v2?${query.toString()}`));
     if (!response.ok) {
       throw new Error(`Pedidos V2 API returned ${response.status}`);
     }
@@ -839,6 +839,12 @@ export const odooClient = {
     if (!response.ok) {
       throw new Error(payload.message ?? "No se pudieron leer las recepciones de Odoo");
     }
+    return payload;
+  },
+  async getSalesPurchaseAlerts() {
+    const response = await fetch(receptionsApiPath("/api/odoo/sales-purchase-alerts"));
+    const payload = (await readJson(response)) as import("./odooTypes").SalesPurchaseAlertsPayload & { message?: string };
+    if (!response.ok) throw new Error(payload.message ?? "No se pudieron leer las compras vinculadas a ventas");
     return payload;
   },
   async getPendingPurchaseProducts(orderId: string, query: string, quantity = 1, partnerId?: string) {
