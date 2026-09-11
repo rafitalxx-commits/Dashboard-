@@ -1,0 +1,21 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { SupplierInvoiceSyncService, computeKpis, filterInvoices } from "../backend/supplierInvoices/service.ts";
+
+const service = new SupplierInvoiceSyncService({ dataDir: ".dashboard-data" });
+service.load();
+const all = service.getStore().invoices;
+assert.ok(all.length > 0, "El cache de facturas debe contener datos sincronizados");
+assert.ok(all.every((invoice) => invoice.lines && Array.isArray(invoice.lines)), "Las lineas son necesarias para matching futuro");
+assert.ok(all.every((invoice) => invoice.source === null && invoice.ocr_status === null), "La Fase 1 no procesa OCR/IA");
+const p03881 = filterInvoices(all, { purchaseOrder: "P03881" });
+assert.ok(p03881.some((invoice) => invoice.linkedPurchaseOrderNames.includes("P03881")), "La relacion compra se basa en relacion real Odoo");
+const paid = filterInvoices(all, { paymentState: "paid" });
+assert.ok(paid.length > 0, "Filtro pago pagado");
+const kpis = computeKpis(all, { year: 2026 }).kpis;
+assert.ok(kpis.periodCount >= 0 && kpis.activeVendors >= 0, "KPIs calculados");
+const routes = readFileSync(new URL("../backend/supplierInvoices/routes.ts", import.meta.url), "utf8");
+assert.match(routes, /supplier-invoices\/sync/);
+assert.match(routes, /supplier-invoices\/export/);
+assert.doesNotMatch(routes, /execute_kw.*create|button_confirm|write\(/);
+console.log(`Facturas proveedor: ${all.length} documentos cacheados, filtros/KPIs/relaciones de compra validados en solo lectura.`);

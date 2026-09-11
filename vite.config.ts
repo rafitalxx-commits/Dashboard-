@@ -23,6 +23,7 @@ import { registerDhlRoutes } from "./backend/dhl/routes";
 import { registerShippingRulesRoutes } from "./backend/shippingRules/routes";
 import { registerPrestashopRoutes } from "./backend/prestashop/routes";
 import { registerPublicTrackingRoutes } from "./backend/publicTracking/routes";
+import { registerSupplierInvoicesRoutes } from "./backend/supplierInvoices/routes";
 import { registerWarehouseWorkersRoutes } from "./backend/warehouseWorkers/routes";
 import { registerExpeditionDestinationOverridesRoutes } from "./backend/expeditionDestinationOverrides/routes";
 import { isDeliveryIncidentStillPending, isServiceOnlyOrder } from "./backend/odooDeliveryIncidentRules";
@@ -536,6 +537,10 @@ function odooReadOnlyApi(env: Record<string, string>) {
         dataDir: env.DASHBOARD_DATA_DIR,
       });
       registerPrestashopRoutes(server, auth, env);
+      registerSupplierInvoicesRoutes(server, auth, {
+        env,
+        dataDir: env.DASHBOARD_DATA_DIR || ".dashboard-data",
+      });
       registerAmazonMessagesRoutes(server, auth, {
         dataDir: env.DASHBOARD_DATA_DIR,
       });
