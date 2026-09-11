@@ -354,6 +354,7 @@ const rangePresets = [
 ] as const;
 type RangePreset = (typeof rangePresets)[number]["value"];
 type ControlChannel = "Todos" | "Amazon FBM" | "Amazon DBA" | "Website" | "Sales";
+const orderChannelFilterOptions = ["Amazon FBM", "Website", "Sales"] as const;
 type DashboardOrderFilter = {
   channel?: ControlChannel;
   delivery?: string;
@@ -654,7 +655,8 @@ function App() {
       };
     }
 
-    setOrders([]);
+    // Preserve the prior dataset while the selected filter gathers every block.
+    // This keeps both channel controls and visible orders stable during loading.
     setDataMode("loading");
     setConnectionMessage(isV2View ? "Leyendo cache V2" : "Conectando con Odoo");
     setSyncSummary(`${isV2View ? "Pedidos V2" : "Pedidos"}: ${dateRange.from} a ${dateRange.to}`);
@@ -894,26 +896,8 @@ function App() {
     }
   }, [activeView, authUser]);
 
-  const channels = useMemo(
-    () => {
-      const fulfillmentOptions = [
-        orders.some((order) => order.fulfillmentBy === "FBA")
-          ? "Amazon FBA"
-          : "",
-        orders.some((order) => order.fulfillmentBy === "FBM")
-          ? "Amazon FBM"
-          : "",
-      ].filter(Boolean);
-
-      return [
-        ...fulfillmentOptions,
-        ...Array.from(new Set(orders.map((order) => order.channel))).filter(
-          (channel) => !isAmazonTodoelectricoChannel(channel),
-        ),
-      ];
-    },
-    [orders],
-  );
+  // Channel buttons must not disappear while a complete filtered dataset loads.
+  const channels = orderChannelFilterOptions;
 
   const filteredOrders = useMemo(() => {
     const text = query.trim().toLowerCase();
@@ -5575,19 +5559,29 @@ function qrImageUrl(value: string) {
 }
 
 function matchesChannelOption(order: Order, option: string) {
-  if (option === "Amazon FBA") return order.fulfillmentBy === "FBA";
-  if (option === "Amazon FBM") return order.fulfillmentBy === "FBM";
+  const channel = normalizeChannelLabel(order.channel);
+  const fulfillment = (order.fulfillmentBy ?? "").trim().toUpperCase();
+  if (option === "Amazon FBA") return fulfillment === "FBA";
+  if (option === "Amazon FBM") {
+    return fulfillment === "FBM" || (channel.includes("amazon") && channel.includes("fbm"));
+  }
   if (option === "Amazon DBA") return matchesControlChannel(order, "Amazon DBA");
-  return order.channel === option;
+  if (option === "Website") return channel === "website" || channel === "web";
+  if (option === "Sales") return channel === "sales" || channel === "sale" || channel === "ventas" || channel === "venta";
+  return channel === normalizeChannelLabel(option);
 }
 
-function isAmazonTodoelectricoChannel(value: string) {
+function normalizeChannelLabel(value: string) {
   return value
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .trim()
     .toLowerCase()
-    .replace(/[\s_-]+/g, " ") === "amazon todoelectrico";
+    .replace(/[\s_-]+/g, " ");
+}
+
+function isAmazonTodoelectricoChannel(value: string) {
+  return normalizeChannelLabel(value) === "amazon todoelectrico";
 }
 
 function permissionsForRole(role: DashboardUserRole): DashboardPermission[] {
