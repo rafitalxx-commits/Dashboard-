@@ -24,6 +24,7 @@ import { registerShippingRulesRoutes } from "./backend/shippingRules/routes";
 import { registerPrestashopRoutes } from "./backend/prestashop/routes";
 import { registerPublicTrackingRoutes } from "./backend/publicTracking/routes";
 import { registerSupplierInvoicesRoutes } from "./backend/supplierInvoices/routes";
+import { registerSupplierInvoicesPhase2Routes } from "./backend/supplierInvoices/phase2Routes";
 import { registerWarehouseWorkersRoutes } from "./backend/warehouseWorkers/routes";
 import { registerExpeditionDestinationOverridesRoutes } from "./backend/expeditionDestinationOverrides/routes";
 import { isDeliveryIncidentStillPending, isServiceOnlyOrder } from "./backend/odooDeliveryIncidentRules";
@@ -537,6 +538,11 @@ function odooReadOnlyApi(env: Record<string, string>) {
         dataDir: env.DASHBOARD_DATA_DIR,
       });
       registerPrestashopRoutes(server, auth, env);
+      // Fase 2 primero: prefijos especificos (/inbox, /unbilled) deben ganar al catch-all de Fase 1.
+      registerSupplierInvoicesPhase2Routes(server, auth, {
+        env,
+        dataDir: env.DASHBOARD_DATA_DIR || ".dashboard-data",
+      });
       registerSupplierInvoicesRoutes(server, auth, {
         env,
         dataDir: env.DASHBOARD_DATA_DIR || ".dashboard-data",

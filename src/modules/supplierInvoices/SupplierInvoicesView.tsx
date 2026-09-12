@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import "./supplierInvoices.css";
+import { InboxView, UnbilledView } from "./Phase2Views";
 
 type F = Record<string, string>;
 type L = {
@@ -120,7 +121,8 @@ export function SupplierInvoicesView({
     [msg, setMsg] = useState(""),
     [selected, setSelected] = useState<I | null>(null),
     [sort, setSort] = useState("invoiceDate"),
-    [dir, setDir] = useState("desc");
+    [dir, setDir] = useState("desc"),
+    [tab, setTab] = useState<"hist" | "inbox" | "unbilled">("hist");
   const qs = useMemo(() => {
     const q = new URLSearchParams();
     Object.entries(filters).forEach(([k, v]) => v && q.set(k, v));
@@ -173,16 +175,62 @@ export function SupplierInvoicesView({
     q.set("format", fmt);
     window.open(api(`/api/odoo/supplier-invoices/export?${q}`), "_blank");
   };
-  if (!data && loading)
+  if (tab === "hist" && !data && loading)
     return (
       <section className="supplier-invoices si-loading">
         <RefreshCw className="spin" /> Cargando facturas de proveedor…
       </section>
     );
-  const x = data!;
+  const x =
+    data ??
+    ({
+      total: 0,
+      items: [],
+      kpis: {},
+      charts: {},
+      options: {},
+      lastSyncAt: null,
+      odooBaseUrl: null,
+    } as P);
   const o = x.options || {};
   return (
     <section className="supplier-invoices">
+      {!analyticsOnly && (
+        <nav className="si-tabs" role="tablist">
+          <button
+            role="tab"
+            aria-selected={tab === "hist"}
+            className={tab === "hist" ? "active" : ""}
+            onClick={() => setTab("hist")}
+          >
+            Histórico
+          </button>
+          <button
+            role="tab"
+            aria-selected={tab === "inbox"}
+            className={tab === "inbox" ? "active" : ""}
+            onClick={() => setTab("inbox")}
+          >
+            Bandeja documental
+          </button>
+          <button
+            role="tab"
+            aria-selected={tab === "unbilled"}
+            className={tab === "unbilled" ? "active" : ""}
+            onClick={() => setTab("unbilled")}
+          >
+            Pedidos sin facturar
+          </button>
+        </nav>
+      )}
+      {tab !== "hist" && !analyticsOnly ? (
+        tab === "inbox" ? (
+          <InboxView base={base} />
+        ) : (
+          <UnbilledView base={base} />
+        )
+      ) : (
+      <>
       <header className="si-head">
         <div>
           <p className="eyebrow">Compras / Facturas de proveedor</p>
@@ -485,6 +533,8 @@ export function SupplierInvoicesView({
           base={x.odooBaseUrl}
           close={() => setSelected(null)}
         />
+      )}
+      </>
       )}
     </section>
   );
