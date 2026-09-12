@@ -154,8 +154,13 @@ type UnbilledData = {
 
 const money = (v: number, c = "EUR") =>
   new Intl.NumberFormat("es-ES", { style: "currency", currency: c || "EUR" }).format(v || 0);
-const dt = (v: string | null) =>
-  v ? new Intl.DateTimeFormat("es-ES").format(new Date(v)) : "—";
+const dt = (v: string | null) => {
+  if (!v) return "—";
+  const d = new Date(v);
+  // Fechas extraidas por heuristica pueden ser invalidas: nunca tumbar el render.
+  if (Number.isNaN(d.getTime())) return "—";
+  return new Intl.DateTimeFormat("es-ES").format(d);
+};
 
 const STATUS_ES: Record<string, string> = {
   SIN_REVISAR: "Sin revisar",
