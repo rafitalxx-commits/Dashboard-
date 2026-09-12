@@ -548,6 +548,19 @@ export class DocumentInboxService {
     return doc;
   }
 
+  applyAiExtraction(driveFileId: string, extracted: PdfExtractedData, aiStatus: "ok" | "error", confidence: number | null, note: string | null): InboxDocument | null {
+    const doc = this.getDocument(driveFileId);
+    if (!doc) return null;
+    doc.extracted = extracted;
+    doc.aiStatus = aiStatus;
+    doc.confidence = confidence;
+    doc.ocrStatus = "ok";
+    if (note) doc.notes = note;
+    doc.processedAt = new Date().toISOString();
+    this.save();
+    return doc;
+  }
+
   computeKpis(): InboxKpis {
     const now = new Date();
     const month = now.getMonth();

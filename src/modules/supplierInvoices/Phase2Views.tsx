@@ -16,6 +16,7 @@ import {
   RefreshCw,
   Search,
   ShoppingCart,
+  Sparkles,
   X,
 } from "lucide-react";
 
@@ -189,6 +190,7 @@ export function InboxView({ base }: { base: string }) {
   const [data, setData] = useState<InboxData | null>(null);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
+  const [extracting, setExtracting] = useState<string | null>(null);
   const [msg, setMsg] = useState("");
   const [selected, setSelected] = useState<Doc | null>(null);
   const [acting, setActing] = useState<string | null>(null);
@@ -232,6 +234,28 @@ export function InboxView({ base }: { base: string }) {
       setMsg(e instanceof Error ? e.message : "Error escaneando Drive");
     } finally {
       setScanning(false);
+    }
+  };
+
+  const extract = async (ids?: string[]) => {
+    setExtracting(ids?.length ? ids[0] : "batch");
+    setMsg("");
+    try {
+      const r = await fetch(api("/api/odoo/supplier-invoices/inbox/extract"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(ids?.length ? { ids } : {}),
+      });
+      const x = await r.json();
+      if (!r.ok) throw Error(x.message);
+      const ok = x.results?.filter((z: { ok: boolean }) => z.ok).length ?? 0;
+      const bad = (x.results?.length ?? 0) - ok;
+      setMsg(`Extracción IA: ${ok} documentos OK${bad ? `, ${bad} con error` : ""}. Cotejo actualizado.`);
+      await load();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Error en extracción IA");
+    } finally {
+      setExtracting(null);
     }
   };
 
@@ -285,6 +309,10 @@ export function InboxView({ base }: { base: string }) {
           <button className="si-primary" disabled={scanning} onClick={() => void scan()}>
             {scanning ? <RefreshCw className="spin" /> : <Inbox />}
             {scanning ? "Escaneando…" : "Escanear Drive"}
+          </button>
+          <button className="si-primary" disabled={extracting !== null || scanning} onClick={() => void extract()}>
+            {extracting === "batch" ? <RefreshCw className="spin" /> : <Sparkles />}
+            {extracting === "batch" ? "Extrayendo…" : "Extraer con IA"}
           </button>
         </div>
       </header>
@@ -383,14 +411,16 @@ export function InboxView({ base }: { base: string }) {
           doc={selected}
           close={() => setSelected(null)}
           acting={acting}
+          extracting={extracting}
           onStatus={setStatus}
+          onAiExtract={(id) => void extract([id])}
         />
       )}
     </section>
   );
 }
 
-function DocDetail({ doc, close, acting, onStatus }: { doc: Doc; close: () => void; acting: string | null; onStatus: (id: string, s: string) => void }) {
+function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract }: { doc: Doc; close: () => void; acting: string | null; extracting: string | null; onStatus: (id: string, s: string) => void; onAiExtract: (id: string) => void }) {
   const ex = doc.extracted;
   return (
     <div className="si-backdrop" onMouseDown={(e) => e.target === e.currentTarget && close()}>
@@ -452,6 +482,9 @@ function DocDetail({ doc, close, acting, onStatus }: { doc: Doc; close: () => vo
         <section>
           <h3>Acciones</h3>
           <div className="si-doc-actions">
+            <button disabled={extracting !== null} onClick={() => onAiExtract(doc.driveFileId)} title="Extraer proveedor, nº factura, fechas e importes con IA">
+              {extracting === doc.driveFileId ? <RefreshCw className="spin" /> : <Sparkles />} Extraer con IA
+            </button>
             <button disabled={acting !== null || doc.status === "PENDIENTE_COTEJO"} onClick={() => onStatus(doc.driveFileId, "PENDIENTE_COTEJO")}>
               {acting === doc.driveFileId + "PENDIENTE_COTEJO" ? <RefreshCw className="spin" /> : <Clock />} Marcar en cotejo
             </button>

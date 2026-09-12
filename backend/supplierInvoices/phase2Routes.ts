@@ -7,6 +7,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { basename } from "node:path";
 import { SupplierInvoiceSyncService } from "./service.ts";
 import { DocumentInboxService, matchDocument, buildPoIndex } from "./documentInbox.ts";
+import { aiExtractCachedPdf, mergeExtracted } from "./aiExtract.ts";
 import { PurchaseOrdersLedger, computeBilling, filterOrders, computeUnbilledKpis } from "./unbilled.ts";
 
 type MiddlewareServer = {
@@ -145,6 +146,42 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     if (target) target.match = match;
     inboxService.setStatus(body.id, match && match.band === "alta" ? "PENDIENTE_VALIDAR" : "PENDIENTE_COTEJO", user.name);
     sendJson(response, 200, { status: "ok", match });
+  });
+
+  // Extraccion IA de documentos (texto o escaneado). ids opcional; sin ids, batch de hasta 6 pendientes.
+  server.middlewares.use("/api/odoo/supplier-invoices/inbox/extract", async (request: any, response: any) => {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if ((request.method ?? "POST").toUpperCase() !== "POST") return sendJson(response, 405, { message: "Usa POST" });
+    let body: { ids?: string[] } = {};
+    try { body = JSON.parse(await readBody(request) || "{}"); } catch { /* body vacio */ }
+    const store = inboxService.getStore();
+    const docs = (body.ids?.length
+      ? body.ids.map((id) => inboxService.getDocument(id)).filter((d): d is NonNullable<typeof d> => Boolean(d))
+      : store.documents.filter((d) => d.aiStatus !== "ok")
+    ).slice(0, 3);
+    const pdfDir = `${deps.dataDir.replace(/\/$/, "")}/supplier-invoices/inbox`;
+    const results: { driveFileId: string; name: string; ok: boolean; message: string; confidence: number | null }[] = [];
+    for (const doc of docs) {
+      try {
+        const outcome = await aiExtractCachedPdf(deps.env, doc.driveFileId, doc.name, pdfDir);
+        const merged = mergeExtracted(doc.extracted, outcome.fields, `Extraccion IA (${outcome.model}, ${outcome.mode})`);
+        inboxService.applyAiExtraction(doc.driveFileId, merged, "ok", outcome.fields.confidence, null);
+        const refreshed = inboxService.getDocument(doc.driveFileId);
+        const match = refreshed ? matchDocument(refreshed, invoiceService.getStore().invoices, buildPoIndex(poLedger.getStore())) : null;
+        if (refreshed && match) {
+          refreshed.match = match;
+          inboxService.setStatus(doc.driveFileId, match.band === "alta" ? "PENDIENTE_VALIDAR" : "PENDIENTE_COTEJO", user.name);
+        }
+        results.push({ driveFileId: doc.driveFileId, name: doc.name, ok: true, message: `${outcome.model}`, confidence: outcome.fields.confidence });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "error";
+        const current = inboxService.getDocument(doc.driveFileId);
+        if (current) inboxService.applyAiExtraction(doc.driveFileId, current.extracted, "error", null, message.slice(0, 200));
+        results.push({ driveFileId: doc.driveFileId, name: doc.name, ok: false, message, confidence: null });
+      }
+    }
+    sendJson(response, 200, { status: "ok", processed: results.length, results });
   });
 
   // ---------- Bandeja documental: lista (DESPUES de las sub-rutas) ----------
