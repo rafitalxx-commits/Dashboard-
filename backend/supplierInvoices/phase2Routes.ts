@@ -127,6 +127,9 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
         user.name,
       );
       let autoExtract: Awaited<ReturnType<typeof runAiExtraction>> | null = null;
+      // Reclasificacion con fuerza: re-evalua TODOS los documentos con la heuristica
+      // actual (patrones de tipo de documento) y des-excluye lo que ya no es no-factura.
+      await inboxService.reclassifyDocuments(true);
       if (result.addedIds.length) {
         autoExtract = await runAiExtraction(user, result.addedIds.map((d) => d.driveFileId));
       }
@@ -212,15 +215,16 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     user: { name: string },
     ids?: string[],
   ): Promise<{ processed: number; results: { driveFileId: string; name: string; ok: boolean; message: string; confidence: number | null }[] }> => {
+    await inboxService.reclassifyDocuments(false);
     const store = inboxService.getStore();
     const docs = (ids?.length
       ? ids.map((id) => inboxService.getDocument(id)).filter((d): d is NonNullable<typeof d> => Boolean(d))
-      : store.documents.filter((d) => d.aiStatus !== "ok")
+      : store.documents.filter((d) => d.aiStatus !== "ok" && !d.match?.excluded && !(d.extracted?.docType === "aduana" || d.extracted?.docType === "transporte" || d.extracted?.docType === "albaran"))
     ).slice(0, 3);
     const pdfDir = `${deps.dataDir.replace(/\/$/, "")}/supplier-invoices/inbox`;
     const results: { driveFileId: string; name: string; ok: boolean; message: string; confidence: number | null }[] = [];
     for (const doc of docs) {
-      const alreadyExcluded = doc.match?.excluded === true;
+      const alreadyExcluded = doc.match?.excluded === true || (doc.extracted?.docType === "aduana" || doc.extracted?.docType === "transporte" || doc.extracted?.docType === "albaran");
       // No-facturas detectadas por heuristica no necesitan IA para saber que no son factura.
       if (alreadyExcluded && doc.aiStatus !== "ok") {
         results.push({ driveFileId: doc.driveFileId, name: doc.name, ok: true, message: "No factura (heuristica)", confidence: null });

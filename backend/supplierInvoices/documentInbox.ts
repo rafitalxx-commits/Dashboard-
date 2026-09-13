@@ -65,6 +65,13 @@ export function normalizeSupplierName(s: string | null): string {
 
 const DOC_TYPE_PATTERNS: { type: DocumentType; label: string; re: RegExp }[] = [
   {
+    type: "factura",
+    label: "Factura",
+    // Prioridad 1: si el documento se autodenomina factura, es factura.
+    // (los certificados/albaranes de aduana rara vez dicen "factura").
+    re: /\bfactura\b|\binvoice\b|factura\s+electr[óo]nica|\brechnung\b|\bfacture\b/i,
+  },
+  {
     type: "aduana",
     label: "Certificado/documento de aduana",
     // Certificado de importacion H1 (Agencia Tributaria), MRN, levante...
@@ -81,11 +88,6 @@ const DOC_TYPE_PATTERNS: { type: DocumentType; label: string; re: RegExp }[] = [
     label: "Albarán / entrega",
     // Albaran, delivery note, packing list, remito
     re: /albar[áa]n|documento\s+de\s+entrega|delivery\s+note|packing\s+list|\bremito\b/i,
-  },
-  {
-    type: "factura",
-    label: "Factura",
-    re: /\bfactura\b|\binvoice\b|factura\s+electr[óo]nica|\brechnung\b|\bfacture\b/i,
   },
 ];
 
@@ -376,9 +378,10 @@ export function matchDocument(
   const ex = doc.extracted;
   if (!ex) return null;
 
-  // No-facturas (albaran, aduana, transporte, otro) NO entran en el cotejo:
+  // No-facturas SEGURAS (albaran, aduana, transporte) NO entran en el cotejo:
   // se marcan como excluidas para que no confundan al agente ni al matching.
-  if (ex.docType && ex.docType !== "factura") {
+  // "otro" (ambiguo) sigue el flujo normal: la IA decide y el cotejo da score bajo si no es factura.
+  if (ex.docType === "aduana" || ex.docType === "transporte" || ex.docType === "albaran") {
     return {
       purchaseOrderId: null,
       purchaseOrderName: null,
@@ -612,6 +615,58 @@ export class DocumentInboxService {
     this.store.meta.driveFolderId = client.getAccount() ? env.SUPPLIER_INVOICES_DRIVE_FOLDER_ID ?? null : null;
     this.save();
     return { scanned: files.length, added, matched, errors, skippedKnown, addedIds };
+  }
+
+  /** Reclasifica documentos usando el PDF cacheado completo.
+   * force=false: solo legados sin docType. force=true: re-evalua TODOS con la
+   * heuristica actual (para cuando cambian los patrones). Los no-factura quedan
+   * excluidos del cotejo; si un excluido deja de ser no-factura, se des-excluye
+   * (match a null; el rematch o el lote de IA lo recotejan). */
+  async reclassifyDocuments(force = false): Promise<number> {
+    let n = 0;
+    for (const doc of this.store.documents) {
+      const ex = doc.extracted;
+      if (!ex) continue;
+      if (!force && ex.docType) continue;
+      let text = ex.textPreview ?? "";
+      try {
+        const pdfPath = `${this.cacheDir}/${doc.driveFileId}.pdf`;
+        if (existsSync(pdfPath)) {
+          const parsed = await pdfParse(readFileSync(pdfPath));
+          text = parsed.text ?? text;
+        }
+      } catch {
+        // usa textPreview si no se puede releer el PDF
+      }
+      const { docType, label } = detectDocType(text, doc.name);
+      const wasExcluded = doc.match?.excluded === true;
+      ex.docType = docType;
+      const isNonInvoice = docType === "aduana" || docType === "transporte" || docType === "albaran";
+      if (isNonInvoice) {
+        if (!ex.warnings.some((w) => w.startsWith("No es factura"))) {
+          ex.warnings = [...ex.warnings, `No es factura: ${label}.`].slice(0, 8);
+        }
+        doc.match = {
+          purchaseOrderId: null,
+          purchaseOrderName: null,
+          score: 0,
+          band: "sin",
+          criteria: [{ key: "docType", label: "Tipo de documento", ok: false, detail: `No es factura (${docType})` }],
+          totalDiff: null,
+          invoiceIdOdoo: null,
+          invoiceNameOdoo: null,
+          excluded: true,
+          excludedReason: docType,
+        };
+      } else if (wasExcluded) {
+        // Ya no es no-factura: quitar la exclusion; el match se recalcula despues.
+        const m = doc.match;
+        doc.match = m && "score" in m ? { ...m, excluded: undefined, excludedReason: undefined } : null;
+      }
+      n++;
+    }
+    if (n) this.save();
+    return n;
   }
 
   setStatus(driveFileId: string, status: InboxDocument["status"], user: string, notes?: string): InboxDocument | null {
