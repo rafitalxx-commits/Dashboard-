@@ -487,6 +487,16 @@
   border-radius: 8px;
   background: #f2f6f8;
 }
+.si-pdf-open {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  justify-content: center;
+  text-decoration: none;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-weight: 600;
+}
 .si-form-pane {
   min-width: 0;
   overflow-y: auto;
@@ -688,6 +698,13 @@
   }
   .si-table {
     display: none;
+  }
+  .si-pdf-frame {
+    display: none;
+  }
+  .si-pdf-open {
+    display: flex;
+    margin-bottom: 10px;
   }
   .si-mobile {
     display: grid;

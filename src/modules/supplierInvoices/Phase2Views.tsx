@@ -557,6 +557,9 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, base
           <div className="si-pdf-pane">
             <h3><FileText size={14} /> PDF · streaming directo desde Drive</h3>
             <iframe className="si-pdf-frame" src={previewUrl} title={`Visor PDF: ${doc.name}`} />
+            <a className="si-primary si-pdf-open" href={previewUrl} target="_blank" rel="noopener noreferrer">
+              <FileText size={14} /> Abrir PDF
+            </a>
           </div>
 
           <div className="si-form-pane">
