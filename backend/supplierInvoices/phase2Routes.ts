@@ -9,6 +9,7 @@ import { SupplierInvoiceSyncService } from "./service.ts";
 import { DocumentInboxService, matchDocument, buildPoIndex } from "./documentInbox.ts";
 import { aiExtractCachedPdf, mergeExtracted } from "./aiExtract.ts";
 import { PurchaseOrdersLedger, computeBilling, filterOrders, computeUnbilledKpis } from "./unbilled.ts";
+import { DriveClient } from "./driveClient.ts";
 
 type MiddlewareServer = {
   middlewares: {
@@ -90,7 +91,30 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     createReadStream(path).pipe(response);
   });
 
+  // Visor PDF: streaming DIRECTO desde Drive (sin cachear en disco del VPS).
+  // Passthrough de solo lectura; nunca escribe ni renombra nada en Drive.
+  server.middlewares.use("/api/odoo/supplier-invoices/inbox/preview", async (request: any, response: any) => {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const id = new URL(request.url ?? "/", "http://local").searchParams.get("id") ?? "";
+    const doc = inboxService.getDocument(id);
+    if (!doc) return sendJson(response, 404, { message: "Documento no encontrado" });
+    const client = new DriveClient(deps.env);
+    const err = client.configError();
+    if (err) return sendJson(response, 500, { message: err });
+    if (response.writableEnded) return;
+    response.setHeader("Content-Disposition", `inline; filename="${basename(doc.name).replace(/[\r\n"]/g, "_")}"`);
+    try {
+      await client.streamPdf(id, response);
+    } catch (error) {
+      if (response.writableEnded) return;
+      sendJson(response, 502, { message: error instanceof Error ? error.message : "Error streameando PDF desde Drive" });
+    }
+  });
+
   // Escaneo Drive -> descarga -> extraccion -> cotejo -> store local. NUNCA escribe en Drive/Odoo.
+  // Watcher: los documentos recien detectados reciben el primer mapeo IA automaticamente
+  // (batch de hasta 3), dejandolos en PENDIENTE_VALIDAR para que Rafa solo confirme.
   server.middlewares.use("/api/odoo/supplier-invoices/inbox/scan", async (request: any, response: any) => {
     const user = requireUser(request, response);
     if (!user) return;
@@ -102,9 +126,14 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
         buildPoIndex(poLedger.getStore()),
         user.name,
       );
+      let autoExtract: Awaited<ReturnType<typeof runAiExtraction>> | null = null;
+      if (result.addedIds.length) {
+        autoExtract = await runAiExtraction(user, result.addedIds.map((d) => d.driveFileId));
+      }
       sendJson(response, 200, {
         status: "ok",
         ...result,
+        autoExtract,
         lastScanAt: inboxService.getStore().meta.lastScanAt,
       });
     } catch (error) {
@@ -148,21 +177,55 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     sendJson(response, 200, { status: "ok", match });
   });
 
-  // Extraccion IA de documentos (texto o escaneado). ids opcional; sin ids, batch de hasta 6 pendientes.
-  server.middlewares.use("/api/odoo/supplier-invoices/inbox/extract", async (request: any, response: any) => {
+  // Edicion local de lineas extraidas (editor de productos, 2.4). Solo persiste el
+  // registro documental del LAB; nunca toca Odoo ni Drive.
+  server.middlewares.use("/api/odoo/supplier-invoices/inbox/lines", async (request: any, response: any) => {
     const user = requireUser(request, response);
     if (!user) return;
     if ((request.method ?? "POST").toUpperCase() !== "POST") return sendJson(response, 405, { message: "Usa POST" });
-    let body: { ids?: string[] } = {};
+    let body: { id?: string; lines?: { description: string; reference: string | null; quantity: number | null; priceUnit: number | null; discount: number | null; taxNames: string[]; total: number | null }[] } = {};
     try { body = JSON.parse(await readBody(request) || "{}"); } catch { /* body vacio */ }
+    if (!body.id || !Array.isArray(body.lines)) return sendJson(response, 400, { message: "Faltan id o lines" });
+    const doc = inboxService.getDocument(body.id);
+    if (!doc) return sendJson(response, 404, { message: "Documento no encontrado" });
+    if (!doc.extracted) return sendJson(response, 400, { message: "El documento no tiene datos extraidos" });
+    const clean = body.lines.slice(0, 60).map((l) => ({
+      description: String(l.description ?? "").slice(0, 200) || "(concepto)",
+      reference: l.reference ? String(l.reference).slice(0, 60) : null,
+      quantity: typeof l.quantity === "number" && Number.isFinite(l.quantity) ? Math.round(l.quantity * 100) / 100 : null,
+      priceUnit: typeof l.priceUnit === "number" && Number.isFinite(l.priceUnit) ? Math.round(l.priceUnit * 100) / 100 : null,
+      discount: typeof l.discount === "number" && Number.isFinite(l.discount) ? Math.round(l.discount * 100) / 100 : null,
+      taxNames: Array.isArray(l.taxNames) ? l.taxNames.filter((t): t is string => typeof t === "string").slice(0, 4) : [],
+      total: typeof l.total === "number" && Number.isFinite(l.total) ? Math.round(l.total * 100) / 100 : null,
+      confidence: 95,
+    }));
+    doc.extracted.lines = clean;
+    const sum = clean.reduce((acc, l) => acc + (l.total ?? 0), 0);
+    if (sum > 0) doc.extracted.total = Math.round(sum * 100) / 100;
+    doc.notes = [...(doc.notes ? [doc.notes] : []), `Lineas editadas por ${user.name}`].join("; ").slice(0, 400);
+    inboxService.save();
+    sendJson(response, 200, { status: "ok", lines: doc.extracted.lines, total: doc.extracted.total });
+  });
+
+  // Extraccion IA de documentos (texto o escaneado). ids opcional; sin ids, batch de hasta 3 pendientes.
+  const runAiExtraction = async (
+    user: { name: string },
+    ids?: string[],
+  ): Promise<{ processed: number; results: { driveFileId: string; name: string; ok: boolean; message: string; confidence: number | null }[] }> => {
     const store = inboxService.getStore();
-    const docs = (body.ids?.length
-      ? body.ids.map((id) => inboxService.getDocument(id)).filter((d): d is NonNullable<typeof d> => Boolean(d))
+    const docs = (ids?.length
+      ? ids.map((id) => inboxService.getDocument(id)).filter((d): d is NonNullable<typeof d> => Boolean(d))
       : store.documents.filter((d) => d.aiStatus !== "ok")
     ).slice(0, 3);
     const pdfDir = `${deps.dataDir.replace(/\/$/, "")}/supplier-invoices/inbox`;
     const results: { driveFileId: string; name: string; ok: boolean; message: string; confidence: number | null }[] = [];
     for (const doc of docs) {
+      const alreadyExcluded = doc.match?.excluded === true;
+      // No-facturas detectadas por heuristica no necesitan IA para saber que no son factura.
+      if (alreadyExcluded && doc.aiStatus !== "ok") {
+        results.push({ driveFileId: doc.driveFileId, name: doc.name, ok: true, message: "No factura (heuristica)", confidence: null });
+        continue;
+      }
       try {
         const outcome = await aiExtractCachedPdf(deps.env, doc.driveFileId, doc.name, pdfDir);
         const merged = mergeExtracted(doc.extracted, outcome.fields, `Extraccion IA (${outcome.model}, ${outcome.mode})`);
@@ -181,7 +244,17 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
         results.push({ driveFileId: doc.driveFileId, name: doc.name, ok: false, message, confidence: null });
       }
     }
-    sendJson(response, 200, { status: "ok", processed: results.length, results });
+    return { processed: results.length, results };
+  };
+
+  server.middlewares.use("/api/odoo/supplier-invoices/inbox/extract", async (request: any, response: any) => {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if ((request.method ?? "POST").toUpperCase() !== "POST") return sendJson(response, 405, { message: "Usa POST" });
+    let body: { ids?: string[] } = {};
+    try { body = JSON.parse(await readBody(request) || "{}"); } catch { /* body vacio */ }
+    const { processed, results } = await runAiExtraction(user, body.ids);
+    sendJson(response, 200, { status: "ok", processed, results });
   });
 
   // ---------- Bandeja documental: lista (DESPUES de las sub-rutas) ----------

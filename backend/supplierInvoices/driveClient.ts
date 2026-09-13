@@ -115,6 +115,41 @@ export class DriveClient {
     return target;
   }
 
+  /** Streamea el PDF desde Drive directo al response HTTP (passthrough, sin cachear en disco). */
+  async streamPdf(fileId: string, response: any): Promise<void> {
+    if (!this.accessToken) await this.refreshAccessToken();
+    const doFetch = (token: string) =>
+      fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    let driveRes = await doFetch(this.accessToken!);
+    if (driveRes.status === 401 && this.accessToken) {
+      // Token expirado: renovar una vez y reintentar.
+      await this.refreshAccessToken();
+      driveRes = await doFetch(this.accessToken!);
+    }
+    if (!driveRes.ok) {
+      const text = (await driveRes.text()).slice(0, 200);
+      if (response.writableEnded) return;
+      response.statusCode = driveRes.status === 404 ? 404 : 502;
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({ message: driveRes.status === 404 ? "Archivo no encontrado en Drive" : `Error Drive ${driveRes.status}: ${text}` }));
+      return;
+    }
+    if (response.writableEnded) return;
+    response.statusCode = 200;
+    response.setHeader("Content-Type", driveRes.headers.get("content-type") ?? "application/pdf");
+    const len = driveRes.headers.get("content-length");
+    if (len) response.setHeader("Content-Length", len);
+    response.setHeader("Cache-Control", "no-store");
+    if (driveRes.body && typeof driveRes.body.pipe === "function") {
+      driveRes.body.pipe(response);
+    } else {
+      const buf = Buffer.from(await driveRes.arrayBuffer());
+      response.end(buf);
+    }
+  }
+
   getAccount(): string {
     return this.account;
   }

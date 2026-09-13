@@ -16,6 +16,7 @@ import type {
   PdfExtractedLine,
   InboxKpis,
   DocumentSource,
+  DocumentType,
 } from "./phase2Types.ts";
 
 // ---------- Helpers numericos / normalizacion ----------
@@ -58,6 +59,43 @@ export function parseDate(s: string): string | null {
 export function normalizeSupplierName(s: string | null): string {
   if (!s) return "";
   return s.toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Z0-9]+/g, " ").trim();
+}
+
+// ---------- Clasificacion de tipo de documento (factura vs no-factura) ----------
+
+const DOC_TYPE_PATTERNS: { type: DocumentType; label: string; re: RegExp }[] = [
+  {
+    type: "aduana",
+    label: "Certificado/documento de aduana",
+    // Certificado de importacion H1 (Agencia Tributaria), MRN, levante...
+    re: /certificado\s+de\s+importaci|documento\s+\w*aduana|despacho\s+de\s+aduana|(?:^|\s)mrn\s*[a-z]{2}\d{12}|levante\s+\d|d\.?a\.?u\.?|declaraci[oó]n\s+\w*aduana|agencia\s+tributaria[^\n]{0,40}importaci/i,
+  },
+  {
+    type: "transporte",
+    label: "Documento de transporte",
+    // Carta de porte (CMR), conocimiento de embarque, waybill
+    re: /carta\s+de\s+porte|\bc\.?m\.?r\b|conocimiento\s+de\s+embarque|\bwaybill\b|bill\s+of\s+lading|\btransportista\b/i,
+  },
+  {
+    type: "albaran",
+    label: "Albarán / entrega",
+    // Albaran, delivery note, packing list, remito
+    re: /albar[áa]n|documento\s+de\s+entrega|delivery\s+note|packing\s+list|\bremito\b/i,
+  },
+  {
+    type: "factura",
+    label: "Factura",
+    re: /\bfactura\b|\binvoice\b|factura\s+electr[óo]nica|\brechnung\b|\bfacture\b/i,
+  },
+];
+
+/** Clasifica el tipo de documento por patrones de texto. Prioridad: aduana > transporte > albaran > factura. */
+export function detectDocType(text: string, name = ""): { docType: DocumentType; label: string } {
+  const hay = `${name}\n${text}`;
+  for (const p of DOC_TYPE_PATTERNS) {
+    if (p.re.test(hay)) return { docType: p.type, label: p.label };
+  }
+  return { docType: "otro", label: "Otro documento" };
 }
 
 const VAT_RE = /\b[A-Z0-9]{1,2}\d{7,8}[A-Z0-9]?\b/;
@@ -165,6 +203,20 @@ function extractDates(text: string): { invoiceDate: string | null; dueDate: stri
   return { invoiceDate, dueDate };
 }
 
+function extractBillingAddress(lines: string[]): string | null {
+  // Direccion de facturacion del proveedor: linea con calle/avenida/poligono/parque
+  // cerca de la cabecera, que no sea el cliente (Todoelectrico).
+  const CLIENT_MARKERS = /todoelectrico|b54685144/i;
+  for (let i = 0; i < Math.min(lines.length, 25); i++) {
+    const line = lines[i].trim();
+    if (CLIENT_MARKERS.test(line)) continue;
+    if (/^(calle|c\/|c\.?\s|av|avenida|avda|plaza|pol[ií]gono|parque|carretera|ctra|paseo|ronda|camino|via|v[ií]a|urb\.?)\b/i.test(line) && line.length >= 6 && line.length <= 160) {
+      return line;
+    }
+  }
+  return null;
+}
+
 function moneyTokens(line: string): number[] {
   // Extrae importes tipo "351,57", "42350,00", "1.234,56" (formato ES) de una linea.
   const out: number[] = [];
@@ -244,17 +296,20 @@ function extractLines(text: string): PdfExtractedLine[] {
   return out.slice(0, 50);
 }
 
-export function extractPdfData(text: string, pages: number): PdfExtractedData {
+export function extractPdfData(text: string, pages: number, name = ""): PdfExtractedData {
   const needsOcr = text.trim().length < 40 && pages > 0;
   const warnings: string[] = [];
   const lines = text.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const { docType, label } = detectDocType(text, name);
   const { supplier, vat, country } = extractSupplier(lines);
   const invoiceNumber = extractInvoiceNumber(lines, text);
   const { invoiceDate, dueDate } = extractDates(text);
   const { base, taxes, total } = extractAmounts(lines);
   const currency = /EUR|€|EURO/i.test(text) ? "EUR" : null;
   const invoiceLines = extractLines(text);
+  const billingAddress = extractBillingAddress(lines);
   if (needsOcr) warnings.push("PDF escaneado sin capa de texto: OCR pendiente (fase posterior).");
+  if (docType !== "factura") warnings.push(`No es factura: ${label}.`);
   if (!total && !base) warnings.push("No se han detectado importes de forma fiable.");
   return {
     supplier,
@@ -272,6 +327,8 @@ export function extractPdfData(text: string, pages: number): PdfExtractedData {
     needsOcr,
     warnings,
     pdfPages: pages,
+    billingAddress,
+    docType,
   };
 }
 
@@ -318,6 +375,24 @@ export function matchDocument(
 ): DocumentMatch | null {
   const ex = doc.extracted;
   if (!ex) return null;
+
+  // No-facturas (albaran, aduana, transporte, otro) NO entran en el cotejo:
+  // se marcan como excluidas para que no confundan al agente ni al matching.
+  if (ex.docType && ex.docType !== "factura") {
+    return {
+      purchaseOrderId: null,
+      purchaseOrderName: null,
+      score: 0,
+      band: "sin",
+      criteria: [{ key: "docType", label: "Tipo de documento", ok: false, detail: `No es factura (${ex.docType})` }],
+      totalDiff: null,
+      invoiceIdOdoo: null,
+      invoiceNameOdoo: null,
+      excluded: true,
+      excludedReason: ex.docType,
+    };
+  }
+
   const criteria: DocumentMatchCriterion[] = [];
   let score = 0;
 
@@ -475,12 +550,13 @@ export class DocumentInboxService {
     invoices: SupplierInvoiceStore["invoices"],
     poIndex: PoIndex[],
     detectedBy: string,
-  ): Promise<{ scanned: number; added: number; matched: number; errors: string[]; skippedKnown: number }> {
+  ): Promise<{ scanned: number; added: number; matched: number; errors: string[]; skippedKnown: number; addedIds: { driveFileId: string; name: string }[] }> {
     const client = new DriveClient(env);
     const err = client.configError();
     if (err) throw new Error(err);
     const files = await client.listFiles();
     let added = 0, matched = 0, errors: string[] = [], skippedKnown = 0;
+    const addedIds: { driveFileId: string; name: string }[] = [];
     for (const file of files) {
       const existing = this.getDocument(file.id);
       if (existing && existing.pdfCached) {
@@ -491,7 +567,7 @@ export class DocumentInboxService {
         const localPath = await client.download(file.id, this.cacheDir);
         const buf = readFileSync(localPath);
         const parsed = await pdfParse(buf);
-        const extracted = extractPdfData(parsed.text ?? "", parsed.numpages ?? 0);
+        const extracted = extractPdfData(parsed.text ?? "", parsed.numpages ?? 0, file.name);
         const base: InboxDocument = {
           driveFileId: file.id,
           driveFolderId: file.parents?.[0] ?? null,
@@ -525,6 +601,7 @@ export class DocumentInboxService {
         }
         this.store.documents.push(base);
         added += 1;
+        addedIds.push({ driveFileId: file.id, name: file.name });
       } catch (error) {
         errors.push(`${file.name}: ${error instanceof Error ? error.message : "error"}`);
       }
@@ -534,7 +611,7 @@ export class DocumentInboxService {
     this.store.meta.totalDocuments = this.store.documents.length;
     this.store.meta.driveFolderId = client.getAccount() ? env.SUPPLIER_INVOICES_DRIVE_FOLDER_ID ?? null : null;
     this.save();
-    return { scanned: files.length, added, matched, errors, skippedKnown };
+    return { scanned: files.length, added, matched, errors, skippedKnown, addedIds };
   }
 
   setStatus(driveFileId: string, status: InboxDocument["status"], user: string, notes?: string): InboxDocument | null {

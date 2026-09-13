@@ -162,10 +162,12 @@ async function callOpenRouter(
   messages: unknown[],
   model: string,
 ): Promise<Record<string, unknown>> {
-  // Si el saldo disponible es menor que cfg.maxTokens, OpenRouter devuelve 402
-  // con "can only afford N": reintentamos 1 vez con un max_tokens que quepa.
+  // Hasta 3 intentos: el 402 con "can only afford N" se reajusta a un max_tokens
+  // que quepa en el saldo; si el modelo devuelve texto no-JSON (tier free inestable)
+  // se reintenta con backoff en vez de abortar la extraccion.
   let maxTokens = cfg.maxTokens;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const maxAttempts = 3;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
     try {
@@ -203,7 +205,17 @@ async function callOpenRouter(
       if (payload.error?.message) throw new Error(`OpenRouter: ${payload.error.message}`);
       const content = payload.choices?.[0]?.message?.content;
       const raw = typeof content === "string" ? content : JSON.stringify(content ?? "");
-      return parseJsonLoose(raw);
+      try {
+        return parseJsonLoose(raw);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const isJsonParse =
+          msg.includes("La IA no devolvio JSON") ||
+          msg.includes("JSON.parse") ||
+          msg.includes("Unexpected token");
+        if (!isJsonParse || attempt === maxAttempts - 1) throw err;
+        await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
+      }
     } finally {
       clearTimeout(timer);
     }
@@ -221,6 +233,7 @@ export function mergeExtracted(
     supplier: null, supplierVat: null, country: null, invoiceNumber: null, invoiceDate: null,
     dueDate: null, currency: null, base: null, taxes: null, total: null, lines: [],
     textPreview: "", needsOcr: false, warnings: [], pdfPages: 0,
+    billingAddress: null, docType: null,
   };
   const warnings = b.warnings.filter((w) => !w.includes("OCR pendiente") && !w.includes("fase posterior"));
   warnings.push(note);
@@ -241,6 +254,8 @@ export function mergeExtracted(
     needsOcr: false,
     warnings: warnings.slice(0, 8),
     pdfPages: b.pdfPages,
+    billingAddress: b.billingAddress ?? null,
+    docType: b.docType ?? null,
   };
 }
 

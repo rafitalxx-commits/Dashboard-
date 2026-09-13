@@ -22,6 +22,8 @@ export interface PdfExtractedLine {
   confidence: number; // 0-100 heuristico
 }
 
+export type DocumentType = "factura" | "albaran" | "aduana" | "transporte" | "otro";
+
 export interface PdfExtractedData {
   supplier: string | null;
   supplierVat: string | null;
@@ -38,6 +40,10 @@ export interface PdfExtractedData {
   needsOcr: boolean;
   warnings: string[];
   pdfPages: number;
+  /** Direccion de facturacion (cotejo sin pedido: servicios, comisiones, consumibles). */
+  billingAddress: string | null;
+  /** Tipo de documento detectado (factura vs no-factura). null = sin clasificar (legado). */
+  docType: DocumentType | null;
 }
 
 export interface DocumentMatchCriterion {
@@ -56,6 +62,9 @@ export interface DocumentMatch {
   totalDiff: number | null; // factura - pedido
   invoiceIdOdoo: number | null; // factura Odoo ya existente (duplicado posible)
   invoiceNameOdoo: string | null;
+  /** true cuando el documento NO es una factura (albaran, aduana, transporte...) y se excluye del cotejo. */
+  excluded?: boolean;
+  excludedReason?: string | null;
 }
 
 export interface InboxDocument {

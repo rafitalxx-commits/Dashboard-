@@ -13,12 +13,15 @@ import {
   FileText,
   Filter,
   Inbox,
+  Plus,
   RefreshCw,
   Search,
   ShoppingCart,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
+import type { CatalogProduct } from "../../services/odooTypes";
 
 type F = Record<string, string>;
 
@@ -49,6 +52,8 @@ type Extracted = {
   needsOcr: boolean;
   warnings: string[];
   pdfPages: number;
+  billingAddress: string | null;
+  docType: string | null;
 };
 
 type MatchCriterion = { key: string; label: string; ok: boolean; detail: string };
@@ -61,6 +66,8 @@ type Match = {
   totalDiff: number | null;
   invoiceIdOdoo: number | null;
   invoiceNameOdoo: string | null;
+  excluded?: boolean;
+  excludedReason?: string | null;
 };
 
 type Doc = {
@@ -183,6 +190,16 @@ const BAND_ES: Record<string, string> = {
   media: "Coincidencia media",
   baja: "Coincidencia baja",
   sin: "Sin coincidencia",
+};
+
+function normalizeSearch(value: unknown) { return String(value ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLocaleLowerCase("es"); }
+
+const DOC_TYPE_ES: Record<string, string> = {
+  factura: "Factura",
+  albaran: "Albarán",
+  aduana: "Aduana",
+  transporte: "Transporte",
+  otro: "Otro",
 };
 
 export function InboxView({ base }: { base: string }) {
@@ -389,7 +406,9 @@ export function InboxView({ base }: { base: string }) {
                   <td>{doc.extracted?.total != null ? money(doc.extracted.total, doc.extracted.currency ?? "EUR") : "—"}</td>
                   <td>{doc.match?.purchaseOrderName || "—"}</td>
                   <td>
-                    {doc.match ? (
+                    {doc.match?.excluded ? (
+                      <span className="si-badge si-doc-type-badge no-factura">No factura · {DOC_TYPE_ES[doc.extracted?.docType ?? ""] ?? doc.extracted?.docType}</span>
+                    ) : doc.match ? (
                       <span className={`si-match si-match-${doc.match.band}`}>{doc.match.score}% · {BAND_ES[doc.match.band]}</span>
                     ) : doc.extracted?.needsOcr ? (
                       <span className="si-match si-match-sin">OCR pendiente</span>
@@ -414,89 +433,255 @@ export function InboxView({ base }: { base: string }) {
           extracting={extracting}
           onStatus={setStatus}
           onAiExtract={(id) => void extract([id])}
+          base={base}
         />
       )}
     </section>
   );
 }
 
-function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract }: { doc: Doc; close: () => void; acting: string | null; extracting: string | null; onStatus: (id: string, s: string) => void; onAiExtract: (id: string) => void }) {
+type ProductLineEdit = {
+  description: string;
+  reference: string | null;
+  quantity: number | null;
+  priceUnit: number | null;
+  discount: number | null;
+  taxNames: string[];
+  total: number | null;
+};
+
+function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, base }: { doc: Doc; close: () => void; acting: string | null; extracting: string | null; onStatus: (id: string, s: string) => void; onAiExtract: (id: string) => void; base?: string }) {
   const ex = doc.extracted;
+  const api = (s: string) => (base ?? "") + s;
+  const [lines, setLines] = useState<ProductLineEdit[]>(() => (doc.extracted?.lines ?? []).map((l) => ({ ...l })));
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [term, setTerm] = useState("");
+  const [catalog, setCatalog] = useState<CatalogProduct[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState("");
+
+  const apiPath = api("/api/odoo/supplier-invoices/inbox");
+  const previewUrl = `${apiPath}/preview?id=${encodeURIComponent(doc.driveFileId)}`;
+
+  const loadCatalog = async () => {
+    setCatalogError("");
+    if (catalog.length) return;
+    setCatalogLoading(true);
+    try {
+      const r = await fetch(api("/api/odoo/products"));
+      if (!r.ok) throw new Error("No se pudo cargar el catálogo");
+      const x = await r.json();
+      setCatalog(Array.isArray(x.products) ? x.products : []);
+    } catch (e) {
+      setCatalogError(e instanceof Error ? e.message : "No se pudo cargar el catálogo de productos");
+    } finally {
+      setCatalogLoading(false);
+    }
+  };
+
+  const normalizedTerm = normalizeSearch(term);
+  const results = catalog
+    .map((item) => {
+      const reference = normalizeSearch(item.reference);
+      const barcode = normalizeSearch(item.barcode);
+      const name = normalizeSearch(item.name);
+      const score = !normalizedTerm ? 3
+        : reference === normalizedTerm || barcode === normalizedTerm ? 0
+        : reference.startsWith(normalizedTerm) || barcode.startsWith(normalizedTerm) ? 1
+        : name.startsWith(normalizedTerm) ? 2
+        : [reference, barcode, name].some((value) => value.includes(normalizedTerm)) ? 3 : 99;
+      return { item, score };
+    })
+    .filter(({ score }) => score < 99)
+    .sort((a, b) => a.score - b.score || a.item.reference.localeCompare(b.item.reference, "es"))
+    .slice(0, 10)
+    .map(({ item }) => item);
+
+  const addProduct = (product: CatalogProduct) => {
+    setLines((prev) => [...prev, {
+      description: product.name,
+      reference: product.reference || null,
+      quantity: null,
+      priceUnit: null,
+      discount: null,
+      taxNames: product.type === "service" ? [] : ["21%"],
+      total: null,
+    }]);
+    setPickerOpen(false);
+    setTerm("");
+  };
+
+  const updateLine = (i: number, patch: Partial<ProductLineEdit>) => {
+    setLines((prev) => prev.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+  };
+
+  const removeLine = (i: number) => {
+    setLines((prev) => prev.filter((_, idx) => idx !== i));
+  };
+
+  const saveLinesLocal = async () => {
+    setSaving(true);
+    setSaveMsg("");
+    try {
+      const r = await fetch(`${apiPath}/lines`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: doc.driveFileId, lines }),
+      });
+      const x = await r.json();
+      if (!r.ok) throw new Error(x.message || "No se pudo guardar");
+      setSaveMsg("Líneas guardadas en el registro local del LAB.");
+    } catch (e) {
+      setSaveMsg(e instanceof Error ? e.message : "Error guardando líneas");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const isExcluded = doc.match?.excluded === true;
   return (
     <div className="si-backdrop" onMouseDown={(e) => e.target === e.currentTarget && close()}>
-      <aside className="si-drawer">
+      <aside className={`si-drawer si-drawer-wide`}>
         <button className="si-close" onClick={close}><X /></button>
         <p className="eyebrow">Documento</p>
         <h2>{doc.name}</h2>
         <span className={`si-badge doc-${doc.status}`}>{STATUS_ES[doc.status] ?? doc.status}</span>
+        {ex?.docType && <span className={"si-doc-type-badge" + (isExcluded ? " no-factura" : "")}>
+          {DOC_TYPE_ES[ex.docType] ?? ex.docType}
+        </span>}
         {doc.ocrStatus === "needs_ocr" && <p className="si-warn"><AlertTriangle /> PDF escaneado sin capa de texto: OCR pendiente (fase posterior).</p>}
 
-        <section>
-          <h3>Datos extraídos</h3>
-          <dl>
-            <div><dt>Proveedor</dt><dd>{ex?.supplier || "—"}</dd></div>
-            <div><dt>NIF/VAT</dt><dd>{ex?.supplierVat || "—"}</dd></div>
-            <div><dt>Nº factura</dt><dd>{ex?.invoiceNumber || "—"}</dd></div>
-            <div><dt>Fecha</dt><dd>{dt(ex?.invoiceDate ?? null)}</dd></div>
-            <div><dt>Base</dt><dd>{ex?.base != null ? money(ex.base, ex?.currency ?? "EUR") : "—"}</dd></div>
-            <div><dt>Impuestos</dt><dd>{ex?.taxes != null ? money(ex.taxes, ex?.currency ?? "EUR") : "—"}</dd></div>
-            <div><dt>Total</dt><dd><b>{ex?.total != null ? money(ex.total, ex?.currency ?? "EUR") : "—"}</b></dd></div>
-            <div><dt>Confianza</dt><dd>{doc.confidence != null ? `${doc.confidence}%` : "—"}</dd></div>
-          </dl>
-          {ex?.warnings?.length ? <p className="si-warn"><AlertTriangle /> {ex.warnings.join(" · ")}</p> : null}
-        </section>
-
-        {doc.match && (
-          <section>
-            <h3>Cotejo con Odoo</h3>
-            <p className="si-match-line">
-              <b>{doc.match.purchaseOrderName || "Sin candidato"}</b>
-              <span className={`si-match si-match-${doc.match.band}`}>{doc.match.score}% · {BAND_ES[doc.match.band]}</span>
-              {doc.match.totalDiff != null && <small>Diferencia total: {doc.match.totalDiff >= 0 ? "+" : ""}{money(doc.match.totalDiff)}</small>}
-            </p>
-            <ul className="si-criteria">
-              {doc.match.criteria.map((c) => (
-                <li key={c.key} className={c.ok ? "ok" : "bad"}>
-                  {c.ok ? <CheckCircle2 size={14} /> : <X size={14} />} {c.label} — {c.detail}
-                </li>
-              ))}
-            </ul>
-            {doc.match.invoiceNameOdoo && <p className="si-warn"><AlertTriangle /> Posible duplicado: ya existe {doc.match.invoiceNameOdoo} en Odoo.</p>}
-          </section>
-        )}
-
-        {ex?.lines?.length ? (
-          <section>
-            <h3>Líneas detectadas ({ex.lines.length})</h3>
-            <ul className="si-doc-lines">
-              {ex.lines.map((l, i) => (
-                <li key={i}>
-                  <span>{l.description}</span>
-                  <small>{l.quantity ?? "—"} × {l.priceUnit != null ? money(l.priceUnit, ex.currency ?? "EUR") : "—"} = {l.total != null ? money(l.total, ex.currency ?? "EUR") : "—"}</small>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ) : null}
-
-        <section>
-          <h3>Acciones</h3>
-          <div className="si-doc-actions">
-            <button disabled={extracting !== null} onClick={() => onAiExtract(doc.driveFileId)} title="Extraer proveedor, nº factura, fechas e importes con IA">
-              {extracting === doc.driveFileId ? <RefreshCw className="spin" /> : <Sparkles />} Extraer con IA
-            </button>
-            <button disabled={acting !== null || doc.status === "PENDIENTE_COTEJO"} onClick={() => onStatus(doc.driveFileId, "PENDIENTE_COTEJO")}>
-              {acting === doc.driveFileId + "PENDIENTE_COTEJO" ? <RefreshCw className="spin" /> : <Clock />} Marcar en cotejo
-            </button>
-            <button disabled={acting !== null || doc.status === "VALIDADA"} onClick={() => onStatus(doc.driveFileId, "VALIDADA")}>
-              {acting === doc.driveFileId + "VALIDADA" ? <RefreshCw className="spin" /> : <CheckCircle2 />} Validar
-            </button>
-            <button disabled={acting !== null || doc.status === "INCIDENCIA"} onClick={() => onStatus(doc.driveFileId, "INCIDENCIA")}>
-              {acting === doc.driveFileId + "INCIDENCIA" ? <RefreshCw className="spin" /> : <AlertTriangle />} Incidencia
-            </button>
+        <div className="si-drawer-split">
+          <div className="si-pdf-pane">
+            <h3><FileText size={14} /> PDF · streaming directo desde Drive</h3>
+            <iframe className="si-pdf-frame" src={previewUrl} title={`Visor PDF: ${doc.name}`} />
           </div>
-          <p className="si-note">Solo lectura: validar aquí no crea la factura en Odoo; eso llegará en la Fase 3 con tu aprobación.</p>
-        </section>
+
+          <div className="si-form-pane">
+            {isExcluded && (
+              <p className="si-warn"><AlertTriangle /> No es una factura ({DOC_TYPE_ES[ex?.docType ?? ""] ?? ex?.docType ?? "documento"}): excluido del cotejo con Odoo. Rafa lo sacará de la carpeta SIN REVISAR.</p>
+            )}
+
+            <section>
+              <h3>Datos extraídos</h3>
+              <dl>
+                <div><dt>Proveedor</dt><dd>{ex?.supplier || "—"}</dd></div>
+                <div><dt>NIF/VAT</dt><dd>{ex?.supplierVat || "—"}</dd></div>
+                <div><dt>Nº factura</dt><dd>{ex?.invoiceNumber || "—"}</dd></div>
+                <div><dt>Fecha</dt><dd>{dt(ex?.invoiceDate ?? null)}</dd></div>
+                <div><dt>Dirección facturación</dt><dd>{ex?.billingAddress || "—"}</dd></div>
+                <div><dt>Base</dt><dd>{ex?.base != null ? money(ex.base, ex?.currency ?? "EUR") : "—"}</dd></div>
+                <div><dt>Impuestos</dt><dd>{ex?.taxes != null ? money(ex.taxes, ex?.currency ?? "EUR") : "—"}</dd></div>
+                <div><dt>Total</dt><dd><b>{ex?.total != null ? money(ex.total, ex?.currency ?? "EUR") : "—"}</b></dd></div>
+                <div><dt>Confianza</dt><dd>{doc.confidence != null ? `${doc.confidence}%` : "—"}</dd></div>
+              </dl>
+              {ex?.warnings?.length ? <p className="si-warn"><AlertTriangle /> {ex.warnings.join(" · ")}</p> : null}
+            </section>
+
+            {doc.match && !isExcluded && (
+              <section>
+                <h3>Cotejo con Odoo</h3>
+                <p className="si-match-line">
+                  <b>{doc.match.purchaseOrderName || "Sin candidato"}</b>
+                  <span className={`si-match si-match-${doc.match.band}`}>{doc.match.score}% · {BAND_ES[doc.match.band]}</span>
+                  {doc.match.totalDiff != null && <small>Diferencia total: {doc.match.totalDiff >= 0 ? "+" : ""}{money(doc.match.totalDiff)}</small>}
+                </p>
+                <ul className="si-criteria">
+                  {doc.match.criteria.map((c) => (
+                    <li key={c.key} className={c.ok ? "ok" : "bad"}>
+                      {c.ok ? <CheckCircle2 size={14} /> : <X size={14} />} {c.label} — {c.detail}
+                    </li>
+                  ))}
+                </ul>
+                {doc.match.invoiceNameOdoo && <p className="si-warn"><AlertTriangle /> Posible duplicado: ya existe {doc.match.invoiceNameOdoo} en Odoo.</p>}
+              </section>
+            )}
+
+            <section>
+              <h3>Líneas del documento {lines.length ? `(${lines.length})` : ""}</h3>
+              {lines.length ? (
+                <ul className="si-doc-lines">
+                  {lines.map((l, i) => (
+                    <li key={i}>
+                      <span>{l.description} {l.reference ? <small>· {l.reference}</small> : null}</span>
+                      <small>{l.quantity ?? "—"} × {l.priceUnit != null ? money(l.priceUnit, ex?.currency ?? "EUR") : "—"} = {l.total != null ? money(l.total, ex?.currency ?? "EUR") : "—"}</small>
+                    </li>
+                  ))}
+                </ul>
+              ) : <p className="si-note">Sin líneas detectadas. Usa el editor para añadir productos (consumibles, servicios…).</p>}
+
+              <div className="si-product-editor">
+                <button className="si-editor-add" onClick={() => { setPickerOpen((v) => !v); if (!catalog.length) void loadCatalog(); }} type="button">
+                  {catalogLoading ? <RefreshCw className="spin" size={14} /> : <Plus size={14} />} Editar productos
+                </button>
+                {pickerOpen && (
+                  <div className="si-product-picker">
+                    <label>Buscar en el catálogo de Odoo (no almacenables incluidos)
+                      <input autoFocus aria-autocomplete="list" aria-controls="si-product-suggestions"
+                        onChange={(e) => setTerm(e.target.value)}
+                        onKeyDown={(event) => { if (event.key === "Enter" && results[0]) { event.preventDefault(); addProduct(results[0]); } }}
+                        placeholder="Escribe nombre, referencia o EAN" value={term} />
+                    </label>
+                    {catalogLoading && <span role="status">Buscando productos…</span>}
+                    {catalogError && <span className="error" role="alert">{catalogError}</span>}
+                    {!catalogLoading && !catalogError && normalizedTerm && results.length === 0 && <span>No hay productos que coincidan con «{term.trim()}».</span>}
+                    <ul id="si-product-suggestions" className="si-product-suggestions" role="listbox">
+                      {results.map((product, index) => (
+                        <li key={product.id} role="option">
+                          <button type="button" onClick={() => addProduct(product)}>
+                            <strong>{product.reference || "Sin referencia"} · {product.name}</strong>
+                            <small>{product.type === "service" ? "Servicio" : product.type === "consu" ? "Consumible" : "Producto"} · EAN {product.barcode || "sin EAN"}{index === 0 && normalizedTerm ? " · INTRO para seleccionar" : ""}</small>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {lines.length > 0 && (
+                  <div className="si-editor-lines">
+                    {lines.map((l, i) => (
+                      <div className="si-editor-line" key={i}>
+                        <input aria-label="Descripción" value={l.description} onChange={(e) => updateLine(i, { description: e.target.value })} />
+                        <input aria-label="Cantidad" type="number" min="0" step="any" placeholder="Cant." value={l.quantity ?? ""} onChange={(e) => updateLine(i, { quantity: e.target.value === "" ? null : Number(e.target.value) })} />
+                        <input aria-label="Precio unitario" type="number" min="0" step="0.01" placeholder="Precio" value={l.priceUnit ?? ""} onChange={(e) => updateLine(i, { priceUnit: e.target.value === "" ? null : Number(e.target.value) })} />
+                        <input aria-label="Total" type="number" min="0" step="0.01" placeholder="Total" value={l.total ?? ""} onChange={(e) => updateLine(i, { total: e.target.value === "" ? null : Number(e.target.value) })} />
+                        <button className="si-remove-line" aria-label="Quitar línea" onClick={() => removeLine(i)} type="button"><Trash2 size={14} /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {lines.length > 0 && (
+                  <button className="si-editor-add" disabled={saving} onClick={() => void saveLinesLocal()} type="button">
+                    {saving ? <RefreshCw className="spin" size={14} /> : <CheckCircle2 size={14} />} Guardar líneas
+                  </button>
+                )}
+                {saveMsg && <p className={saveMsg.startsWith("Líneas") ? "si-msg" : "error"} role="status">{saveMsg}</p>}
+                <p className="si-note">Solo se guarda en el registro local del LAB; nada se escribe en Odoo ni Drive.</p>
+              </div>
+            </section>
+
+            <section>
+              <h3>Acciones</h3>
+              <div className="si-doc-actions">
+                <button disabled={extracting !== null || isExcluded} onClick={() => onAiExtract(doc.driveFileId)} title="Extraer proveedor, nº factura, fechas e importes con IA">
+                  {extracting === doc.driveFileId ? <RefreshCw className="spin" /> : <Sparkles />} Extraer con IA
+                </button>
+                <button disabled={acting !== null || doc.status === "PENDIENTE_COTEJO" || isExcluded} onClick={() => onStatus(doc.driveFileId, "PENDIENTE_COTEJO")}>
+                  {acting === doc.driveFileId + "PENDIENTE_COTEJO" ? <RefreshCw className="spin" /> : <Clock />} Marcar en cotejo
+                </button>
+                <button disabled={acting !== null || doc.status === "VALIDADA" || isExcluded} onClick={() => onStatus(doc.driveFileId, "VALIDADA")}>
+                  {acting === doc.driveFileId + "VALIDADA" ? <RefreshCw className="spin" /> : <CheckCircle2 />} Validar
+                </button>
+                <button disabled={acting !== null || doc.status === "INCIDENCIA" || isExcluded} onClick={() => onStatus(doc.driveFileId, "INCIDENCIA")}>
+                  {acting === doc.driveFileId + "INCIDENCIA" ? <RefreshCw className="spin" /> : <AlertTriangle />} Incidencia
+                </button>
+              </div>
+              <p className="si-note">Solo lectura: validar aquí no crea la factura en Odoo; eso llegará en la Fase 3 con tu aprobación.</p>
+            </section>
+          </div>
+        </div>
       </aside>
     </div>
   );
