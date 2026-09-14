@@ -24,12 +24,23 @@ assert.match(purchaseView, /stockTotal: product\.stockTotal/);
 assert.match(purchaseView, /Añade líneas antes de confirmar o enviar el email/);
 assert.match(purchaseView, /actionPreview\.lineCount === 0/);
 assert.match(purchaseView, /guárdalo en Odoo antes de confirmar o enviar el email/);
+// El presupuesto vacío creado en Odoo llega con fecha esperada vacía:
+// el guardado de líneas debe rellenar la fecha en vez de fallar la validación.
+assert.match(
+  purchaseView,
+  /expectedDate: \(\s*line\.expectedDate \|\|\s*confirming\.expectedDate \|\|\s*new Date\(\)\.toISOString\(\)\s*\)\.slice\(\s*0,\s*10,?\s*\)/,
+);
+assert.match(
+  purchaseView,
+  /reception\.expectedDate \|\|\s*new Date\(\)\.toISOString\(\)\.slice\(0, 10\),/,
+);
 const viteConfig = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
 const odooClient = readFileSync(new URL("../src/services/odooClient.ts", import.meta.url), "utf8");
 const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const appStyles = readFileSync(new URL("../src/styles/app.css", import.meta.url), "utf8");
 assert.match(viteConfig, /"qty_available"/);
 assert.doesNotMatch(viteConfig, /sourceLines\.length === 0\) return \[\];/);
+assert.match(viteConfig, /cleanText\(order\.date_order\)\.slice\(0, 10\)/);
 assert.match(viteConfig, /stockTotal: Number\(product\.qty_available \?\? 0\)/);
 assert.equal(
   viteConfig.match(/formatCatalogProductName\(product\)/g)?.length,
@@ -66,6 +77,7 @@ assert.match(app, /if \(option === "Amazon FBM"\) \{\n    return fulfillment ===
 console.log("Compras pendientes: selección de tarifa de proveedor verificada");
 console.log("Compras pendientes: descarte local y cancelación real protegidos contra regresiones");
 console.log("Compras pendientes: stock total Odoo presente en búsquedas y líneas");
+console.log("Compras pendientes: fecha prevista con respaldo para presupuestos vacíos");
 console.log("Compras pendientes: valores de variante visibles sin el nombre del atributo");
 console.log("Compras pendientes: enlaces explícitos de origen venta→compra visibles en alertas");
 console.log("Compras pendientes: alertas usan la API aislada del LAB");

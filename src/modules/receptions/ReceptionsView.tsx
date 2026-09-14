@@ -94,10 +94,11 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
           quantity: line.orderedQty,
           priceUnit: line.priceUnit,
           discount: line.discount,
-          expectedDate: (line.expectedDate || confirming.expectedDate).slice(
-            0,
-            10,
-          ),
+          expectedDate: (
+            line.expectedDate ||
+            confirming.expectedDate ||
+            new Date().toISOString()
+          ).slice(0, 10),
           description: line.description || line.name,
         })),
         [...originalIds].filter((id) => !currentIds.has(id)),
@@ -269,19 +270,19 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
     );
   };
 
-  const simulateConfirmation = async (sendEmail: boolean) => {
+  const confirmPurchase = async (sendEmail: boolean) => {
     if (!actionPreview || actionLoading) return;
     setActionLoading("modal");
     try {
       await odooClient.confirmPendingPurchase(
         actionPreview.orderId,
         sendEmail,
-        true,
+        false,
       );
       setMessage(
         sendEmail
-          ? "Simulación completada: plantilla nativa, PDF del pedido y destinatario validados; no se envió ningún correo."
-          : "Simulación completada: Odoo confirmaría el pedido y generaría el albarán nativo.",
+          ? "Pedido confirmado y email nativo de Odoo enviado al proveedor."
+          : "Pedido confirmado en Odoo y albarán nativo generado.",
       );
       setActionPreview(null);
       setActionKind(null);
@@ -289,7 +290,7 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
       setMessage(
         failure instanceof Error
           ? failure.message
-          : "No se pudo simular la confirmación",
+          : "No se pudo confirmar el pedido en Odoo",
       );
     } finally {
       setActionLoading(null);
@@ -883,7 +884,9 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
                                     productQuantity * product.suggestedNetPrice,
                                   uom: product.uom,
                                   stockTotal: product.stockTotal,
-                                  expectedDate: reception.expectedDate,
+                                  expectedDate:
+                                    reception.expectedDate ||
+                                    new Date().toISOString().slice(0, 10),
                                   costMethod: product.costMethod,
                                 };
                                 setDrafts((current) => ({
@@ -1256,7 +1259,7 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
               <button
                 className="primary"
                 disabled={Boolean(actionLoading) || actionPreview.lineCount === 0}
-                onClick={() => void simulateConfirmation(false)}
+                onClick={() => void confirmPurchase(false)}
                 type="button"
               >
                 {actionLoading ? "Comprobando…" : "Aceptar"}
@@ -1268,7 +1271,7 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
                   !actionPreview.supplierEmail ||
                   actionPreview.lineCount === 0
                 }
-                onClick={() => void simulateConfirmation(true)}
+                onClick={() => void confirmPurchase(true)}
                 type="button"
               >
                 {actionLoading ? "Comprobando…" : "Aceptar y enviar email"}

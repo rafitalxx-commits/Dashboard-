@@ -6857,7 +6857,9 @@ async function getOdooPurchaseReceptions(env: Record<string, string>) {
       .filter(Boolean)
       .sort();
     const expectedDate =
-      expectedDates[0] || cleanText(order.date_planned).slice(0, 10);
+      expectedDates[0] ||
+      cleanText(order.date_planned).slice(0, 10) ||
+      cleanText(order.date_order).slice(0, 10);
     const receivedQty = lines.reduce((total, line) => total + line.receivedQty, 0);
     const pendingQty = lines.reduce((total, line) => total + line.pendingQty, 0);
     return [
