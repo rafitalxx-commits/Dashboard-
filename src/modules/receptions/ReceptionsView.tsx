@@ -511,6 +511,11 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
                         )}
                       </strong>
                     </span>
+                    {reception.lines.length === 0 && !isEditing && (
+                      <span className="purchase-empty-lines" role="status">
+                        Añade líneas antes de confirmar o enviar el email.
+                      </span>
+                    )}
                     {!isEditing ? (
                       <div className="purchase-order-actions">
                         <button
@@ -1218,7 +1223,13 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
                   {actionPreview.supplierEmail || "Sin email configurado"}
                 </dd>
               </div>
-            </dl>
+              </dl>
+            {actionPreview.lineCount === 0 && (
+              <div className="purchase-modal-error" role="alert">
+                Este presupuesto no tiene líneas. Ciérralo, usa «Editar presupuesto»
+                y guárdalo en Odoo antes de confirmar o enviar el email.
+              </div>
+            )}
             {!actionPreview.supplierEmail && (
               <div className="purchase-modal-error" role="alert">
                 El proveedor no tiene email en su ficha de contacto. Puedes
@@ -1244,7 +1255,7 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
               </button>
               <button
                 className="primary"
-                disabled={Boolean(actionLoading)}
+                disabled={Boolean(actionLoading) || actionPreview.lineCount === 0}
                 onClick={() => void simulateConfirmation(false)}
                 type="button"
               >
@@ -1253,7 +1264,9 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
               <button
                 className="primary"
                 disabled={
-                  Boolean(actionLoading) || !actionPreview.supplierEmail
+                  Boolean(actionLoading) ||
+                  !actionPreview.supplierEmail ||
+                  actionPreview.lineCount === 0
                 }
                 onClick={() => void simulateConfirmation(true)}
                 type="button"

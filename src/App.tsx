@@ -1687,7 +1687,9 @@ function App() {
             <div className={`connection-pill ${activeView === "receptions" || activeView === "pendingPurchases" ? "live" : dataMode}`}>
               <span />
               {activeView === "receptions" || activeView === "pendingPurchases"
-                ? "Odoo real · solo lectura"
+                ? authUser.permissions.includes("odooWrite")
+                  ? "Odoo real · acciones habilitadas"
+                  : "Odoo real · solo lectura"
                 : connectionMessage}
             </div>
             <div className="session-pill">
@@ -4276,7 +4278,10 @@ function DashboardView({
       !isDelivered(status) &&
       (status.includes("sin etiqueta") ||
         status.includes("cread") ||
-        status.includes("pago aceptado"))
+        status.includes("pago aceptado") ||
+        // An Odoo sale can be waiting for stock before a carrier label exists.
+        // It is still part of the Dashboard's created-but-not-sent workflow.
+        status.includes("pendiente stock"))
     );
   }).length;
   const topProducts =

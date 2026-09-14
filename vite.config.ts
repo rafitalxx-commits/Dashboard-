@@ -6822,7 +6822,6 @@ async function getOdooPurchaseReceptions(env: Record<string, string>) {
 
   const receptions = purchaseOrders.flatMap((order) => {
     const sourceLines = linesByOrderId.get(order.id) ?? [];
-    if (sourceLines.length === 0) return [];
     const lines = sourceLines.map((line) => {
       const productId = getRelationId(line.product_id);
       const product = productId ? productsById.get(productId) : undefined;
