@@ -65,11 +65,16 @@ assert.equal(
 assert.match(viteConfig, /"origin", "partner_id", "state"/);
 assert.match(viteConfig, /originRefsByPurchaseId/);
 assert.match(viteConfig, /\[\[\["name", "in", originRefs\]\]\]/);
+assert.match(viteConfig, /\["draft", "sent", "purchase", "done"\]/);
+assert.doesNotMatch(viteConfig, /delivery_is_printed !== true/);
 assert.match(odooClient, /fetch\(receptionsApiPath\("\/api\/odoo\/sales-purchase-alerts"\)\)/);
 assert.match(app, /className="icon-button purchase-alert-icon"/);
+assert.match(app, /purchase-alert-icon is-confirmed/);
+assert.match(app, /pendingSalesPurchaseAlerts/);
 assert.match(app, /className="sales-purchase-drawer"/);
 assert.match(appStyles, /\.sales-purchase-drawer\s*\{\s*position:\s*absolute/);
 assert.match(appStyles, /\.purchase-alert-icon\s*\{/);
+assert.match(appStyles, /\.purchase-alert-icon\.is-confirmed\s*\{/);
 assert.match(appStyles, /\.order-kpis \.kpi span \{ color: #334155; font-weight: 800; \}/);
 assert.match(appStyles, /\.kpi-rose \{ background: #ffe8ed;/);
 assert.match(app, /\{ label: "4 dias", value: "4d" \}/);

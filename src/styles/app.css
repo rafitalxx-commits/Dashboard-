@@ -1957,6 +1957,16 @@ td {
   outline-offset: 2px;
 }
 
+.purchase-alert-icon.is-confirmed {
+  display: inline-grid;
+  place-items: center;
+  border-color: #15803d;
+  background: linear-gradient(135deg, #22c55e, #15803d);
+  color: #fff;
+  box-shadow: 0 4px 10px rgba(21, 128, 61, .25);
+  cursor: default;
+}
+
 .purchase-alert-icon b {
   position: absolute;
   top: -7px;

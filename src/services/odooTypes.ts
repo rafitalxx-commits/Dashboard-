@@ -207,7 +207,7 @@ export type SalesPurchaseAlert = {
   purchaseId: string;
   purchaseRef: string;
   supplier: string;
-  state: "draft" | "sent";
+  state: "draft" | "sent" | "purchase" | "done";
   saleOrderIds: string[];
   saleOrderRefs: string[];
   lineCount: number;

@@ -993,6 +993,10 @@ function App() {
     }));
     return result;
   }, [salesPurchaseAlerts]);
+  const pendingSalesPurchaseAlerts = useMemo(
+    () => salesPurchaseAlerts.filter((alert) => ["draft", "sent"].includes(alert.state)),
+    [salesPurchaseAlerts],
+  );
 
   const updateFilter = (setter: (value: string) => void, value: string) => {
     setter(value);
@@ -2007,7 +2011,7 @@ function App() {
                 detail="visibles pendientes"
                 tone="amber"
               />
-              <Kpi title="Compras por realizar" value={salesPurchaseAlertsLoading ? "..." : salesPurchaseAlerts.length.toString()} detail="presupuestos vinculados a ventas" onClick={() => setSelectedPurchaseAlertId("list")} tone="rose" />
+              <Kpi title="Compras por realizar" value={salesPurchaseAlertsLoading ? "..." : pendingSalesPurchaseAlerts.length.toString()} detail="presupuestos vinculados a ventas" onClick={() => setSelectedPurchaseAlertId("list")} tone="rose" />
             </section>
 
             <section className="panel orders-panel">
@@ -2319,7 +2323,7 @@ function App() {
                             <td>
                               <strong>{money(order.total)}</strong>
                             </td>
-                            <td>{linkedPurchases.length > 0 && <button aria-label={`Abrir compra pendiente de ${order.id}`} className="icon-button purchase-alert-icon" onClick={() => setSelectedPurchaseAlertId(linkedPurchases[0].purchaseId)} title={linkedPurchases.map((item) => item.purchaseRef).join(", ")} type="button"><ShoppingCart size={16} />{linkedPurchases.length > 1 && <b>{linkedPurchases.length}</b>}</button>}</td>
+                            <td>{linkedPurchases.length > 0 && (() => { const hasPendingPurchase = linkedPurchases.some((item) => ["draft", "sent"].includes(item.state)); const purchaseRefs = linkedPurchases.map((item) => item.purchaseRef).join(", "); return hasPendingPurchase ? <button aria-label={`Abrir compra pendiente de ${order.id}`} className="icon-button purchase-alert-icon" onClick={() => setSelectedPurchaseAlertId(linkedPurchases.find((item) => ["draft", "sent"].includes(item.state))?.purchaseId ?? "list")} title={`Compra pendiente: ${purchaseRefs}`} type="button"><ShoppingCart size={16} />{linkedPurchases.length > 1 && <b>{linkedPurchases.length}</b>}</button> : <span aria-label={`Compra confirmada con proveedor para ${order.id}`} className="purchase-alert-icon is-confirmed" title={`Compra confirmada: ${purchaseRefs}`}><ShoppingCart size={16} />{linkedPurchases.length > 1 && <b>{linkedPurchases.length}</b>}</span>; })()}</td>
                             <td>
                               <button
                                 aria-expanded={isSelected}
@@ -2425,7 +2429,7 @@ function App() {
                 </div>
               </footer>
             </section>
-            {selectedPurchaseAlertId && <SalesPurchaseDrawer alerts={salesPurchaseAlerts} onClose={() => setSelectedPurchaseAlertId(null)} onOpenPurchase={(purchaseId) => setSelectedPurchaseAlertId(purchaseId)} purchaseId={selectedPurchaseAlertId === "list" ? null : selectedPurchaseAlertId} />}
+            {selectedPurchaseAlertId && <SalesPurchaseDrawer alerts={pendingSalesPurchaseAlerts} onClose={() => setSelectedPurchaseAlertId(null)} onOpenPurchase={(purchaseId) => setSelectedPurchaseAlertId(purchaseId)} purchaseId={selectedPurchaseAlertId === "list" ? null : selectedPurchaseAlertId} />}
           </>
         ) : (
           <RestrictedModuleView
@@ -5187,7 +5191,7 @@ function Kpi({
 
 function SalesPurchaseDrawer({ alerts, onClose, onOpenPurchase, purchaseId }: { alerts: SalesPurchaseAlert[]; onClose: () => void; onOpenPurchase: (purchaseId: string) => void; purchaseId: string | null }) {
   useEffect(() => { const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); }; window.addEventListener("keydown", onKeyDown); return () => window.removeEventListener("keydown", onKeyDown); }, [onClose]);
-  return <div className="sales-purchase-drawer-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><aside aria-label="Compras pendientes de realizar" className="sales-purchase-drawer">{purchaseId ? <PendingPurchasesView onClose={onClose} orderId={purchaseId} /> : <><header className="sales-purchase-drawer-header"><div><small>Ventas · compras vinculadas</small><h2>Compras por realizar</h2><p>Solo presupuestos enlazados por Odoo a ventas aún sin imprimir.</p></div><button aria-label="Cerrar" onClick={onClose} type="button">×</button></header><div className="sales-purchase-alert-list">{alerts.length === 0 ? <p>No hay compras pendientes vinculadas.</p> : alerts.map((alert) => <button key={alert.purchaseId} onClick={() => onOpenPurchase(alert.purchaseId)} type="button"><span><strong>{alert.purchaseRef}</strong><small>{alert.supplier} · {alert.state === "sent" ? "Enviado" : "Borrador"}</small></span><span>{alert.saleOrderRefs.join(" · ")}</span></button>)}</div></>}</aside></div>;
+  return <div className="sales-purchase-drawer-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><aside aria-label="Compras pendientes de realizar" className="sales-purchase-drawer">{purchaseId ? <PendingPurchasesView onClose={onClose} orderId={purchaseId} /> : <><header className="sales-purchase-drawer-header"><div><small>Ventas · compras vinculadas</small><h2>Compras por realizar</h2><p>Carrito rojo: compra pendiente. Carrito verde: compra confirmada con proveedor.</p></div><button aria-label="Cerrar" onClick={onClose} type="button">×</button></header><div className="sales-purchase-alert-list">{alerts.length === 0 ? <p>No hay compras pendientes vinculadas.</p> : alerts.map((alert) => <button key={alert.purchaseId} onClick={() => onOpenPurchase(alert.purchaseId)} type="button"><span><strong>{alert.purchaseRef}</strong><small>{alert.supplier} · {alert.state === "sent" ? "Enviado" : "Borrador"}</small></span><span>{alert.saleOrderRefs.join(" · ")}</span></button>)}</div></>}</aside></div>;
 }
 
 function Status({ value }: { value: string }) {

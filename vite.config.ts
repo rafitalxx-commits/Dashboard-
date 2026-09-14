@@ -6574,7 +6574,7 @@ async function getOdooSalesPurchaseAlerts(env: Record<string, string>) {
     uid,
     "purchase.order",
     "search_read",
-    [[["state", "in", ["draft", "sent"]]]],
+    [[["state", "in", ["draft", "sent", "purchase", "done"]]]],
     {
       fields: ["id", "name", "origin", "partner_id", "state", "amount_total", "currency_id", "order_line"],
       order: "date_order asc, id asc",
@@ -6694,8 +6694,10 @@ async function getOdooSalesPurchaseAlerts(env: Record<string, string>) {
         fields: ["id", "name", "state", "delivery_is_printed"],
       })) as Array<{ id: number; name?: string; state?: string; delivery_is_printed?: boolean }>)
     : [];
+  // Printing a delivery is independent from supplier purchase status. Keep
+  // explicit sale↔purchase links visible after the delivery is printed.
   const eligibleSales = new Map(
-    sales.filter((sale) => ["sale", "done"].includes(sale.state ?? "") && sale.delivery_is_printed !== true).map((sale) => [sale.id, sale]),
+    sales.filter((sale) => ["sale", "done"].includes(sale.state ?? "")).map((sale) => [sale.id, sale]),
   );
   const lineCountByPurchaseId = new Map<number, number>();
   lines.forEach((line) => {
@@ -6709,7 +6711,13 @@ async function getOdooSalesPurchaseAlerts(env: Record<string, string>) {
       purchaseId: String(purchase.id),
       purchaseRef: purchase.name || `PO #${purchase.id}`,
       supplier: getRelationName(purchase.partner_id) || "Proveedor sin nombre",
-      state: purchase.state === "sent" ? "sent" as const : "draft" as const,
+      state: purchase.state === "sent"
+        ? "sent" as const
+        : purchase.state === "purchase"
+          ? "purchase" as const
+          : purchase.state === "done"
+            ? "done" as const
+            : "draft" as const,
       saleOrderIds: matchingSales.map((sale) => `#${sale.id}`),
       saleOrderRefs: matchingSales.map((sale) => sale.name || `SO #${sale.id}`),
       lineCount: lineCountByPurchaseId.get(purchase.id) ?? 0,
