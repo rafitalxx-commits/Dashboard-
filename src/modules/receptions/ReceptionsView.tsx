@@ -56,6 +56,10 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
   const [actionKind, setActionKind] = useState<"confirm" | "cancel" | null>(
     null,
   );
+  const [confirmedWithoutEmail, setConfirmedWithoutEmail] = useState<{
+    orderId: string;
+    ref: string;
+  } | null>(null);
   const [creating, setCreating] = useState(false);
   const [vendorQuery, setVendorQuery] = useState("");
   const [vendorResults, setVendorResults] = useState<PurchaseVendorOption[]>(
@@ -274,10 +278,18 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
     if (!actionPreview || actionLoading) return;
     setActionLoading("modal");
     try {
-      await odooClient.confirmPendingPurchase(
+      const result = await odooClient.confirmPendingPurchase(
         actionPreview.orderId,
         sendEmail,
         false,
+      );
+      if (sendEmail && result.emailSent !== true) {
+        throw new Error("Odoo no confirmó el envío del email");
+      }
+      setConfirmedWithoutEmail(
+        sendEmail
+          ? null
+          : { orderId: actionPreview.orderId, ref: result.ref || actionPreview.ref },
       );
       setMessage(
         sendEmail
@@ -291,6 +303,26 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
         failure instanceof Error
           ? failure.message
           : "No se pudo confirmar el pedido en Odoo",
+      );
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const sendConfirmedPurchaseEmail = async () => {
+    if (!confirmedWithoutEmail || actionLoading) return;
+    setActionLoading("send-confirmed-email");
+    try {
+      const result = await odooClient.sendConfirmedPurchaseEmail(
+        confirmedWithoutEmail.orderId,
+      );
+      setMessage(`${result.ref || confirmedWithoutEmail.ref}: email nativo de Odoo enviado al proveedor.`);
+      setConfirmedWithoutEmail(null);
+    } catch (failure) {
+      setMessage(
+        failure instanceof Error
+          ? failure.message
+          : "No se pudo enviar el email del pedido confirmado",
       );
     } finally {
       setActionLoading(null);
@@ -433,6 +465,26 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
         <div className="receptions-message" role="status">
           <Save size={19} />
           {message}
+        </div>
+      )}
+      {confirmedWithoutEmail && (
+        <div className="receptions-message" role="status">
+          <AlertTriangle size={19} />
+          <span>
+            <strong>{confirmedWithoutEmail.ref}</strong> está confirmado, pero aún no se ha enviado el email.
+          </span>
+          <button
+            className="primary"
+            disabled={Boolean(actionLoading)}
+            onClick={() => void sendConfirmedPurchaseEmail()}
+            type="button"
+          >
+            {actionLoading === "send-confirmed-email" ? (
+              <><RefreshCw className="spin" size={15} /> Enviando a Odoo…</>
+            ) : (
+              "Enviar email ahora"
+            )}
+          </button>
         </div>
       )}
 
@@ -1262,7 +1314,7 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
                 onClick={() => void confirmPurchase(false)}
                 type="button"
               >
-                {actionLoading ? "Comprobando…" : "Aceptar"}
+                {actionLoading ? "Confirmando en Odoo…" : "Confirmar sin email"}
               </button>
               <button
                 className="primary"
@@ -1274,7 +1326,7 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
                 onClick={() => void confirmPurchase(true)}
                 type="button"
               >
-                {actionLoading ? "Comprobando…" : "Aceptar y enviar email"}
+                {actionLoading ? "Enviando a Odoo…" : "Confirmar y enviar email"}
               </button>
             </div>
           </div>

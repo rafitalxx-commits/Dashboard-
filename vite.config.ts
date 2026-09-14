@@ -460,6 +460,7 @@ const readOnlyModels = new Set([
   "mrp.bom.line",
 ]);
 const readOnlyMethods = new Set([
+  "search",
   "search_read",
   "search_count",
   "read",
@@ -1235,6 +1236,14 @@ function odooReadOnlyApi(env: Record<string, string>) {
                 return;
               }
               sendJson(response, 200, await confirmOdooPurchaseQuotation(env, await readJsonBody(request)));
+              return;
+            }
+            if (action === "send-email" && request.method === "POST") {
+              if (!user.permissions.includes("odooWrite")) {
+                sendJson(response, 403, { message: "Sin permiso para escribir en Odoo" });
+                return;
+              }
+              sendJson(response, 200, await sendOdooPurchaseOrderEmail(env, await readJsonBody(request)));
               return;
             }
             if (action === "cancel" && request.method === "POST") {
@@ -6989,12 +6998,38 @@ async function confirmOdooPurchaseQuotation(env: Record<string, string>, raw: un
   if (!confirmed || !["purchase", "done"].includes(confirmed.state || "")) throw new Error("Odoo no confirmó el pedido de compra");
   let emailSent = false;
   if (sendEmail) {
-    await executePurchaseOrderAction(config, uid, "mail.template", "send_mail", [[templateId], orderId], { force_send: true, raise_exception: true });
+    await sendNativePurchaseOrderEmail(config, uid, orderId);
     emailSent = true;
   }
   const pickingIds = confirmed.picking_ids ?? [];
   const pickings = pickingIds.length ? await executeKw(config, uid, "stock.picking", "read", [pickingIds], { fields: ["id", "name"] }) as Array<{ id: number; name?: string }> : [];
   return { ok: true, ref: confirmed.name || preview.ref, emailSent, pickingRefs: pickings.map((picking) => cleanText(picking.name)).filter(Boolean) };
+}
+
+async function sendOdooPurchaseOrderEmail(env: Record<string, string>, raw: unknown) {
+  const input = (raw && typeof raw === "object" ? raw : {}) as { orderId?: unknown; simulate?: unknown };
+  const orderId = Number(input.orderId);
+  if (!Number.isInteger(orderId) || orderId <= 0) throw new Error("Pedido no válido");
+  const config = getOdooConfig(env);
+  const uid = await authenticate(config);
+  const [order] = await executeKw(config, uid, "purchase.order", "read", [[orderId]], { fields: ["id", "name", "state", "partner_id"] }) as OdooPurchaseOrderRecord[];
+  if (!order || !["purchase", "done"].includes(order.state || "")) throw new Error("El pedido debe estar confirmado antes de enviar el email");
+  const partnerId = getRelationId(order.partner_id);
+  const [partner] = partnerId ? await executeKw(config, uid, "res.partner", "read", [[partnerId]], { fields: ["email"] }) as Array<{ email?: string | false }> : [];
+  if (!cleanText(partner?.email)) throw new Error("El proveedor no tiene email en su ficha de contacto");
+  if (input.simulate === true) return { ok: true, simulated: true, ref: order.name || `PO #${orderId}`, emailSent: false };
+  if (env.ODOO_WRITE_ENABLED !== "true") throw new Error("Escritura en Odoo desactivada en este entorno de pruebas");
+  await sendNativePurchaseOrderEmail(config, uid, orderId);
+  return { ok: true, ref: order.name || `PO #${orderId}`, emailSent: true };
+}
+
+async function sendNativePurchaseOrderEmail(config: ReturnType<typeof getOdooConfig>, uid: number, orderId: number) {
+  const templateRows = await executeKw(config, uid, "ir.model.data", "search_read", [[["module", "=", "purchase"], ["name", "=", "email_template_edi_purchase_done"]]], { fields: ["res_id"], limit: 1 }) as Array<{ res_id?: number }>;
+  const templateId = Number(templateRows[0]?.res_id ?? 0);
+  if (!templateId) throw new Error("No se encontró la plantilla nativa de pedido de compra");
+  const mailId = await executePurchaseOrderAction(config, uid, "mail.template", "send_mail", [[templateId], orderId], { force_send: true, raise_exception: true });
+  if (!Number.isInteger(Number(mailId)) || Number(mailId) <= 0) throw new Error("Odoo no generó el correo del pedido");
+  return Number(mailId);
 }
 
 async function cancelOdooPurchaseQuotation(env: Record<string, string>, raw: unknown) {
@@ -8224,7 +8259,7 @@ async function executePurchaseQuotationWrite(
   if (method === "write") {
     const ids = args[0];
     const values = args[1];
-    const allowed = new Set(["product_qty", "price_unit", "date_planned", "name"]);
+    const allowed = new Set(["product_qty", "price_unit", "discount", "date_planned", "name"]);
     if (!Array.isArray(ids) || ids.length !== 1 || !ids.every((id) => Number.isInteger(id) && Number(id) > 0) || !values || typeof values !== "object" || Array.isArray(values) || Object.keys(values).some((field) => !allowed.has(field))) throw new Error("Operación de edición de compra bloqueada");
   } else if (method === "unlink") {
     const ids = args[0];
