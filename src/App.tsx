@@ -1702,7 +1702,6 @@ function App() {
             )}
             <div className={`connection-pill ${activeView === "receptions" || activeView === "pendingPurchases" || activeView === "supplierInvoices" || activeView === "purchaseAnalytics" ? "live" : dataMode}`}>
               <span />
-<<<<<<< HEAD
               {activeView === "receptions" || activeView === "pendingPurchases"
                 ? authUser.permissions.includes("odooWrite")
                   ? "Odoo real · acciones habilitadas"
@@ -1710,7 +1709,6 @@ function App() {
                 : activeView === "supplierInvoices" || activeView === "purchaseAnalytics"
                   ? "Odoo real · solo lectura"
                   : connectionMessage}
-                : connectionMessage}
             </div>
             <div className="session-pill">
               <User size={16} />
