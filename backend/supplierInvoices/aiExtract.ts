@@ -4,7 +4,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import pdfParse from "pdf-parse";
+import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import { normalizeRate } from "./documentInbox.ts";
 import type { PdfExtractedData, PdfExtractedLine } from "./phase2Types.ts";
 

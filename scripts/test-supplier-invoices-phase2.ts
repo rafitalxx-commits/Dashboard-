@@ -225,7 +225,7 @@ async function testRealPdfs() {
       continue;
     }
     const buf = readFileSync(f);
-    const pdfParse = (await import("pdf-parse")).default;
+    const pdfParse = (await import("pdf-parse/lib/pdf-parse.js")).default;
     const parsed = await pdfParse(buf);
     const ex = extractPdfData(parsed.text ?? "", parsed.numpages ?? 0);
     console.log(`  ${f}: ${parsed.text?.length ?? 0} chars, total=${ex.total}, invoice=${ex.invoiceNumber}, prov=${ex.supplier?.slice(0,30)}`);

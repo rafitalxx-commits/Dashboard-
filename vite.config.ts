@@ -6588,7 +6588,9 @@ async function getOdooSalesPurchaseAlerts(env: Record<string, string>) {
     [[["state", "in", ["draft", "sent", "purchase", "done"]]]],
     {
       fields: ["id", "name", "origin", "partner_id", "state", "amount_total", "currency_id", "order_line"],
-      order: "date_order asc, id asc",
+      // Keep the bounded alert feed focused on current purchases so confirmed
+      // MTO links, e.g. P05000 → S101316, are not excluded by historic rows.
+      order: "date_order desc, id desc",
       limit: 400,
     },
   )) as OdooPurchaseOrderRecord[];
