@@ -53,9 +53,9 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
   const [actionError, setActionError] = useState("");
   const [actionPreview, setActionPreview] =
     useState<PurchaseOrderActionPreview | null>(null);
-  const [actionKind, setActionKind] = useState<"confirm" | "cancel" | null>(
-    null,
-  );
+  const [actionKind, setActionKind] = useState<
+    "confirm-no-email" | "confirm-email" | "cancel" | null
+  >(null);
   const [confirmedWithoutEmail, setConfirmedWithoutEmail] = useState<{
     orderId: string;
     ref: string;
@@ -127,7 +127,7 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
 
   const previewAction = async (
     reception: PurchaseReception,
-    kind: "confirm" | "cancel",
+    kind: "confirm-no-email" | "confirm-email" | "cancel",
   ) => {
     setActionLoading(`${reception.id}-${kind}`);
     setActionError("");
@@ -591,11 +591,11 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
                         <button
                           disabled={Boolean(actionLoading)}
                           onClick={() =>
-                            void previewAction(reception, "confirm")
+                            void previewAction(reception, "confirm-no-email")
                           }
                           type="button"
                         >
-                          {actionLoading === `${reception.id}-confirm` ? (
+                          {actionLoading === `${reception.id}-confirm-no-email` ? (
                             <>
                               <RefreshCw className="spin" size={15} />
                               Comprobando…
@@ -603,7 +603,27 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
                           ) : (
                             <>
                               <CheckCircle2 size={15} />
-                              Confirmar pedido
+                              Confirmar sin email
+                            </>
+                          )}
+                        </button>
+                        <button
+                          className="primary"
+                          disabled={Boolean(actionLoading)}
+                          onClick={() =>
+                            void previewAction(reception, "confirm-email")
+                          }
+                          type="button"
+                        >
+                          {actionLoading === `${reception.id}-confirm-email` ? (
+                            <>
+                              <RefreshCw className="spin" size={15} />
+                              Comprobando envío…
+                            </>
+                          ) : (
+                            <>
+                              <CheckCircle2 size={15} />
+                              Confirmar y enviar email
                             </>
                           )}
                         </button>
@@ -1241,7 +1261,8 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
           </div>
         </div>
       )}
-      {actionPreview && actionKind === "confirm" && (
+      {actionPreview &&
+        (actionKind === "confirm-no-email" || actionKind === "confirm-email") && (
         <div
           aria-labelledby="purchase-action-title"
           aria-modal="true"
@@ -1249,7 +1270,11 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
           role="dialog"
         >
           <div className="purchase-modal">
-            <h3 id="purchase-action-title">Confirmar pedido de compra</h3>
+            <h3 id="purchase-action-title">
+              {actionKind === "confirm-email"
+                ? "Confirmar pedido y enviar email"
+                : "Confirmar pedido sin email"}
+            </h3>
             <p>
               <strong>{actionPreview.ref}</strong> · {actionPreview.supplier}
             </p>
@@ -1291,12 +1316,18 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
                 confirmar, pero no enviar el correo.
               </div>
             )}
-            <div className="purchase-modal-warning">
-              <AlertTriangle size={18} />
-              «Aceptar y enviar email» usará la plantilla nativa “Purchase:
-              Purchase Order”, que genera y adjunta el PDF del pedido con
-              proveedor, líneas y precios.
-            </div>
+            {actionKind === "confirm-email" ? (
+              <div className="purchase-modal-warning">
+                <AlertTriangle size={18} />
+                Esta acción confirmará el pedido y enviará la plantilla nativa
+                “Purchase: Purchase Order” con el PDF adjunto.
+              </div>
+            ) : (
+              <div className="purchase-modal-warning">
+                <AlertTriangle size={18} />
+                Esta acción confirmará el pedido, pero no enviará ningún email.
+              </div>
+            )}
             <div className="purchase-modal-actions">
               <button
                 disabled={Boolean(actionLoading)}
@@ -1310,23 +1341,23 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
               </button>
               <button
                 className="primary"
-                disabled={Boolean(actionLoading) || actionPreview.lineCount === 0}
-                onClick={() => void confirmPurchase(false)}
-                type="button"
-              >
-                {actionLoading ? "Confirmando en Odoo…" : "Confirmar sin email"}
-              </button>
-              <button
-                className="primary"
                 disabled={
                   Boolean(actionLoading) ||
-                  !actionPreview.supplierEmail ||
+                  (actionKind === "confirm-email" && !actionPreview.supplierEmail) ||
                   actionPreview.lineCount === 0
                 }
-                onClick={() => void confirmPurchase(true)}
+                onClick={() =>
+                  void confirmPurchase(actionKind === "confirm-email")
+                }
                 type="button"
               >
-                {actionLoading ? "Enviando a Odoo…" : "Confirmar y enviar email"}
+                {actionLoading
+                  ? actionKind === "confirm-email"
+                    ? "Enviando a Odoo…"
+                    : "Confirmando en Odoo…"
+                  : actionKind === "confirm-email"
+                    ? "Confirmar y enviar email"
+                    : "Confirmar sin email"}
               </button>
             </div>
           </div>

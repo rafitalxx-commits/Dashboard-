@@ -29,6 +29,10 @@ assert.match(purchaseView, /confirmPendingPurchase\(\s*actionPreview\.orderId,\s
 assert.match(purchaseView, /Confirmar sin email/);
 assert.match(purchaseView, /Confirmar y enviar email/);
 assert.match(purchaseView, /sendConfirmedPurchaseEmail/);
+assert.match(purchaseView, /previewAction\(reception, "confirm-no-email"\)/);
+assert.match(purchaseView, /previewAction\(reception, "confirm-email"\)/);
+assert.match(purchaseView, /void confirmPurchase\(actionKind === "confirm-email"\)/);
+assert.doesNotMatch(purchaseView, /previewAction\(reception, "confirm"\)/);
 assert.doesNotMatch(purchaseView, /const simulateConfirmation = async/);
 // El presupuesto vacío creado en Odoo llega con fecha esperada vacía:
 // el guardado de líneas debe rellenar la fecha en vez de fallar la validación.
