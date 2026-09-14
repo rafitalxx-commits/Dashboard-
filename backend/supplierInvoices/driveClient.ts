@@ -1,6 +1,7 @@
-// Cliente Google Drive SOLO LECTURA para la bandeja documental (Fase 2).
+// Cliente Google Drive para la bandeja documental (Fase 2) + mini navegador (Fase 2.4).
 // Renueva el access token por API con el refresh_token persistido (patron gog-rtk),
-// sin depender del keyring de gog. Nunca escribe, renombra ni borra en Drive.
+// sin depender del keyring de gog. Escritura MINIMA y explicita: crear carpetas y
+// mover PDFs solo cuando el usuario lo pulsa en el navegador; nunca borra nada.
 
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -148,6 +149,44 @@ export class DriveClient {
       const buf = Buffer.from(await driveRes.arrayBuffer());
       response.end(buf);
     }
+  }
+
+  // ===== Fase 2.4: mini navegador de carpetas =====
+
+  /** Subcarpetas de una carpeta (orden natural, es). */
+  async listFolders(parentId?: string): Promise<DriveFileMeta[]> {
+    const parent = parentId || this.folderId;
+    if (!parent) throw new Error("Falta SUPPLIER_INVOICES_DRIVE_FOLDER_ID");
+    const query = encodeURIComponent(`'${parent}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+    const url = `/files?q=${query}&fields=files(id,name,mimeType,parents)&pageSize=200&includeItemsFromAllDrives=true&supportsAllDrives=true&orderBy=name`;
+    const data = await this.request<{ files?: DriveFileMeta[] }>(url);
+    return (data.files ?? []).sort((a, b) => a.name.localeCompare(b.name, "es", { numeric: true }));
+  }
+
+  /** Crea la carpeta si no existe (idempotente) y devuelve su id. */
+  async ensureFolder(name: string, parentId: string): Promise<{ id: string; name: string; created: boolean }> {
+    const existing = await this.listFolders(parentId);
+    const hit = existing.find((f) => f.name === name);
+    if (hit) return { id: hit.id, name: hit.name, created: false };
+    const data = await this.request<{ id: string; name: string }>(`/files?fields=id,name&supportsAllDrives=true`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, mimeType: "application/vnd.google-apps.folder", parents: [parentId] }),
+    });
+    return { id: data.id, name: data.name ?? name, created: true };
+  }
+
+  /** Mueve un archivo a otra carpeta (lo quita de la actual). */
+  async moveFile(fileId: string, newParentId: string): Promise<void> {
+    const meta = await this.request<{ parents?: string[] }>(`/files/${fileId}?fields=parents&supportsAllDrives=true`);
+    const previousParents = (meta.parents ?? []).join(",");
+    const qs = new URLSearchParams({ addParents: newParentId, fields: "id,parents", supportsAllDrives: "true" });
+    if (previousParents) qs.set("removeParents", previousParents);
+    await this.request(`/files/${fileId}?${qs.toString()}`, { method: "PATCH" });
+  }
+
+  getRootFolderId(): string {
+    return this.folderId;
   }
 
   getAccount(): string {

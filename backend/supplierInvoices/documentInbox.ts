@@ -593,6 +593,9 @@ export class DocumentInboxService {
           notes: extracted.warnings.length ? extracted.warnings.join("; ") : null,
           targetFolderPath: null,
           movedTo: null,
+          odooDraftMoveId: null,
+          odooDraftName: null,
+          odooDraftState: null,
           pdfCached: true,
           processedAt: new Date().toISOString(),
         };

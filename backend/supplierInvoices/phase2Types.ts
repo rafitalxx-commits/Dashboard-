@@ -94,6 +94,12 @@ export interface InboxDocument {
   // Drive definitivo (preparado para fase 3)
   targetFolderPath: string | null; // ej. /2026/NOX2/T3
   movedTo: string | null; // folder id destino si se moviera
+  /** Fase 3: borrador de factura creado en Odoo (id + nombre + estado). */
+  odooDraftMoveId: number | null;
+  odooDraftName: string | null;
+  odooDraftState: string | null;
+  /** Multi-pedido (Fase 2): pedidos de compra que componen esta factura. */
+  assignedPurchaseOrderIds: number[] | null;
   // Interno
   pdfCached: boolean;
   processedAt: string | null;

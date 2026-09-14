@@ -12,6 +12,7 @@ import {
   ExternalLink,
   FileText,
   Filter,
+  Folder,
   Inbox,
   Plus,
   RefreshCw,
@@ -88,6 +89,10 @@ type Doc = {
   validationUser: string | null;
   validationAt: string | null;
   notes: string | null;
+  assignedPurchaseOrderIds: number[] | null;
+  odooDraftMoveId: number | null;
+  odooDraftName: string | null;
+  odooDraftState: string | null;
   pdfCached: boolean;
 };
 
@@ -433,12 +438,29 @@ export function InboxView({ base }: { base: string }) {
           extracting={extracting}
           onStatus={setStatus}
           onAiExtract={(id) => void extract([id])}
+          onDocUpdated={(d) => setSelected(d)}
           base={base}
         />
       )}
     </section>
   );
 }
+
+type PoCandidate = {
+  id: number;
+  name: string;
+  origin: string | null;
+  dateOrder: string | null;
+  amountTotal: number;
+  currency: string | null;
+  state: string;
+  billedAmount: number;
+  billedPct: number;
+  pendingAmount: number;
+  allReceived: boolean;
+  lastReceptionAt: string | null;
+  lines: { productName: string | null; qtyOrdered: number; qtyReceived: number; qtyInvoiced: number; qtyPending: number; priceUnit: number; subtotal: number }[];
+};
 
 type ProductLineEdit = {
   description: string;
@@ -450,7 +472,7 @@ type ProductLineEdit = {
   total: number | null;
 };
 
-function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, base }: { doc: Doc; close: () => void; acting: string | null; extracting: string | null; onStatus: (id: string, s: string) => void; onAiExtract: (id: string) => void; base?: string }) {
+function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDocUpdated, base }: { doc: Doc; close: () => void; acting: string | null; extracting: string | null; onStatus: (id: string, s: string) => void; onAiExtract: (id: string) => void; onDocUpdated: (doc: Doc) => void; base?: string }) {
   const ex = doc.extracted;
   const api = (s: string) => (base ?? "") + s;
   const [lines, setLines] = useState<ProductLineEdit[]>(() => (doc.extracted?.lines ?? []).map((l) => ({ ...l })));
@@ -461,6 +483,45 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, base
   const [catalog, setCatalog] = useState<CatalogProduct[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState("");
+  // Campos extraidos editables + memoria de proveedor
+  const [fields, setFields] = useState(() => ({
+    supplier: doc.extracted?.supplier ?? "",
+    supplierVat: doc.extracted?.supplierVat ?? "",
+    country: doc.extracted?.country ?? "",
+    invoiceNumber: doc.extracted?.invoiceNumber ?? "",
+    invoiceDate: doc.extracted?.invoiceDate ?? "",
+    dueDate: doc.extracted?.dueDate ?? "",
+    currency: doc.extracted?.currency ?? "",
+    billingAddress: doc.extracted?.billingAddress ?? "",
+    base: doc.extracted?.base != null ? String(doc.extracted.base) : "",
+    taxes: doc.extracted?.taxes != null ? String(doc.extracted.taxes) : "",
+    total: doc.extracted?.total != null ? String(doc.extracted.total) : "",
+    docType: doc.extracted?.docType ?? "",
+  }));
+  const [savingFields, setSavingFields] = useState(false);
+  const [fieldsMsg, setFieldsMsg] = useState("");
+  // Multi-pedido
+  const [poOpen, setPoOpen] = useState(false);
+  const [poCandidates, setPoCandidates] = useState<PoCandidate[]>([]);
+  const [poLoading, setPoLoading] = useState(false);
+  const [selectedPoIds, setSelectedPoIds] = useState<number[]>(doc.assignedPurchaseOrderIds ?? []);
+  const [poSaving, setPoSaving] = useState(false);
+  const [poMsg, setPoMsg] = useState("");
+  // Mini navegador de Drive (Fase 2.4): alojar el PDF validado en su carpeta definitiva
+  const [driveOpen, setDriveOpen] = useState(false);
+  const [driveLoading, setDriveLoading] = useState(false);
+  const [driveMsg, setDriveMsg] = useState("");
+  const [driveRootId, setDriveRootId] = useState("");
+  const [driveFolders, setDriveFolders] = useState<{ id: string; name: string }[]>([]);
+  const [drivePath, setDrivePath] = useState<{ id: string; name: string }[]>([]);
+  const [driveSuggest, setDriveSuggest] = useState<string[]>([]);
+  const [driveTarget, setDriveTarget] = useState<{ id: string; path: string } | null>(null);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [moving, setMoving] = useState(false);
+  // Fase 3: puente con Odoo (borrador + contabilizar)
+  const [odooBusy, setOdooBusy] = useState(false);
+  const [odooMsg, setOdooMsg] = useState("");
 
   const apiPath = api("/api/odoo/supplier-invoices/inbox");
   const previewUrl = `${apiPath}/preview?id=${encodeURIComponent(doc.driveFileId)}`;
@@ -540,6 +601,228 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, base
     }
   };
 
+  const saveFields = async () => {
+    setSavingFields(true);
+    setFieldsMsg("");
+    try {
+      const r = await fetch(`${apiPath}/fields`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: doc.driveFileId, fields }),
+      });
+      const x = await r.json();
+      if (!r.ok) throw new Error(x.message || "No se pudo guardar");
+      if (x.document) onDocUpdated(x.document);
+      setFieldsMsg(x.mapping?.learned
+        ? `Datos guardados. Mapeo aprendido de «${x.mapping.supplierName}»: sus próximas facturas se rellenarán solas.`
+        : "Datos guardados.");
+    } catch (e) {
+      setFieldsMsg(e instanceof Error ? e.message : "Error guardando datos");
+    } finally {
+      setSavingFields(false);
+    }
+  };
+
+  const loadPoCandidates = async () => {
+    setPoLoading(true);
+    setPoMsg("");
+    try {
+      const r = await fetch(`${apiPath}/po-filter?id=${encodeURIComponent(doc.driveFileId)}`);
+      const x = await r.json();
+      if (!r.ok) throw new Error(x.message);
+      setPoCandidates(x.orders ?? []);
+      if (!x.orders?.length) setPoMsg("No hay pedidos sin factura para este proveedor.");
+    } catch (e) {
+      setPoMsg(e instanceof Error ? e.message : "Error cargando pedidos");
+    } finally {
+      setPoLoading(false);
+    }
+  };
+
+  const togglePo = (poId: number) => {
+    setSelectedPoIds((prev) => prev.includes(poId) ? prev.filter((n) => n !== poId) : [...prev, poId]);
+  };
+
+  const savePoLink = async () => {
+    setPoSaving(true);
+    setPoMsg("");
+    try {
+      const r = await fetch(`${apiPath}/polink`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: doc.driveFileId, purchaseOrderIds: selectedPoIds }),
+      });
+      const x = await r.json();
+      if (!r.ok) throw new Error(x.message || "No se pudo guardar");
+      if (x.document) onDocUpdated(x.document);
+      setPoMsg(`Pedidos asociados: ${selectedPoIds.length ? selectedPoIds.join(", ") : "ninguno"}.`);
+    } catch (e) {
+      setPoMsg(e instanceof Error ? e.message : "Error guardando asociación");
+    } finally {
+      setPoSaving(false);
+    }
+  };
+
+  // ===== Mini navegador de Drive =====
+
+  const loadFolders = async (folderId: string | null) => {
+    setDriveLoading(true);
+    setDriveMsg("");
+    try {
+      const q = folderId ? `?folder=${encodeURIComponent(folderId)}` : "";
+      const r = await fetch(`${apiPath}/drive/browse${q}`);
+      const x = await r.json();
+      if (!r.ok) throw new Error(x.message || "Error cargando carpetas");
+      if (!folderId && x.folderId) setDriveRootId(x.folderId);
+      setDriveFolders(x.folders ?? []);
+      return true;
+    } catch (e) {
+      setDriveMsg(e instanceof Error ? e.message : "Error cargando carpetas");
+      return false;
+    } finally {
+      setDriveLoading(false);
+    }
+  };
+
+  const openDrive = async () => {
+    const next = !driveOpen;
+    setDriveOpen(next);
+    if (next && !driveRootId) {
+      await loadFolders(null);
+      try {
+        const r = await fetch(`${apiPath}/drive/suggest`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: doc.driveFileId }) });
+        const x = await r.json();
+        if (r.ok) setDriveSuggest(x.path ?? []);
+      } catch { /* sugerencia opcional */ }
+    }
+  };
+
+  const enterFolder = async (folder: { id: string; name: string }) => {
+    const ok = await loadFolders(folder.id);
+    if (ok) setDrivePath((p) => [...p, folder]);
+  };
+
+  const goUp = async () => {
+    const parent = drivePath.length > 1 ? drivePath[drivePath.length - 2].id : null;
+    setDrivePath((p) => p.slice(0, -1));
+    await loadFolders(parent);
+  };
+
+  const useSuggested = async () => {
+    if (!driveSuggest.length || !driveRootId) return;
+    setDriveLoading(true);
+    setDriveMsg("");
+    try {
+      let parentId = driveRootId;
+      const crumbs: { id: string; name: string }[] = [];
+      for (const name of driveSuggest) {
+        const r = await fetch(`${apiPath}/drive/create-folder`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parentId, name }),
+        });
+        const x = await r.json();
+        if (!r.ok) throw new Error(x.message || `No se pudo asegurar la carpeta ${name}`);
+        parentId = x.folder.id;
+        crumbs.push({ id: x.folder.id, name: x.folder.name ?? name });
+      }
+      setDrivePath(crumbs);
+      setDriveTarget({ id: parentId, path: `/${driveSuggest.join("/")}` });
+      setDriveMsg(`Carpeta lista: /${driveSuggest.join("/")} — pulsa «Mover PDF aquí».`);
+    } catch (e) {
+      setDriveMsg(e instanceof Error ? e.message : "Error preparando la ruta");
+    } finally {
+      setDriveLoading(false);
+    }
+  };
+
+  const createFolderHere = async () => {
+    const name = newFolderName.trim();
+    const parentId = drivePath.length ? drivePath[drivePath.length - 1].id : driveRootId;
+    if (!name || !parentId) return;
+    setCreatingFolder(true);
+    setDriveMsg("");
+    try {
+      const r = await fetch(`${apiPath}/drive/create-folder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ parentId, name }),
+      });
+      const x = await r.json();
+      if (!r.ok) throw new Error(x.message || "No se pudo crear la carpeta");
+      setNewFolderName("");
+      setDriveMsg(`Carpeta «${x.folder?.name ?? name}» lista.`);
+      await loadFolders(parentId);
+    } catch (e) {
+      setDriveMsg(e instanceof Error ? e.message : "Error creando carpeta");
+    } finally {
+      setCreatingFolder(false);
+    }
+  };
+
+  const selectCurrentFolder = () => {
+    if (!drivePath.length) { setDriveMsg("Navega hasta una subcarpeta o usa la ruta sugerida."); return; }
+    const path = "/" + drivePath.map((c) => c.name).join("/");
+    setDriveTarget({ id: drivePath[drivePath.length - 1].id, path });
+  };
+
+  const movePdf = async () => {
+    if (!driveTarget) return;
+    setMoving(true);
+    setDriveMsg("");
+    try {
+      const r = await fetch(`${apiPath}/drive/move`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: doc.driveFileId, targetFolderId: driveTarget.id, targetFolderPath: driveTarget.path }),
+      });
+      const x = await r.json();
+      if (!r.ok) throw new Error(x.message || "No se pudo mover el PDF");
+      if (x.document) onDocUpdated(x.document);
+      setDriveMsg(`PDF movido a ${driveTarget.path}.`);
+    } catch (e) {
+      setDriveMsg(e instanceof Error ? e.message : "Error moviendo el PDF");
+    } finally {
+      setMoving(false);
+    }
+  };
+
+  // ===== Fase 3: Odoo (borrador + contabilizar) =====
+
+  const createOdooDraft = async () => {
+    setOdooBusy(true);
+    setOdooMsg("");
+    try {
+      const r = await fetch(`${apiPath}/odoo-draft`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: doc.driveFileId }) });
+      const x = await r.json();
+      if (!r.ok) throw new Error(x.message || "No se pudo crear el borrador");
+      if (x.document) onDocUpdated(x.document);
+      const res = x.result ?? {};
+      setOdooMsg(`Borrador ${res.name ?? ""} creado en Odoo.` + (res.warnings?.length ? ` Avisos: ${res.warnings.join(" · ")}` : ""));
+    } catch (e) {
+      setOdooMsg(e instanceof Error ? e.message : "Error creando borrador");
+    } finally {
+      setOdooBusy(false);
+    }
+  };
+
+  const postOdooDraft = async () => {
+    setOdooBusy(true);
+    setOdooMsg("");
+    try {
+      const r = await fetch(`${apiPath}/odoo-post`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: doc.driveFileId }) });
+      const x = await r.json();
+      if (!r.ok) throw new Error(x.message || "No se pudo contabilizar");
+      if (x.document) onDocUpdated(x.document);
+      const res = x.result ?? {};
+      setOdooMsg(`Factura ${res.name ?? ""} contabilizada en Odoo.`);
+    } catch (e) {
+      setOdooMsg(e instanceof Error ? e.message : "Error contabilizando");
+    } finally {
+      setOdooBusy(false);
+    }
+  };
+
   const isExcluded = doc.match?.excluded === true;
   return (
     <div className="si-backdrop" onMouseDown={(e) => e.target === e.currentTarget && close()}>
@@ -569,17 +852,59 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, base
 
             <section>
               <h3>Datos extraídos</h3>
-              <dl>
-                <div><dt>Proveedor</dt><dd>{ex?.supplier || "—"}</dd></div>
-                <div><dt>NIF/VAT</dt><dd>{ex?.supplierVat || "—"}</dd></div>
-                <div><dt>Nº factura</dt><dd>{ex?.invoiceNumber || "—"}</dd></div>
-                <div><dt>Fecha</dt><dd>{dt(ex?.invoiceDate ?? null)}</dd></div>
-                <div><dt>Dirección facturación</dt><dd>{ex?.billingAddress || "—"}</dd></div>
-                <div><dt>Base</dt><dd>{ex?.base != null ? money(ex.base, ex?.currency ?? "EUR") : "—"}</dd></div>
-                <div><dt>Impuestos</dt><dd>{ex?.taxes != null ? money(ex.taxes, ex?.currency ?? "EUR") : "—"}</dd></div>
-                <div><dt>Total</dt><dd><b>{ex?.total != null ? money(ex.total, ex?.currency ?? "EUR") : "—"}</b></dd></div>
-                <div><dt>Confianza</dt><dd>{doc.confidence != null ? `${doc.confidence}%` : "—"}</dd></div>
-              </dl>
+              <div className="si-edit-fields">
+                <label>Proveedor
+                  <input value={fields.supplier} onChange={(e) => setFields({ ...fields, supplier: e.target.value })} placeholder="Razón social" />
+                </label>
+                <label>NIF/VAT
+                  <input value={fields.supplierVat} onChange={(e) => setFields({ ...fields, supplierVat: e.target.value })} placeholder="ESB12345674" />
+                </label>
+                <label>Nº factura
+                  <input value={fields.invoiceNumber} onChange={(e) => setFields({ ...fields, invoiceNumber: e.target.value })} />
+                </label>
+                <label>País
+                  <input value={fields.country} onChange={(e) => setFields({ ...fields, country: e.target.value })} placeholder="ES" />
+                </label>
+                <label>Fecha factura
+                  <input type="date" value={fields.invoiceDate} onChange={(e) => setFields({ ...fields, invoiceDate: e.target.value })} />
+                </label>
+                <label>Vencimiento
+                  <input type="date" value={fields.dueDate} onChange={(e) => setFields({ ...fields, dueDate: e.target.value })} />
+                </label>
+                <label>Moneda
+                  <input value={fields.currency} onChange={(e) => setFields({ ...fields, currency: e.target.value })} placeholder="EUR" />
+                </label>
+                <label>Dirección facturación
+                  <input value={fields.billingAddress} onChange={(e) => setFields({ ...fields, billingAddress: e.target.value })} />
+                </label>
+                <label>Base
+                  <input type="number" step="0.01" min="0" value={fields.base} onChange={(e) => setFields({ ...fields, base: e.target.value })} />
+                </label>
+                <label>Impuestos
+                  <input type="number" step="0.01" min="0" value={fields.taxes} onChange={(e) => setFields({ ...fields, taxes: e.target.value })} />
+                </label>
+                <label>Total
+                  <input type="number" step="0.01" min="0" value={fields.total} onChange={(e) => setFields({ ...fields, total: e.target.value })} />
+                </label>
+                <label>Confianza
+                  <input value={doc.confidence != null ? `${doc.confidence}%` : "—"} disabled />
+                </label>
+                <label>Tipo de documento
+                  <select value={fields.docType} onChange={(e) => setFields({ ...fields, docType: e.target.value })}>
+                    <option value="">(sin clasificar)</option>
+                    <option value="factura">Factura</option>
+                    <option value="albaran">Albarán / entrega</option>
+                    <option value="aduana">Aduana</option>
+                    <option value="transporte">Transporte</option>
+                    <option value="otro">Otro</option>
+                  </select>
+                </label>
+              </div>
+              <button className="si-editor-add" disabled={savingFields} onClick={() => void saveFields()} type="button">
+                {savingFields ? <RefreshCw className="spin" size={14} /> : <CheckCircle2 size={14} />} Guardar datos (y aprender proveedor)
+              </button>
+              {fieldsMsg && <p className={fieldsMsg.startsWith("Datos guardados") ? "si-msg" : "error"} role="status">{fieldsMsg}</p>}
+              <p className="si-note">Todos los campos son editables. Al guardar se recuerda el proveedor corregido: sus próximas facturas se auto-rellenarán con lo aprendido.</p>
               {ex?.warnings?.length ? <p className="si-warn"><AlertTriangle /> {ex.warnings.join(" · ")}</p> : null}
             </section>
 
@@ -599,6 +924,150 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, base
                   ))}
                 </ul>
                 {doc.match.invoiceNameOdoo && <p className="si-warn"><AlertTriangle /> Posible duplicado: ya existe {doc.match.invoiceNameOdoo} en Odoo.</p>}
+              </section>
+            )}
+
+            {!isExcluded && (
+              <section>
+                <h3>¿Varios pedidos en una factura?</h3>
+                <p className="si-note">Si esta factura agrupa varios pedidos de compra, asígnalos aquí: se muestran los pedidos sin facturar del proveedor, del más reciente al más antiguo, con lo pedido, lo recibido y lo facturado.</p>
+                <button className="si-editor-add" disabled={poLoading} onClick={() => { if (!poOpen) void loadPoCandidates(); setPoOpen((v) => !v); }} type="button">
+                  {poLoading ? <RefreshCw className="spin" size={14} /> : <ShoppingCart size={14} />} {poOpen ? "Ocultar pedidos" : "Asociar pedidos de compra"}
+                </button>
+                {poMsg && <p className={poMsg.startsWith("Pedidos asociados") ? "si-msg" : "error"} role="status">{poMsg}</p>}
+                {poOpen && (
+                  <div className="si-multipo">
+                    {poCandidates.length === 0 ? (
+                      <p className="si-note">No hay pedidos sin factura de este proveedor.</p>
+                    ) : (
+                      <>
+                        <table>
+                          <thead>
+                            <tr><th></th><th>Pedido</th><th>Fecha</th><th>Total</th><th>Facturado</th><th>Pendiente</th></tr>
+                          </thead>
+                          <tbody>
+                            {poCandidates.map((po) => (
+                              <tr key={po.id}>
+                                <td><input type="checkbox" checked={selectedPoIds.includes(po.id)} onChange={() => togglePo(po.id)} aria-label={`Seleccionar ${po.name}`} /></td>
+                                <td><b>{po.name}</b>{po.allReceived ? " · recibido" : " · parcial"}{po.origin ? <small> · ref. proveedor: {po.origin}</small> : null}</td>
+                                <td>{po.dateOrder ?? "—"}</td>
+                                <td className="qty-cell">{money(po.amountTotal, po.currency ?? "EUR")}</td>
+                                <td className="qty-cell">{po.billedPct.toFixed(0)}%</td>
+                                <td className="qty-cell">{money(po.pendingAmount, po.currency ?? "EUR")}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <p className="si-note">Detalle por pedido — productos pedidos / recibidos / facturados por el proveedor:</p>
+                        {poCandidates.map((po) => (
+                          <details key={po.id} className="si-multipo-po">
+                            <summary>{po.name} — {po.lines.length} líneas</summary>
+                            <table>
+                              <thead><tr><th>Producto</th><th>Pedido</th><th>Recibido</th><th>Facturado</th></tr></thead>
+                              <tbody>
+                                {po.lines.map((l, i) => (
+                                  <tr key={i}>
+                                    <td>{l.productName ?? "—"}</td>
+                                    <td className="qty-cell">{l.qtyOrdered}</td>
+                                    <td className="qty-cell">{l.qtyReceived}</td>
+                                    <td className="qty-cell">{l.qtyInvoiced}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </details>
+                        ))}
+                        <div className="si-pick">
+                          <span>Seleccionados: <b>{selectedPoIds.length}</b> pedido(s)</span>
+                          <button className="si-editor-add" disabled={poSaving} onClick={() => void savePoLink()} type="button">
+                            {poSaving ? <RefreshCw className="spin" size={14} /> : <CheckCircle2 size={14} />} Guardar asociación
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </section>
+            )}
+
+            {!isExcluded && (
+              <section>
+                <h3>Alojar en Drive</h3>
+                {doc.movedTo ? (
+                  <p className="si-msg"><CheckCircle2 size={14} /> PDF ya archivado en {doc.targetFolderPath ?? doc.movedTo}.</p>
+                ) : (
+                  <>
+                    <p className="si-note">Mueve la factura validada a su carpeta definitiva (/AÑO/PROVEEDOR/TRIMESTRE). La ruta queda guardada en el registro.</p>
+                    <button className="si-editor-add" onClick={() => void openDrive()} type="button">
+                      <Folder size={14} /> {driveOpen ? "Ocultar navegador" : "Abrir navegador de Drive"}
+                    </button>
+                    {driveMsg && <p className={driveMsg.startsWith("PDF movido") || driveMsg.startsWith("Carpeta") ? "si-msg" : "error"} role="status">{driveMsg}</p>}
+                    {driveOpen && (
+                      <div className="si-drive-nav">
+                        <div className="si-drive-crumb">
+                          <button type="button" onClick={() => void goUp()} disabled={!drivePath.length || driveLoading} title="Subir un nivel"><ChevronLeft size={14} /></button>
+                          <span>Bandeja{drivePath.map((c) => ` / ${c.name}`).join("")}</span>
+                        </div>
+                        {driveSuggest.length > 0 && (
+                          <button className="si-drive-suggest" disabled={driveLoading || moving} onClick={() => void useSuggested()} type="button">
+                            <Sparkles size={14} /> Usar sugerencia: /{driveSuggest.join("/")}
+                          </button>
+                        )}
+                        <ul className="si-drive-folders">
+                          {driveLoading && <li className="si-note">Cargando…</li>}
+                          {!driveLoading && driveFolders.length === 0 && <li className="si-note">Sin subcarpetas aquí.</li>}
+                          {driveFolders.map((f) => (
+                            <li key={f.id}>
+                              <button type="button" onClick={() => void enterFolder(f)}>
+                                <Folder size={14} /> {f.name}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                        <div className="si-drive-newfolder">
+                          <input value={newFolderName} onChange={(e) => setNewFolderName(e.target.value)} placeholder="Nueva carpeta aquí…" aria-label="Nombre de nueva carpeta" />
+                          <button type="button" disabled={creatingFolder || !newFolderName.trim()} onClick={() => void createFolderHere()}>
+                            {creatingFolder ? <RefreshCw className="spin" size={14} /> : <Plus size={14} />} Crear
+                          </button>
+                        </div>
+                        <div className="si-pick">
+                          <button className="si-editor-add" type="button" disabled={driveLoading || !drivePath.length} onClick={selectCurrentFolder}>Usar carpeta actual</button>
+                          <button className="si-editor-add" type="button" disabled={!driveTarget || moving} onClick={() => void movePdf()}>
+                            {moving ? <RefreshCw className="spin" size={14} /> : <CheckCircle2 size={14} />} Mover PDF aquí
+                          </button>
+                        </div>
+                        {driveTarget && <p className="si-note">Destino seleccionado: <b>{driveTarget.path}</b></p>}
+                      </div>
+                    )}
+                  </>
+                )}
+              </section>
+            )}
+
+            {!isExcluded && (
+              <section>
+                <h3>Factura en Odoo</h3>
+                {doc.odooDraftMoveId ? (
+                  <div className="si-odoo-state">
+                    <p className="si-msg"><CheckCircle2 size={14} /> Borrador <b>{doc.odooDraftName ?? doc.odooDraftMoveId}</b> creado en Odoo · estado: {doc.odooDraftState ?? "draft"}</p>
+                    {doc.odooDraftState === "posted" ? (
+                      <p className="si-msg"><CheckCircle2 size={14} /> Factura contabilizada en Odoo.</p>
+                    ) : (
+                      <button className="si-editor-add" disabled={odooBusy} onClick={() => void postOdooDraft()} type="button">
+                        {odooBusy ? <RefreshCw className="spin" size={14} /> : <CheckCircle2 size={14} />} Contabilizar en Odoo
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <p className="si-note">Con la puerta de escritura abierta, al validar la factura se crea automáticamente el borrador en Odoo. También puedes crearlo aquí sin cambiar el estado.</p>
+                    <button className="si-editor-add" disabled={odooBusy || doc.status !== "VALIDADA"} onClick={() => void createOdooDraft()} type="button">
+                      {odooBusy ? <RefreshCw className="spin" size={14} /> : <Plus size={14} />} Crear borrador en Odoo
+                    </button>
+                    {doc.status !== "VALIDADA" && <p className="si-note">Primero valida la factura para poder crear el borrador.</p>}
+                  </>
+                )}
+                {odooMsg && <p className={odooMsg.startsWith("Borrador") || odooMsg.startsWith("Factura") ? "si-msg" : "error"} role="status">{odooMsg}</p>}
               </section>
             )}
 
@@ -653,6 +1122,22 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, base
                         <button className="si-remove-line" aria-label="Quitar línea" onClick={() => removeLine(i)} type="button"><Trash2 size={14} /></button>
                       </div>
                     ))}
+                  </div>
+                )}
+                {lines.length > 0 && (
+                  <div className="si-lines-totals">
+                    {(() => {
+                      const sum = lines.reduce((acc, l) => acc + (l.total ?? 0), 0);
+                      const declared = fields.total !== "" ? Number(fields.total) : null;
+                      return (
+                        <>
+                          <span>Total líneas: <b>{money(sum, ex?.currency ?? "EUR")}</b></span>
+                          {declared != null && Math.abs(declared - sum) > 0.005 && (
+                            <small>El total declarado difiere: {money(declared, ex?.currency ?? "EUR")}</small>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                 )}
                 {lines.length > 0 && (
