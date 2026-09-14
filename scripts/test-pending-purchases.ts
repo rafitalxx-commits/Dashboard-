@@ -24,6 +24,9 @@ assert.match(purchaseView, /stockTotal: product\.stockTotal/);
 assert.match(purchaseView, /Añade líneas antes de confirmar o enviar el email/);
 assert.match(purchaseView, /actionPreview\.lineCount === 0/);
 assert.match(purchaseView, /guárdalo en Odoo antes de confirmar o enviar el email/);
+assert.match(purchaseView, /const confirmPurchase = async/);
+assert.match(purchaseView, /confirmPendingPurchase\(\s*actionPreview\.orderId,\s*sendEmail,\s*false/);
+assert.doesNotMatch(purchaseView, /const simulateConfirmation = async/);
 // El presupuesto vacío creado en Odoo llega con fecha esperada vacía:
 // el guardado de líneas debe rellenar la fecha en vez de fallar la validación.
 assert.match(
@@ -39,6 +42,7 @@ const odooClient = readFileSync(new URL("../src/services/odooClient.ts", import.
 const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const appStyles = readFileSync(new URL("../src/styles/app.css", import.meta.url), "utf8");
 assert.match(viteConfig, /"qty_available"/);
+assert.match(viteConfig, /env\.ODOO_WRITE_ENABLED = process\.env\.ODOO_WRITE_ENABLED \?\? env\.ODOO_WRITE_ENABLED/);
 assert.doesNotMatch(viteConfig, /sourceLines\.length === 0\) return \[\];/);
 assert.match(viteConfig, /cleanText\(order\.date_order\)\.slice\(0, 10\)/);
 assert.match(viteConfig, /stockTotal: Number\(product\.qty_available \?\? 0\)/);

@@ -469,6 +469,9 @@ const readOnlyMethods = new Set([
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
+  // The service owns this safety switch. Vite's loadEnv only reads files, so
+  // preserve an explicitly configured service value for the Odoo write routes.
+  env.ODOO_WRITE_ENABLED = process.env.ODOO_WRITE_ENABLED ?? env.ODOO_WRITE_ENABLED;
 
   return {
     cacheDir: process.env.VITE_CACHE_DIR || "node_modules/.vite",
