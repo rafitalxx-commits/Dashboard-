@@ -96,7 +96,7 @@ export function InventoryView({
     setInventories((current) => current.map((item) => item.id === updated.id ? updated : item));
     if (updated.status === "review") onNavigate("review");
   };
-  if (opened) return <>{message && <p className="products-message">{message}</p>}<InventorySession inventory={opened} catalog={catalog.products} locationCatalog={locationCatalog} onClose={closeInventory} onPrevious={openedIndex > 0 ? () => setOpened(shown[openedIndex - 1]) : undefined} onNext={openedIndex >= 0 && openedIndex < shown.length - 1 ? () => setOpened(shown[openedIndex + 1]) : undefined} readOnly={screen === "history"} returnLabel={labels[screen]} onMessage={setMessage} /></>;
+  if (opened) return <>{message && <p className="products-message">{message}</p>}<InventorySession inventory={opened} catalog={catalog.products} locationCatalog={locationCatalog} onClose={closeInventory} onDiscard={(inventoryId) => { setOpened(null); setInventories((current) => current.filter((item) => item.id !== inventoryId)); setMessage("Inventario cancelado. Ningún conteo se ha enviado a Odoo."); onNavigate("new"); }} onPrevious={openedIndex > 0 ? () => setOpened(shown[openedIndex - 1]) : undefined} onNext={openedIndex >= 0 && openedIndex < shown.length - 1 ? () => setOpened(shown[openedIndex + 1]) : undefined} readOnly={screen === "history"} returnLabel={labels[screen]} onMessage={setMessage} /></>;
   return (
     <section className="inventory-view">
       <header className="products-header">
@@ -439,7 +439,7 @@ function InventoryPagination({ page, pages, onPage }: { page: number; pages: num
   return <nav className="inventory-pagination" aria-label="Paginación"><button disabled={page === 1} onClick={() => onPage(page - 1)} type="button"><ChevronLeft size={16}/> Anterior</button><span>Página {page} de {pages}</span><button disabled={page === pages} onClick={() => onPage(page + 1)} type="button">Siguiente <ChevronRight size={16}/></button></nav>;
 }
 
-function InventorySession({ inventory: initial, catalog, locationCatalog, onClose, onPrevious, onNext, readOnly = false, returnLabel, onMessage }: { inventory: ProductInventory; catalog: CatalogProduct[]; locationCatalog: LocationCatalogEntry[]; onClose: (inventory: ProductInventory) => void; onPrevious?: () => void; onNext?: () => void; readOnly?: boolean; returnLabel: string; onMessage: (message: string) => void }) {
+function InventorySession({ inventory: initial, catalog, locationCatalog, onClose, onDiscard, onPrevious, onNext, readOnly = false, returnLabel, onMessage }: { inventory: ProductInventory; catalog: CatalogProduct[]; locationCatalog: LocationCatalogEntry[]; onClose: (inventory: ProductInventory) => void; onDiscard: (inventoryId: string) => void; onPrevious?: () => void; onNext?: () => void; readOnly?: boolean; returnLabel: string; onMessage: (message: string) => void }) {
   const [inventory, setInventory] = useState(initial);
   const [operatorName, setOperatorName] = useState(initial.operator?.name || "");
   const [activeLocation, setActiveLocation] = useState("");
@@ -447,6 +447,7 @@ function InventorySession({ inventory: initial, catalog, locationCatalog, onClos
   const [product, setProduct] = useState<CatalogProduct | null>(null);
   const [quantity, setQuantity] = useState(0);
   const [savingCount, setSavingCount] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
   const [pendingListOpen, setPendingListOpen] = useState(false);
   const [countedListOpen, setCountedListOpen] = useState(true);
   const [pendingVisible, setPendingVisible] = useState(50);
@@ -474,7 +475,20 @@ function InventorySession({ inventory: initial, catalog, locationCatalog, onClos
     return [...byLine.values()];
   }, [inventory.counts]);
   const currentCount = (productId: number, locationCode: string) => effectiveCounts.find((item) => item.productId === productId && item.locationCode === locationCode);
-  const navigation = <nav className="inventory-detail-nav" aria-label="Navegación de inventarios"><button onClick={() => onClose(inventory)} type="button"><ArrowLeft size={16}/> Volver a {returnLabel}</button><span>{onPrevious && <button aria-label="Inventario anterior" onClick={onPrevious} type="button"><ChevronLeft size={18}/></button>}{onNext && <button aria-label="Inventario siguiente" onClick={onNext} type="button"><ChevronRight size={18}/></button>}</span></nav>;
+  const discard = async () => {
+    if (!window.confirm(`¿Cancelar “${inventory.name}”? Se borrarán todos los conteos guardados en Dashboard y no se enviará nada a Odoo.`)) return;
+    setDiscarding(true);
+    try {
+      closeCamera();
+      await odooClient.discardProductInventory(inventory.id);
+      onDiscard(inventory.id);
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : "No se pudo cancelar el inventario");
+    } finally {
+      setDiscarding(false);
+    }
+  };
+  const navigation = <nav className="inventory-detail-nav" aria-label="Navegación de inventarios"><button onClick={() => onClose(inventory)} type="button"><ArrowLeft size={16}/> Volver a {returnLabel}</button><span>{!readOnly && (inventory.status === "draft" || inventory.status === "in_progress") && <button className="inventory-discard" disabled={discarding || savingCount} onClick={() => void discard()} type="button">{discarding ? "Cancelando…" : "Cancelar inventario"}</button>}{onPrevious && <button aria-label="Inventario anterior" onClick={onPrevious} type="button"><ChevronLeft size={18}/></button>}{onNext && <button aria-label="Inventario siguiente" onClick={onNext} type="button"><ChevronRight size={18}/></button>}</span></nav>;
   const begin = async () => { if (!operatorName.trim()) return onMessage("Indica el operario antes de empezar"); void enableFeedback(); try { const updated = await odooClient.inventoryAction(inventory.id, "start", { operator: operator() }); setInventory(updated); } catch (error) { onMessage(error instanceof Error ? error.message : "No se pudo iniciar"); } };
   const closeCamera = () => {
     if (scanTimerRef.current !== null) window.clearInterval(scanTimerRef.current);

@@ -836,6 +836,11 @@ function odooReadOnlyApi(env: Record<string, string>) {
               sendJson(response, 200, productInventories.start(parts[0], (await readJsonBody(request)).operator));
               return;
             }
+            if (request.method === "DELETE" && parts.length === 1 && parts[0]) {
+              productInventories.discard(parts[0]);
+              sendJson(response, 200, { ok: true });
+              return;
+            }
             if (request.method === "POST" && parts.length === 2 && parts[1] === "counts") {
               sendJson(response, 200, productInventories.count(parts[0], await readJsonBody(request)));
               return;

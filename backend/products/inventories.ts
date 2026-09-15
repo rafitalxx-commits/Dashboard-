@@ -248,5 +248,15 @@ export function createProductInventories(options: {
     inventory.status = "finalized"; inventory.sentAt = new Date().toISOString(); inventory.finalizedAt = inventory.sentAt; inventory.sentBy = operator; inventory.odooResults = results; inventory.updatedAt = inventory.sentAt;
     return save(inventory);
   };
-  return { create, list, find, start, count, status, recount, finalize };
+  /** Discards an unfinished Dashboard-only inventory. It never touches Odoo. */
+  const discard = (id: string) => {
+    const inventory = find(id);
+    if (inventory.status !== "draft" && inventory.status !== "in_progress") {
+      throw new Error("Solo se pueden cancelar inventarios en curso");
+    }
+    const store = read();
+    store.inventories = store.inventories.filter((item) => item.id !== id);
+    write(store);
+  };
+  return { create, list, find, start, count, status, recount, finalize, discard };
 }

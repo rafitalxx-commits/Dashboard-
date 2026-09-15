@@ -354,6 +354,11 @@ export const odooClient = {
     if (!response.ok) throw new Error(payload.message ?? "No se pudo leer el inventario");
     return payload;
   },
+  async discardProductInventory(id: string) {
+    const response = await fetch(`${inventoriesApi()}/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const payload = (await readJson(response)) as { ok?: boolean; message?: string };
+    if (!response.ok || !payload.ok) throw new Error(payload.message ?? "No se pudo cancelar el inventario");
+  },
   async inventoryAction(id: string, action: "start" | "review" | "validate", body: Record<string, unknown> = {}) {
     const response = await fetch(`${inventoriesApi()}/${encodeURIComponent(id)}/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const payload = (await readJson(response)) as import("./odooTypes").ProductInventory & { message?: string };
