@@ -278,11 +278,9 @@ export function PendingPurchasesView({ orderId, onClose }: { orderId?: string | 
     if (!actionPreview || actionLoading) return;
     setActionLoading("modal");
     try {
-      const result = await odooClient.confirmPendingPurchase(
-        actionPreview.orderId,
-        sendEmail,
-        false,
-      );
+      const result = sendEmail
+        ? await odooClient.confirmAndSendPendingPurchase(actionPreview.orderId, false)
+        : await odooClient.confirmPendingPurchase(actionPreview.orderId, false, false);
       if (sendEmail && result.emailSent !== true) {
         throw new Error("Odoo no confirmó el envío del email");
       }

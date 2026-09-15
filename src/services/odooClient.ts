@@ -886,6 +886,17 @@ export const odooClient = {
     if (!response.ok || !payload.ok) throw new Error(payload.message ?? "No se pudo confirmar el pedido");
     return payload;
   },
+  async confirmAndSendPendingPurchase(orderId: string, simulate = false) {
+    const response = await fetch(receptionsApiPath("/api/odoo/pending-purchases/confirm-and-send-email"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orderId, simulate }),
+    });
+    const payload = await readJson<{ ok?: boolean; ref?: string; pickingRefs?: string[]; emailSent?: boolean; simulated?: boolean; message?: string }>(response);
+    if (!response.ok || !payload.ok || (!simulate && payload.emailSent !== true)) {
+      throw new Error(payload.message ?? "Odoo no confirmó el envío del email");
+    }
+    return payload;
+  },
   async sendConfirmedPurchaseEmail(orderId: string, simulate = false) {
     const response = await fetch(receptionsApiPath("/api/odoo/pending-purchases/send-email"), {
       method: "POST", headers: { "Content-Type": "application/json" },

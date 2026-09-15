@@ -453,6 +453,7 @@ const readOnlyModels = new Set([
   "stock.move",
   "purchase.order",
   "purchase.order.line",
+  "mail.message",
   "res.partner",
   "product.product",
   "product.category",
@@ -1246,7 +1247,17 @@ function odooReadOnlyApi(env: Record<string, string>) {
                 sendJson(response, 403, { message: "Sin permiso para escribir en Odoo" });
                 return;
               }
-              sendJson(response, 200, await confirmOdooPurchaseQuotation(env, await readJsonBody(request)));
+              const input = await readJsonBody<Record<string, unknown>>(request);
+              sendJson(response, 200, await confirmOdooPurchaseQuotation(env, { ...input, sendEmail: false }));
+              return;
+            }
+            if (action === "confirm-and-send-email" && request.method === "POST") {
+              if (!user.permissions.includes("odooWrite")) {
+                sendJson(response, 403, { message: "Sin permiso para escribir en Odoo" });
+                return;
+              }
+              const input = await readJsonBody<Record<string, unknown>>(request);
+              sendJson(response, 200, await confirmOdooPurchaseQuotation(env, { ...input, sendEmail: true }));
               return;
             }
             if (action === "send-email" && request.method === "POST") {
@@ -7045,12 +7056,72 @@ async function sendOdooPurchaseOrderEmail(env: Record<string, string>, raw: unkn
 }
 
 async function sendNativePurchaseOrderEmail(config: ReturnType<typeof getOdooConfig>, uid: number, orderId: number) {
-  const templateRows = await executeKw(config, uid, "ir.model.data", "search_read", [[["module", "=", "purchase"], ["name", "=", "email_template_edi_purchase_done"]]], { fields: ["res_id"], limit: 1 }) as Array<{ res_id?: number }>;
-  const templateId = Number(templateRows[0]?.res_id ?? 0);
-  if (!templateId) throw new Error("No se encontró la plantilla nativa de pedido de compra");
-  const mailId = await executePurchaseOrderAction(config, uid, "mail.template", "send_mail", [[templateId], orderId], { force_send: true, raise_exception: true });
-  if (!Number.isInteger(Number(mailId)) || Number(mailId) <= 0) throw new Error("Odoo no generó el correo del pedido");
-  return Number(mailId);
+  const previousMessages = await executeKw(
+    config,
+    uid,
+    "mail.message",
+    "search",
+    [[["model", "=", "purchase.order"], ["res_id", "=", orderId]]],
+    { order: "id desc", limit: 100 },
+  ) as number[];
+  const action = await executePurchaseOrderAction(config, uid, "purchase.order", "action_rfq_send", [[orderId]]) as {
+    res_model?: string;
+    context?: Record<string, unknown>;
+  };
+  const context = action?.context ?? {};
+  const templateId = Number(context.default_template_id ?? 0);
+  const resIds = Array.isArray(context.default_res_ids) ? context.default_res_ids.map(Number) : [];
+  if (
+    action?.res_model !== "mail.compose.message" ||
+    context.default_model !== "purchase.order" ||
+    resIds.length !== 1 || resIds[0] !== orderId ||
+    !Number.isInteger(templateId) || templateId <= 0
+  ) {
+    throw new Error("Odoo no preparó el compositor nativo del pedido");
+  }
+  const composerValues = {
+    composition_mode: cleanText(context.default_composition_mode) || "comment",
+    model: "purchase.order",
+    res_ids: JSON.stringify(resIds),
+    template_id: templateId,
+    email_layout_xmlid: cleanText(context.default_email_layout_xmlid) || undefined,
+  };
+  const composerId = await rpc(config.url, "object", "execute_kw", [
+    config.database,
+    uid,
+    config.apiKey,
+    "mail.compose.message",
+    "create",
+    [composerValues],
+    { context },
+  ]);
+  if (!Number.isInteger(Number(composerId)) || Number(composerId) <= 0) {
+    throw new Error("Odoo no creó el compositor nativo del pedido");
+  }
+  await rpc(config.url, "object", "execute_kw", [
+    config.database,
+    uid,
+    config.apiKey,
+    "mail.compose.message",
+    "action_send_mail",
+    [[Number(composerId)]],
+    { context },
+  ]);
+  const newMessages = await executeKw(
+    config,
+    uid,
+    "mail.message",
+    "search_read",
+    [[["model", "=", "purchase.order"], ["res_id", "=", orderId], ["id", "not in", previousMessages]]],
+    { fields: ["id", "message_type", "subject"], order: "id desc", limit: 10 },
+  ) as Array<{ id?: number; message_type?: string; subject?: string | false }>;
+  const sentMessage = newMessages.find(
+    (message) => message.message_type === "comment" && Boolean(cleanText(message.subject)),
+  );
+  if (!Number.isInteger(Number(sentMessage?.id)) || Number(sentMessage?.id) <= 0) {
+    throw new Error("Odoo no dejó confirmación del correo enviado");
+  }
+  return Number(sentMessage.id);
 }
 
 async function cancelOdooPurchaseQuotation(env: Record<string, string>, raw: unknown) {
@@ -8287,7 +8358,7 @@ async function executePurchaseQuotationWrite(
     if (!Array.isArray(ids) || ids.length === 0 || !ids.every((id) => Number.isInteger(id) && Number(id) > 0)) throw new Error("Operación de borrado de compra bloqueada");
   } else if (method === "create") {
     const values = args[0];
-    const allowed = new Set(["order_id", "product_id", "name", "product_qty", "product_uom", "price_unit", "date_planned", "taxes_id"]);
+    const allowed = new Set(["order_id", "product_id", "name", "product_qty", "product_uom", "price_unit", "discount", "date_planned", "taxes_id"]);
     if (!values || typeof values !== "object" || Array.isArray(values) || Object.keys(values).some((field) => !allowed.has(field))) throw new Error("Operación de alta de compra bloqueada");
   } else {
     throw new Error("Operación de compra bloqueada");
@@ -8296,7 +8367,7 @@ async function executePurchaseQuotationWrite(
 }
 
 async function executePurchaseOrderAction(config: ReturnType<typeof getOdooConfig>, uid: number, model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) {
-  if (model === "purchase.order" && ["button_confirm", "button_cancel"].includes(method)) {
+  if (model === "purchase.order" && ["button_confirm", "button_cancel", "action_rfq_send"].includes(method)) {
     const ids = args[0];
     if (!Array.isArray(ids) || ids.length !== 1 || !ids.every((id) => Number.isInteger(id) && Number(id) > 0)) throw new Error("Confirmación de compra bloqueada");
   } else if (model === "mail.template" && method === "send_mail") {

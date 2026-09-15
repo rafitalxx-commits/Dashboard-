@@ -25,7 +25,8 @@ assert.match(purchaseView, /Añade líneas antes de confirmar o enviar el email/
 assert.match(purchaseView, /actionPreview\.lineCount === 0/);
 assert.match(purchaseView, /guárdalo en Odoo antes de confirmar o enviar el email/);
 assert.match(purchaseView, /const confirmPurchase = async/);
-assert.match(purchaseView, /confirmPendingPurchase\(\s*actionPreview\.orderId,\s*sendEmail,\s*false/);
+assert.match(purchaseView, /confirmAndSendPendingPurchase\(actionPreview\.orderId, false\)/);
+assert.match(purchaseView, /confirmPendingPurchase\(actionPreview\.orderId, false, false\)/);
 assert.match(purchaseView, /Confirmar sin email/);
 assert.match(purchaseView, /Confirmar y enviar email/);
 assert.match(purchaseView, /sendConfirmedPurchaseEmail/);
@@ -47,11 +48,15 @@ assert.match(
 const viteConfig = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
 const odooClient = readFileSync(new URL("../src/services/odooClient.ts", import.meta.url), "utf8");
 assert.match(odooClient, /pending-purchases\/send-email/);
+assert.match(odooClient, /pending-purchases\/confirm-and-send-email/);
 const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const appStyles = readFileSync(new URL("../src/styles/app.css", import.meta.url), "utf8");
 assert.match(viteConfig, /"qty_available"/);
 assert.match(viteConfig, /async function sendOdooPurchaseOrderEmail/);
 assert.match(viteConfig, /async function sendNativePurchaseOrderEmail/);
+assert.match(viteConfig, /"purchase\.order", "action_rfq_send"/);
+assert.match(viteConfig, /"mail\.compose\.message",\s*"action_send_mail"/);
+assert.match(viteConfig, /"mail\.message"/);
 assert.match(viteConfig, /env\.ODOO_WRITE_ENABLED = process\.env\.ODOO_WRITE_ENABLED \?\? env\.ODOO_WRITE_ENABLED/);
 assert.match(viteConfig, /const readOnlyMethods = new Set\(\[\s*"search",/);
 assert.match(viteConfig, /new Set\(\["product_qty", "price_unit", "discount", "date_planned", "name"\]\)/);
