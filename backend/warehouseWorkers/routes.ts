@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 
 type Server = { middlewares: { use: (path: string, handler: (request: any, response: any) => void) => void } };
@@ -10,6 +11,27 @@ export function registerWarehouseWorkersRoutes(server: Server, auth: Auth, optio
   const dataDir = options.dataDir ?? process.env.DASHBOARD_DATA_DIR ?? ".dashboard-data";
   const workersPath = join(dataDir, "warehouse-workers.json");
   const activityPath = join(dataDir, "warehouse-worker-activity.json");
+  const readActivity = (): Activity[] => {
+    if (!existsSync(activityPath)) return [];
+    try {
+      const value = JSON.parse(readFileSync(activityPath, "utf8"));
+      if (!Array.isArray(value)) throw new Error("Formato inválido");
+      return value as Activity[];
+    } catch {
+      throw new Error("El registro de actividad está dañado. No se puede registrar la etiqueta ni actualizar estadísticas.");
+    }
+  };
+  const writeActivity = (activities: Activity[]) => {
+    mkdirSync(dirname(activityPath), { recursive: true });
+    const temporaryPath = `${activityPath}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(temporaryPath, `${JSON.stringify(activities, null, 2)}\n`, { mode: 0o600 });
+      renameSync(temporaryPath, activityPath);
+    } catch (error) {
+      rmSync(temporaryPath, { force: true });
+      throw error;
+    }
+  };
   const read = (): WarehouseWorker[] => existsSync(workersPath) ? JSON.parse(readFileSync(workersPath, "utf8")) : [];
   const write = (workers: WarehouseWorker[]) => { mkdirSync(dirname(workersPath), { recursive: true }); writeFileSync(workersPath, `${JSON.stringify(workers, null, 2)}\n`, { mode: 0o600 }); };
   const readBody = async <T,>(request: any): Promise<T> => { const chunks: Buffer[] = []; await new Promise<void>((resolve, reject) => { request.on("data", (chunk: Buffer) => chunks.push(chunk)); request.on("end", resolve); request.on("error", reject); }); return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as T; };
@@ -26,7 +48,7 @@ export function registerWarehouseWorkersRoutes(server: Server, auth: Auth, optio
     try {
       if (isStatisticsRoute) {
         if (path === "statistics/workers") return send(response, 200, { workers: read().filter((worker) => worker.active).sort((left, right) => left.name.localeCompare(right.name)) });
-        const activities: Activity[] = existsSync(activityPath) ? JSON.parse(readFileSync(activityPath, "utf8")) : [];
+        const activities = readActivity();
         return send(response, 200, { activities: activities.filter((activity) => activity.result === "label-created" || activity.result === "simulated-label"), generatedAt: new Date().toISOString() });
       }
       if (request.method === "GET" && !path) return send(response, 200, { workers: read().sort((a, b) => a.code.localeCompare(b.code)) });
@@ -39,7 +61,7 @@ export function registerWarehouseWorkersRoutes(server: Server, auth: Auth, optio
       const activityOrderMatch = path.match(/^activity\/order\/([^/]+)$/);
       if (request.method === "GET" && activityOrderMatch) {
         const orderRef = decodeURIComponent(activityOrderMatch[1]).trim().toUpperCase();
-        const activities: Activity[] = existsSync(activityPath) ? JSON.parse(readFileSync(activityPath, "utf8")) : [];
+        const activities = readActivity();
         const activity = activities.find((item) => item.orderRef.trim().toUpperCase() === orderRef && (item.result === "label-created" || item.result === "simulated-label"));
         return send(response, 200, { activity: activity || null });
       }
@@ -55,7 +77,7 @@ export function registerWarehouseWorkersRoutes(server: Server, auth: Auth, optio
         const workers = read(); const index = workers.findIndex((item) => item.id === decodeURIComponent(workerMatch[1])); if (index < 0) return send(response, 404, { message: "Operario no encontrado" }); workers.splice(index, 1); write(workers); return send(response, 200, { workers });
       }
       if (request.method === "POST" && path === "activity") {
-        const input = await readBody<Partial<Activity>>(request); if (!input.workerId || !input.orderRef) throw new Error("Falta operario o pedido"); const result = input.result === "error" || input.result === "simulated-label" || input.result === "scan-accepted" || input.result === "scan-blocked-unprinted" ? input.result : "label-created"; const activity: Activity = { id: `activity-${Date.now()}`, workerId: String(input.workerId), workerCode: String(input.workerCode || input.workerId), workerName: String(input.workerName || "Operario"), orderRef: String(input.orderRef), rawReference: input.rawReference ? String(input.rawReference) : undefined, resolvedOrderRef: input.resolvedOrderRef ? String(input.resolvedOrderRef) : undefined, carrier: input.carrier ? String(input.carrier) : undefined, tracking: input.tracking ? String(input.tracking) : undefined, result, createdAt: new Date().toISOString() }; const events: Activity[] = existsSync(activityPath) ? JSON.parse(readFileSync(activityPath, "utf8")) : []; mkdirSync(dirname(activityPath), { recursive: true }); writeFileSync(activityPath, `${JSON.stringify([activity, ...events], null, 2)}\n`, { mode: 0o600 }); return send(response, 201, { activity });
+        const input = await readBody<Partial<Activity>>(request); if (!input.workerId || !input.orderRef) throw new Error("Falta operario o pedido"); const result = input.result === "error" || input.result === "simulated-label" || input.result === "scan-accepted" || input.result === "scan-blocked-unprinted" ? input.result : "label-created"; const activity: Activity = { id: `activity-${Date.now()}`, workerId: String(input.workerId), workerCode: String(input.workerCode || input.workerId), workerName: String(input.workerName || "Operario"), orderRef: String(input.orderRef), rawReference: input.rawReference ? String(input.rawReference) : undefined, resolvedOrderRef: input.resolvedOrderRef ? String(input.resolvedOrderRef) : undefined, carrier: input.carrier ? String(input.carrier) : undefined, tracking: input.tracking ? String(input.tracking) : undefined, result, createdAt: new Date().toISOString() }; const events = readActivity(); writeActivity([activity, ...events]); return send(response, 201, { activity });
       }
       return send(response, 404, { message: "Ruta de operarios no encontrada" });
     } catch (error) { return send(response, 400, { message: error instanceof Error ? error.message : "No se pudo guardar operario" }); }

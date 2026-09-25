@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { createGeneiClient } from "./client.ts";
 import { shrinkPdfLabelBase64 } from "../pdfLabelTools.ts";
@@ -196,13 +197,25 @@ function createGeneratedLabelsRepository() {
 
   function readStore(): GeneratedLabelStore {
     ensureStore();
-    const parsed = JSON.parse(readFileSync(storePath, "utf8")) as Partial<GeneratedLabelStore>;
+    let parsed: Partial<GeneratedLabelStore>;
+    try {
+      parsed = JSON.parse(readFileSync(storePath, "utf8")) as Partial<GeneratedLabelStore>;
+    } catch {
+      throw new Error("El historial de etiquetas está dañado. No generes otra etiqueta: avisa a administración para recuperarlo.");
+    }
     return { labels: Array.isArray(parsed.labels) ? parsed.labels : [] };
   }
 
   function writeStore(store: GeneratedLabelStore) {
     mkdirSync(dirname(storePath), { recursive: true });
-    writeFileSync(storePath, `${JSON.stringify(store, null, 2)}\n`);
+    const temporaryPath = `${storePath}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(temporaryPath, `${JSON.stringify(store, null, 2)}\n`);
+      renameSync(temporaryPath, storePath);
+    } catch (error) {
+      rmSync(temporaryPath, { force: true });
+      throw error;
+    }
   }
 
   function findByReference(reference: string) {
