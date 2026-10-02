@@ -33,6 +33,7 @@ import {
   isCompleteExpeditionOrderReference,
 } from "./backend/expeditionOrderReference";
 import { formatOdooMadrid } from "./backend/odooDateTime";
+import { groupShipmentLabels, isHomeOrderUnprinted, isHomeOrderUnsent, labelReferences, periodBounds, type HomePeriod, type ShippingLabel } from "./backend/home/metrics";
 import {
   createProductCatalog,
   formatCatalogProductName,
@@ -461,6 +462,7 @@ const readOnlyModels = new Set([
   "ir.model.data",
   "mrp.bom",
   "mrp.bom.line",
+  "crm.team",
 ]);
 const readOnlyMethods = new Set([
   "search",
@@ -503,6 +505,20 @@ function odooReadOnlyApi(env: Record<string, string>) {
       const productLocations = createProductLocations({
         dataDir: env.DASHBOARD_DATA_DIR,
       });
+      // Keep the operational Home isolated from the old page's per-card reads.
+      let homeKpiCache: { expiresAt: number; value: unknown } | null = null;
+      let homeKpiInflight: Promise<unknown> | null = null;
+      const homeKpis = (refresh: boolean) => {
+        if (!refresh && homeKpiCache && homeKpiCache.expiresAt > Date.now()) return Promise.resolve(homeKpiCache.value);
+        if (!refresh && homeKpiInflight) return homeKpiInflight;
+        const work = buildOperationalHomeKpis(env, productCatalog, productLocations).then((value) => {
+          homeKpiCache = { expiresAt: Date.now() + 45_000, value };
+          return value;
+        }).finally(() => { homeKpiInflight = null; });
+        homeKpiInflight = work;
+        return work;
+      };
+      const homeSalesCache = new Map<string, { expiresAt: number; value: unknown }>();
       const receptionSessions = createReceptionSessions({
         dataDir: env.DASHBOARD_DATA_DIR,
       });
@@ -1166,6 +1182,31 @@ function odooReadOnlyApi(env: Record<string, string>) {
           }
           try {
             const url = new URL(request.url ?? "/", "http://local");
+            if (url.pathname === "/home") {
+              if (request.method !== "GET") { sendJson(response, 405, { message: "Método no permitido" }); return; }
+              sendJson(response, 200, await homeKpis(url.searchParams.get("refresh") === "1"));
+              return;
+            }
+            if (url.pathname === "/home/charts/shipments") {
+              if (request.method !== "GET") { sendJson(response, 405, { message: "Método no permitido" }); return; }
+              const period = parseHomePeriod(url.searchParams.get("period"));
+              sendJson(response, 200, { period, ...groupShipmentLabels(readHomeShippingLabels(env), period), updatedAt: new Date().toISOString() });
+              return;
+            }
+            if (url.pathname === "/home/charts/sales") {
+              if (request.method !== "GET") { sendJson(response, 405, { message: "Método no permitido" }); return; }
+              const period = parseHomePeriod(url.searchParams.get("period"));
+              const channel = parseHomeSalesChannel(url.searchParams.get("channel"));
+              const key = `${period}:${channel}`;
+              const cached = homeSalesCache.get(key);
+              if (url.searchParams.get("refresh") !== "1" && cached && cached.expiresAt > Date.now()) {
+                sendJson(response, 200, cached.value); return;
+              }
+              const value = await getOperationalHomeSales(env, period, channel);
+              homeSalesCache.set(key, { expiresAt: Date.now() + 45_000, value });
+              sendJson(response, 200, value);
+              return;
+            }
             if (url.pathname === "/v2") {
               const payload = await getOdooDashboardV2(env, {
                 from: url.searchParams.get("from") ?? undefined,
@@ -6038,6 +6079,123 @@ function groupCachedOrders(
 
 function sumNumbers(values: number[]) {
   return values.reduce((total, value) => total + value, 0);
+}
+
+function parseHomePeriod(value: string | null): HomePeriod {
+  return value === "day" || value === "week" || value === "month" ? value : "48h";
+}
+
+type HomeSalesChannel = "all" | "fbm" | "fba" | "website" | "sales";
+function parseHomeSalesChannel(value: string | null): HomeSalesChannel {
+  return value === "fbm" || value === "fba" || value === "website" || value === "sales" ? value : "all";
+}
+
+async function getOperationalHomeSales(env: Record<string, string>, period: HomePeriod, channel: HomeSalesChannel) {
+  const config = getOdooConfig(env);
+  if (!config.url || !config.database || !config.username || !config.apiKey) throw new Error("Falta la conexión con Odoo para ventas");
+  const uid = await authenticate(config);
+  const { start, end } = periodBounds(period);
+  const domain: unknown[] = [
+    ["state", "in", ["sale", "done"]],
+    ["date_order", ">=", start.toISOString().replace("T", " ").slice(0, 19)],
+    ["date_order", "<=", end.toISOString().replace("T", " ").slice(0, 19)],
+  ];
+  if (channel !== "all") {
+    const teams = await executeKw(config, uid, "crm.team", "search_read", [[]], { fields: ["id", "name"], limit: 100 }) as Array<{ id: number; name: string }>;
+    const named = (needle: string) => teams.filter((team) => team.name.toLowerCase().includes(needle)).map((team) => team.id);
+    if (channel === "website") domain.push(["team_id", "in", named("website")]);
+    if (channel === "sales") domain.push(["team_id", "in", named("sales")]);
+    if (channel === "fbm") domain.push("|", ["amz_fulfillment_by", "=", "FBM"], ["team_id", "in", named("amazon fbm")]);
+    if (channel === "fba") domain.push("|", ["amz_fulfillment_by", "=", "FBA"], "&", ["team_id", "in", named("amazon")], ["client_order_ref", "ilike", "FBA%"]);
+  }
+  const grouping = period === "48h" || period === "day" ? "date_order:hour" : "date_order:day";
+  const rows = await executeKw(config, uid, "sale.order", "read_group", [domain, ["amount_untaxed:sum"], [grouping]], {
+    lazy: false,
+    context: { tz: "UTC", lang: "en_US" },
+  }) as Array<Record<string, unknown>>;
+  const values = new Map<string, number>();
+  for (const row of rows) {
+    const range = row.__range as Record<string, { from?: string }> | undefined;
+    const raw = range?.[grouping]?.from || String(row[grouping] || "");
+    const parsed = new Date(raw.replace(" ", "T") + (/Z|[+-]\d\d:\d\d$/.test(raw) ? "" : "Z"));
+    if (!Number.isFinite(parsed.getTime())) throw new Error(`Odoo devolvió una franja de ventas no reconocible: ${raw}`);
+    const key = grouping.endsWith("hour") ? parsed.toISOString().slice(0, 13) : parsed.toISOString().slice(0, 10);
+    values.set(key, (values.get(key) || 0) + Number(row.amount_untaxed || 0));
+  }
+  const points: Array<{ at: string; value: number }> = [];
+  const cursor = new Date(start);
+  cursor.setUTCHours(grouping.endsWith("hour") ? cursor.getUTCHours() : 0, 0, 0, 0);
+  while (cursor <= end) {
+    const key = grouping.endsWith("hour") ? cursor.toISOString().slice(0, 13) : cursor.toISOString().slice(0, 10);
+    points.push({ at: key, value: Math.round((values.get(key) || 0) * 100) / 100 });
+    if (grouping.endsWith("hour")) cursor.setUTCHours(cursor.getUTCHours() + 1);
+    else cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return { period, channel, currency: "EUR", total: Math.round(points.reduce((sum, point) => sum + point.value, 0) * 100) / 100, points, updatedAt: new Date().toISOString() };
+}
+
+function readHomeShippingLabels(env: Record<string, string>): ShippingLabel[] {
+  const path = join(env.DASHBOARD_DATA_DIR || join(process.cwd(), ".dashboard-data"), "genei-shipping-labels.json");
+  if (!existsSync(path)) return [];
+  const store = JSON.parse(readFileSync(path, "utf8")) as { labels?: ShippingLabel[] };
+  if (!Array.isArray(store.labels)) throw new Error("El historial de etiquetas no tiene un formato válido");
+  return store.labels;
+}
+
+async function buildOperationalHomeKpis(
+  env: Record<string, string>,
+  productCatalog: ReturnType<typeof createProductCatalog>,
+  productLocations: ReturnType<typeof createProductLocations>,
+) {
+  const today = new Date();
+  const start = new Date(today);
+  start.setDate(today.getDate() - 3);
+  const range = { from: start.toISOString().slice(0, 10), to: today.toISOString().slice(0, 10) };
+  const ordersStore = readOrdersCache(env);
+  const orders = filterCachedOrders(ordersStore.orders, range);
+  const labels = readHomeShippingLabels(env);
+  const refs = labelReferences(labels);
+  const locationsStore = productLocations.summary();
+  const physicalCodes = new Set(locationsStore.locationCatalog.filter((item) => item.kind === "physical").map((item) => item.code));
+  const located = new Map<number, number>();
+  locationsStore.locations.filter((item) => physicalCodes.has(item.code)).forEach((item) => {
+    located.set(item.productId, (located.get(item.productId) || 0) + item.quantity);
+  });
+  const mto = new Set(productCatalog.list().products.filter((item) => item.mto).map((item) => item.id));
+  const unprinted = orders.filter(isHomeOrderUnprinted);
+  const unsent = orders.filter((order) => isHomeOrderUnsent(order, refs));
+  // The destination catalog also treats a product with no physical-location
+  // row as zero stock. Build the same universe here so the KPI does not omit
+  // catalog products that have never been located.
+  const catalogProducts = productCatalog.list().products;
+  const noStock = catalogProducts
+    .filter((product) => (located.get(product.id) ?? 0) <= 0 && !mto.has(product.id))
+    .map((product) => product.id);
+  const values: Record<string, { count?: number; ids?: string[]; error?: string }> = {
+    unprinted: { count: unprinted.length, ids: unprinted.map((order) => order.id) },
+    unsent: { count: unsent.length, ids: unsent.map((order) => order.id) },
+    noStock: { count: noStock.length, ids: noStock.map((id) => String(id)) },
+  };
+  const [receptions, alerts, purchases] = await Promise.allSettled([
+    getOdooInventoryReceptions(env),
+    getOdooSalesPurchaseAlerts(env),
+    getOdooPurchaseReceptions(env),
+  ]);
+  if (receptions.status === "fulfilled") {
+    const rows = receptions.value.receptions.filter((item) => !item.isImportation && (item.status === "Pendiente" || item.status === "Esperando"));
+    values.receptions = { count: rows.length, ids: rows.map((item) => item.id) };
+  } else values.receptions = { error: String(receptions.reason) };
+  if (alerts.status === "fulfilled") {
+    const rows = alerts.value.alerts.filter((item) => item.state === "draft" || item.state === "sent");
+    // Multiple alert lines can point to the same purchase order. The
+    // destination is one row per purchase order, so count and IDs must use
+    // the same unique set.
+    const purchaseIds = [...new Set(rows.map((item) => item.purchaseId).filter(Boolean))];
+    values.underOrder = { count: purchaseIds.length, ids: purchaseIds };
+  } else values.underOrder = { error: String(alerts.reason) };
+  if (purchases.status === "fulfilled") values.pendingPurchases = { count: purchases.value.total, ids: purchases.value.receptions.map((item) => item.id) };
+  else values.pendingPurchases = { error: String(purchases.reason) };
+  return { updatedAt: new Date().toISOString(), range, source: "dashboard-cache", values, cacheUpdatedAt: ordersStore.updatedAt };
 }
 
 

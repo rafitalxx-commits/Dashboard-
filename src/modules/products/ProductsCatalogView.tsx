@@ -42,11 +42,14 @@ export function ProductsCatalogView({
   startScanner = false,
   scannerPreset,
   onSendToInventory,
+  initialIds,
 }: {
   startScanner?: boolean;
   scannerPreset?: "labels";
   onSendToInventory?: (scope: InventoryScope) => void;
+  initialIds?: string[];
 } = {}) {
+  const [homeIds, setHomeIds] = useState<string[] | null>(initialIds ?? null);
   const [catalog, setCatalog] = useState<CatalogStore>(empty);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
@@ -154,6 +157,7 @@ export function ProductsCatalogView({
   const rows = useMemo(
     () =>
       catalog.products.filter((p) => {
+        if (homeIds && !homeIds.includes(String(p.id))) return false;
         const needle = query.trim().toLowerCase();
         if (
           needle &&
@@ -179,7 +183,7 @@ export function ProductsCatalogView({
         if (filter === "kit") return p.isKit;
         return true;
       }),
-    [catalog.products, filter, locationFilter, query, supplier],
+    [catalog.products, filter, homeIds, locationFilter, query, supplier],
   );
   const withoutEan = catalog.products.filter((p) => !p.barcode).length;
   const pageSize = 50;
@@ -492,6 +496,7 @@ export function ProductsCatalogView({
     );
   return (
     <section className="products-catalog">
+      {homeIds && <div className="home-destination-filter">Filtro de Inicio · ubicación sin stock · excluye Bajo pedido · {homeIds.length} productos <button onClick={() => setHomeIds(null)} type="button">Quitar filtro</button></div>}
       <header className="products-header">
         <div>
           <p className="eyebrow">PRODUCTOS · LAB</p>

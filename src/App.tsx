@@ -46,6 +46,7 @@ import { ProductLocationsView } from "./modules/products/ProductLocationsView";
 import { InventoryView } from "./modules/products/InventoryView";
 import { InventoryReceptionsView } from "./modules/receptions/InventoryReceptionsView";
 import { PendingPurchasesView } from "./modules/receptions/ReceptionsView";
+import { HomePage } from "./modules/home/HomePage";
 import { SupplierInvoicesView } from "./modules/supplierInvoices/SupplierInvoicesView";
 import { odooClient } from "./services/odooClient";
 import type {
@@ -59,6 +60,7 @@ import type {
   SalesPurchaseAlert,
   OrdersSyncStats,
   OrdersV2Performance,
+  OperationalHomeMetric,
 } from "./services/odooTypes";
 
 const navItems = [
@@ -484,6 +486,7 @@ function App() {
   const [activeView, setActiveView] = useState<ActiveView>(() =>
     getViewFromHash(),
   );
+  const [homeDestination, setHomeDestination] = useState<{ metric: OperationalHomeMetric; ids: string[] } | null>(null);
   const isV2View = activeView === "dashboardV2" || activeView === "ordersV2";
   const isDashboardView =
     activeView === "dashboard" || activeView === "dashboardV2";
@@ -553,6 +556,7 @@ function App() {
   // every server block first prevents a filter from silently omitting matches
   // that happen to be on later blocks.
   const needsCompleteOrderDataset =
+    (homeDestination?.metric === "unprinted" || homeDestination?.metric === "unsent") ||
     Boolean(serverSearch) ||
     selectedChannels.length > 0 ||
     delivery !== "Todos" ||
@@ -619,7 +623,7 @@ function App() {
 
     let mounted = true;
 
-    if (isDashboardView) {
+    if (activeView === "dashboardV2") {
       setDashboard(null);
       setDataMode("loading");
       setConnectionMessage(isV2View ? "Leyendo cache V2" : "Conectando con Odoo");
@@ -732,6 +736,7 @@ function App() {
       mounted = false;
     };
   }, [
+    activeView,
     authMode,
     dateRange,
     isDashboardView,
@@ -759,7 +764,7 @@ function App() {
   }, [authMode, isOrdersView, orderRefreshKey]);
 
   useEffect(() => {
-    if (authMode !== "logged-in" || !isDashboardView) return;
+    if (authMode !== "logged-in" || activeView !== "dashboardV2") return;
 
     let mounted = true;
     const range = lastDaysRange(4);
@@ -805,16 +810,16 @@ function App() {
       mounted = false;
       setControlOrdersLoading(false);
     };
-  }, [authMode, isDashboardView, isV2View, orderRefreshKey]);
+  }, [activeView, authMode, isV2View, orderRefreshKey]);
 
   useEffect(() => {
     if (
       authMode !== "logged-in" ||
-      (activeView !== "customerInvoices" && activeView !== "dashboard")
+      activeView !== "customerInvoices"
     ) return;
 
     let mounted = true;
-    const delay = activeView === "dashboard" ? 900 : 0;
+    const delay = 0;
     if (activeView === "customerInvoices") {
       setDataMode("loading");
       setConnectionMessage("Conectando con Odoo");
@@ -827,8 +832,8 @@ function App() {
 
       odooClient.getCustomerInvoices({
         ...dateRange,
-        limit: activeView === "dashboard" ? 20 : invoicePageSize,
-        offset: activeView === "dashboard" ? 0 : invoiceOffset,
+        limit: invoicePageSize,
+        offset: invoiceOffset,
         sortKey: invoiceSort.key,
         sortDir: invoiceSort.direction,
       }).then((result) => {
@@ -873,6 +878,7 @@ function App() {
 
   const openOrdersFromHome = (input: {
     channel?: ControlChannel;
+    channels?: string[];
     delivery?: string;
     printed?: string;
     odooDelivery?: string;
@@ -883,7 +889,7 @@ function App() {
       setCustomFrom(input.range.from);
       setCustomTo(input.range.to);
     }
-    setSelectedChannels(channelToFilterValues(input.channel ?? "Todos"));
+    setSelectedChannels(input.channels ?? channelToFilterValues(input.channel ?? "Todos"));
     setDelivery(input.delivery ?? "Todos");
     setPrinted(input.printed ?? "Todos");
     setOdooDelivery(input.odooDelivery ?? "Todos");
@@ -892,6 +898,19 @@ function App() {
     setPage(1);
     setSelectedPrintOrderIds([]);
     navigateToView(isV2View ? "ordersV2" : "orders");
+  };
+
+  const openOperationalHomeMetric = (metric: OperationalHomeMetric, ids: string[], range: { from: string; to: string }) => {
+    setHomeDestination({ metric, ids });
+    if (metric === "unprinted") {
+      openOrdersFromHome({ channels: ["Amazon FBM", "Website"], delivery: "No entregados", printed: "Sin imprimir", range });
+      return;
+    }
+    if (metric === "unsent") {
+      openOrdersFromHome({ channels: ["Amazon FBM", "Website"], range });
+      return;
+    }
+    navigateToView(metric === "receptions" ? "receptions" : metric === "noStock" ? "products" : "pendingPurchases");
   };
 
   useEffect(() => {
@@ -913,6 +932,7 @@ function App() {
     const text = query.trim().toLowerCase();
 
     return orders.filter((order) => {
+      if (homeDestination && (homeDestination.metric === "unprinted" || homeDestination.metric === "unsent") && !homeDestination.ids.includes(order.id)) return false;
       const delivered = isDelivered(getEffectiveDeliveryStatus(order));
       const matchesSearch =
         !text ||
@@ -960,7 +980,7 @@ function App() {
         matchesOdooDelivery
       );
     });
-  }, [delivery, odooDelivery, orders, printed, query, selectedChannels]);
+  }, [delivery, homeDestination, odooDelivery, orders, printed, query, selectedChannels]);
 
   const sortedOrders = useMemo(
     () => sortOrders(filteredOrders, orderSort.key, orderSort.direction),
@@ -1015,6 +1035,7 @@ function App() {
     setSelectedPrintOrderIds([]);
   };
   const clearFilters = () => {
+    setHomeDestination(null);
     setQuery("");
     setSelectedChannels([]);
     setDelivery("Todos");
@@ -1264,7 +1285,7 @@ function App() {
   const isPurchasesView =
     activeView === "purchases" || activeView === "pendingPurchases" || activeView === "supplierInvoices" || activeView === "purchaseAnalytics";
   const showOrderRange =
-    isDashboardView || isOrdersView || activeView === "customerInvoices";
+    activeView === "dashboardV2" || isOrdersView || activeView === "customerInvoices";
   const refreshOrders = async () => {
     if (!showOrderRange || ordersSyncLoading) return;
     setOrdersSyncLoading(true);
@@ -1788,7 +1809,9 @@ function App() {
           </>
         )}
 
-        {isDashboardView ? (
+        {activeView === "dashboard" ? (
+          <HomePage onOpen={openOperationalHomeMetric} />
+        ) : activeView === "dashboardV2" ? (
           <>
             {isV2View && (
               <V2PerformancePanel
@@ -1911,6 +1934,7 @@ function App() {
         ) : activeView === "products" ? (
           <ProductsCatalogView
             key="catalog"
+            initialIds={homeDestination?.metric === "noStock" ? homeDestination.ids : undefined}
             onSendToInventory={() => navigateToView("productsInventoryNew")}
           />
         ) : activeView === "productsScanner" ? (
@@ -1995,11 +2019,12 @@ function App() {
             }
           />
         ) : activeView === "pendingPurchases" ? (
-          <PendingPurchasesView />
+          <PendingPurchasesView initialIds={homeDestination?.metric === "underOrder" || homeDestination?.metric === "pendingPurchases" ? homeDestination.ids : undefined} />
         ) : activeView === "receptions" ? (
-          <InventoryReceptionsView />
+          <InventoryReceptionsView initialIds={homeDestination?.metric === "receptions" ? homeDestination.ids : undefined} />
         ) : isOrdersView ? (
           <>
+            {homeDestination && (homeDestination.metric === "unprinted" || homeDestination.metric === "unsent") && <div className="home-destination-filter">Filtro de Inicio · {homeDestination.metric === "unprinted" ? "FBM + Website · sin imprimir" : "FBM + Website · sin etiqueta de Expediciones"} · {homeDestination.ids.length} pedidos <button onClick={() => setHomeDestination(null)} type="button">Quitar filtro</button></div>}
             {isV2View && (
               <V2PerformancePanel
                 performance={ordersV2Performance}
