@@ -25,8 +25,11 @@ import "./receptions.css";
 
 type StatusFilter = "Todos" | PurchaseReception["status"];
 
-export function PendingPurchasesView() {
-  const [payload, setPayload] = useState<PurchaseReceptionsPayload | null>(null);
+export function PendingPurchasesView({ initialIds }: { initialIds?: string[] } = {}) {
+  const [homeIds, setHomeIds] = useState<string[] | null>(initialIds ?? null);
+  const [payload, setPayload] = useState<PurchaseReceptionsPayload | null>(
+    null,
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
@@ -214,6 +217,7 @@ export function PendingPurchasesView() {
   const receptions = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase("es");
     return (payload?.receptions ?? []).filter((reception) => {
+      if (homeIds && !homeIds.includes(reception.id)) return false;
       if (status !== "Todos" && reception.status !== status) return false;
       if (!normalized) return true;
       return [
@@ -222,10 +226,11 @@ export function PendingPurchasesView() {
         ...reception.lines.flatMap((line) => [line.name, line.sku, line.barcode]),
       ].some((value) => value.toLocaleLowerCase("es").includes(normalized));
     });
-  }, [payload, query, status]);
+  }, [homeIds, payload, query, status]);
 
   return (
     <section className="receptions-view">
+      {homeIds && <div className="home-destination-filter">Filtro de Inicio · {homeIds.length} presupuestos <button onClick={() => setHomeIds(null)} type="button">Quitar filtro</button></div>}
       <header className="receptions-intro">
         <div>
           <span className="receptions-kicker">Compras · Presupuestos Odoo</span>

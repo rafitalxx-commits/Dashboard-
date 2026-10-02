@@ -1,5 +1,22 @@
 export type StatusTone = "ok" | "warning" | "danger" | "neutral" | "info";
 
+export type OperationalHomeMetric = "unprinted" | "unsent" | "receptions" | "underOrder" | "noStock" | "pendingPurchases";
+export type OperationalHomePayload = {
+  updatedAt: string;
+  cacheUpdatedAt?: string;
+  range: { from: string; to: string };
+  values: Record<OperationalHomeMetric, { count?: number; ids?: string[]; error?: string }>;
+};
+export type OperationalHomePeriod = "48h" | "day" | "week" | "month";
+export type OperationalHomeChart = {
+  period: OperationalHomePeriod;
+  channel?: "all" | "fbm" | "fba" | "website" | "sales";
+  currency?: "EUR";
+  total: number;
+  points: Array<{ at: string; value: number }>;
+  updatedAt: string;
+};
+
 export type CatalogProduct = {
   id: number;
   templateId?: number;

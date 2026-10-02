@@ -21,6 +21,9 @@ import type {
   ReceptionOperator,
   ReceptionSession,
   PendingReceipt,
+  OperationalHomePayload,
+  OperationalHomePeriod,
+  OperationalHomeChart,
 } from "./odooTypes";
 
 type DashboardUserRole = "viewer" | "printer" | "admin";
@@ -702,6 +705,21 @@ export const odooClient = {
             : "No se pudo conectar con Odoo",
       };
     }
+  },
+  async getOperationalHome(refresh = false, signal?: AbortSignal): Promise<OperationalHomePayload> {
+    const response = await fetch(receptionsApiPath(`/api/odoo/dashboard/home${refresh ? "?refresh=1" : ""}`), { signal });
+    const payload = await readJson(response);
+    if (!response.ok) throw new Error(payload.message || "No se pudo cargar Inicio");
+    return payload as OperationalHomePayload;
+  },
+  async getOperationalHomeChart(kind: "shipments" | "sales", period: OperationalHomePeriod, channel = "all", refresh = false, signal?: AbortSignal): Promise<OperationalHomeChart> {
+    const params = new URLSearchParams({ period });
+    if (kind === "sales") params.set("channel", channel);
+    if (refresh) params.set("refresh", "1");
+    const response = await fetch(receptionsApiPath(`/api/odoo/dashboard/home/charts/${kind}?${params}`), { signal });
+    const payload = await readJson(response);
+    if (!response.ok) throw new Error(payload.message || `No se pudo cargar la gráfica de ${kind}`);
+    return payload as OperationalHomeChart;
   },
   async getDashboardV2(params?: { from?: string; to?: string }) {
     const query = new URLSearchParams();

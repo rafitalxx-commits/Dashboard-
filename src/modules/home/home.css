@@ -1,0 +1,54 @@
+.operational-home{background:#f5f7fb;padding:28px;min-height:100%;color:#17233c}
+.operational-home-header{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-bottom:30px}
+.operational-home-eyebrow{color:#4a75bd;font-size:12px;font-weight:700;letter-spacing:.09em;text-transform:uppercase}
+.operational-home h1{font-size:32px;line-height:1.15;margin:5px 0 7px}
+.operational-home-header p{color:#718098;margin:0;font-size:14px}
+.operational-home-refresh{display:inline-flex;align-items:center;gap:9px;border:1px solid #dbe3ef;background:#fff;border-radius:12px;padding:10px 13px;color:#466484;cursor:pointer;white-space:nowrap}
+.operational-home-refresh:hover:not(:disabled){border-color:#88a9e2;background:#f8fbff}
+.operational-home-refresh:disabled{cursor:wait;opacity:.8}
+.operational-home .spinning{animation:operational-spin 1s linear infinite}
+@keyframes operational-spin{to{transform:rotate(360deg)}}
+.operational-home-section{margin:0 0 30px}
+.operational-home-section h2{font-size:13px;font-weight:700;color:#617089;letter-spacing:.04em;margin:0 0 13px}
+.operational-home-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.operational-home-kpi,.operational-home-chart{border:1px solid #e8edf5;border-radius:18px;background:#fff;box-shadow:0 7px 25px rgba(31,56,91,.045)}
+.operational-home-kpi{display:flex;flex-direction:column;text-align:left;min-width:0;padding:20px 21px;cursor:pointer;color:inherit;min-height:171px;transition:box-shadow .18s,border-color .18s,transform .18s}
+.operational-home-kpi:hover{border-color:#b6cced;box-shadow:0 11px 28px rgba(46,92,164,.13);transform:translateY(-2px)}
+.operational-home-kpi:focus-visible,.operational-home-chart button:focus-visible,.operational-home-refresh:focus-visible{outline:3px solid #8ab4f8;outline-offset:3px}
+.operational-home-kpi-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:13px;width:100%}
+.operational-home-icon{width:38px;height:38px;border-radius:11px;display:inline-flex;align-items:center;justify-content:center;background:#eef5ff;color:#2c6ecb;flex:none}
+.operational-home-arrow{color:#a2aec0;transition:color .18s,transform .18s}
+.operational-home-kpi:hover .operational-home-arrow{color:#2c6ecb;transform:translate(2px,-2px)}
+.operational-home-kpi-title{font-size:14px;font-weight:600;color:#56657d;margin-bottom:3px}
+.operational-home-kpi strong,.operational-home-kpi-unavailable{font-size:35px;line-height:1.15;font-weight:750;letter-spacing:-.035em}
+.operational-home-kpi-unavailable{font-size:22px;color:#a5503f}
+.operational-home-kpi small,.operational-home-chart small{color:#8995a8;font-size:12px}
+.operational-home-charts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.operational-home-chart{min-width:0;padding:20px 22px 18px}
+.operational-home-chart-heading{display:flex;align-items:center;gap:11px;margin-bottom:12px}
+.operational-home-chart-heading h3{font-size:15px;margin:0}
+.operational-home-chart-total{font-size:29px;line-height:1.2;letter-spacing:-.025em;display:block}
+.operational-home-chart-controls{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-top:17px}
+.operational-home-period{display:flex;background:#f2f5fa;border-radius:10px;padding:3px;gap:2px}
+.operational-home-period button{border:0;border-radius:8px;background:transparent;color:#657389;font-size:12px;padding:7px 9px;cursor:pointer}
+.operational-home-period button.active{background:#fff;color:#245eac;box-shadow:0 1px 4px rgba(28,52,82,.12);font-weight:700}
+.operational-home-channel{font-size:12px;color:#78859a;display:flex;align-items:center;gap:7px}
+.operational-home-channel select{border:1px solid #dce5f0;background:#fff;color:#405673;border-radius:9px;padding:6px 9px;max-width:125px}
+.operational-home-chart-scroll{overflow:auto;margin-top:23px;padding-bottom:2px}
+.operational-home-bars{display:flex;align-items:end;gap:3px;height:125px;min-width:360px;border-bottom:1px solid #e2e9f2;padding-top:5px}
+.operational-home-bar{display:flex;flex:1;min-width:4px;flex-direction:column;align-items:center;justify-content:end;height:100%;position:relative}
+.operational-home-bar>span{width:100%;max-width:18px;border-radius:4px 4px 0 0;background:linear-gradient(180deg,#5d9be8,#a4c9f3);min-height:2px}
+.operational-home-bar:hover>span{background:#2769c5}
+.operational-home-bar small{font-size:9px;position:absolute;top:100%;white-space:nowrap;margin-top:3px;color:#8b99ac}
+.operational-home-chart-scroll{padding-bottom:17px}
+.operational-home-skeleton{display:block;background:linear-gradient(90deg,#edf1f6 0%,#f8fafc 50%,#edf1f6 100%);background-size:200% 100%;animation:operational-shimmer 1.3s infinite;border-radius:8px}
+@keyframes operational-shimmer{to{background-position-x:-200%}}
+.operational-home-skeleton.number{width:58px;height:39px;margin:4px 0}
+.operational-home-skeleton.total{width:140px;height:34px;margin:9px 0}
+.operational-home-skeleton.graph{height:126px;margin-top:60px}
+.operational-home-error,.operational-home-chart-error{color:#a33f37;background:#fff5f3;border:1px solid #f5d4ce;border-radius:11px;padding:11px 13px;font-size:13px}
+.operational-home-error button{background:none;border:0;color:#1f5cae;text-decoration:underline;cursor:pointer}
+@media(max-width:900px){.operational-home-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.operational-home-charts{grid-template-columns:1fr}}
+@media(max-width:620px){.operational-home{padding:18px 14px}.operational-home-header{align-items:flex-start;flex-direction:column;margin-bottom:24px}.operational-home h1{font-size:27px}.operational-home-grid{grid-template-columns:1fr;gap:12px}.operational-home-kpi{min-height:142px}.operational-home-chart{padding:17px}.operational-home-section{margin-bottom:25px}.operational-home-bars{min-width:450px}}
+.home-destination-filter{display:flex;align-items:center;flex-wrap:wrap;gap:8px;background:#eef5ff;border:1px solid #c8dcf6;color:#275486;border-radius:10px;padding:10px 12px;margin:0 0 14px;font-size:13px;font-weight:600}
+.home-destination-filter button{border:0;background:transparent;color:#18569f;text-decoration:underline;cursor:pointer;padding:2px 4px;font:inherit}
