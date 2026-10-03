@@ -22,6 +22,21 @@ export function HomePage({ onOpen }: { onOpen: (metric: OperationalHomeMetric, i
   const [now, setNow] = useState(Date.now());
   useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer); }, []);
   useEffect(() => {
+    const refreshIfStale = () => {
+      if (document.visibilityState === "visible" && (!recentHome || recentHome.expiresAt <= Date.now())) {
+        setRefreshId((id) => id + 1);
+      }
+    };
+    const timer = window.setInterval(refreshIfStale, 60_000);
+    document.addEventListener("visibilitychange", refreshIfStale);
+    window.addEventListener("focus", refreshIfStale);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshIfStale);
+      window.removeEventListener("focus", refreshIfStale);
+    };
+  }, []);
+  useEffect(() => {
     if (data && recentHome && recentHome.expiresAt > Date.now() && refreshId === 0) return;
     const controller = new AbortController();
     setLoading(true); setError("");

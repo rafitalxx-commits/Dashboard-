@@ -6162,7 +6162,6 @@ async function buildOperationalHomeKpis(
     located.set(item.productId, (located.get(item.productId) || 0) + item.quantity);
   });
   const mto = new Set(productCatalog.list().products.filter((item) => item.mto).map((item) => item.id));
-  const unprinted = orders.filter(isHomeOrderUnprinted);
   const unsent = orders.filter((order) => isHomeOrderUnsent(order, refs));
   // The destination catalog also treats a product with no physical-location
   // row as zero stock. Build the same universe here so the KPI does not omit
@@ -6172,15 +6171,19 @@ async function buildOperationalHomeKpis(
     .filter((product) => (located.get(product.id) ?? 0) <= 0 && !mto.has(product.id))
     .map((product) => product.id);
   const values: Record<string, { count?: number; ids?: string[]; error?: string }> = {
-    unprinted: { count: unprinted.length, ids: unprinted.map((order) => order.id) },
     unsent: { count: unsent.length, ids: unsent.map((order) => order.id) },
     noStock: { count: noStock.length, ids: noStock.map((id) => String(id)) },
   };
-  const [receptions, alerts, purchases] = await Promise.allSettled([
+  const [unprintedResult, receptions, alerts, purchases] = await Promise.allSettled([
+    getHomeUnprintedOrders(env, range, orders),
     getOdooInventoryReceptions(env),
     getOdooSalesPurchaseAlerts(env),
     getOdooPurchaseReceptions(env),
   ]);
+  if (unprintedResult.status === "fulfilled") {
+    const unprinted = unprintedResult.value.filter(isHomeOrderUnprinted);
+    values.unprinted = { count: unprinted.length, ids: unprinted.map((order) => order.id) };
+  } else values.unprinted = { error: String(unprintedResult.reason) };
   if (receptions.status === "fulfilled") {
     const rows = receptions.value.receptions.filter((item) => !item.isImportation && (item.status === "Pendiente" || item.status === "Esperando"));
     values.receptions = { count: rows.length, ids: rows.map((item) => item.id) };
@@ -6195,7 +6198,26 @@ async function buildOperationalHomeKpis(
   } else values.underOrder = { error: String(alerts.reason) };
   if (purchases.status === "fulfilled") values.pendingPurchases = { count: purchases.value.total, ids: purchases.value.receptions.map((item) => item.id) };
   else values.pendingPurchases = { error: String(purchases.reason) };
-  return { updatedAt: new Date().toISOString(), range, source: "dashboard-cache", values, cacheUpdatedAt: ordersStore.updatedAt };
+  return { updatedAt: new Date().toISOString(), range, source: ordersFastCacheEnabled(env) ? "dashboard-cache" : "odoo-live", values, cacheUpdatedAt: ordersStore.updatedAt };
+}
+
+async function getHomeUnprintedOrders(
+  env: Record<string, string>,
+  range: { from: string; to: string },
+  cachedOrders: OrdersCacheStore["orders"],
+) {
+  // Pedidos uses Odoo directly when the fast cache is disabled. Home must use
+  // that same source, including every page, or the card can disagree with its destination.
+  if (ordersFastCacheEnabled(env)) return cachedOrders;
+  const orders: Awaited<ReturnType<typeof getOdooOrdersFull>>["orders"] = [];
+  const pageLimit = 500;
+  for (let offset = 0; ; offset += pageLimit) {
+    const page = await getOdooOrdersFull(env, { ...range, limit: pageLimit, offset });
+    if (page.mode !== "live") throw new Error(page.message || "No se pudieron consultar los pedidos de Odoo");
+    orders.push(...page.orders);
+    if (orders.length >= page.total || page.orders.length < pageLimit) break;
+  }
+  return orders;
 }
 
 
