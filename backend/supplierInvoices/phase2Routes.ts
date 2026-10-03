@@ -3,8 +3,9 @@
 // OJO: este middleware es first-match-wins por prefijo. Las sub-rutas especificas
 // (/inbox/detail, /inbox/scan, /unbilled/sync...) DEBEN registrarse ANTES que sus listas.
 
-import { createReadStream, existsSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { basename } from "node:path";
+import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import { SupplierInvoiceSyncService } from "./service.ts";
 import { DocumentInboxService, matchDocument, buildPoIndex, parseDate, normalizeSupplierName } from "./documentInbox.ts";
 import { SupplierMappingStore } from "./supplierMappings.ts";
@@ -13,6 +14,7 @@ import type { DraftResult } from "./odooBridge.ts";
 import { aiExtractCachedPdf, mergeExtracted } from "./aiExtract.ts";
 import { PurchaseOrdersLedger, computeBilling, filterOrders, computeUnbilledKpis } from "./unbilled.ts";
 import { DriveClient } from "./driveClient.ts";
+import { searchRead } from "./odooClient.ts";
 
 type MiddlewareServer = {
   middlewares: {
@@ -68,6 +70,26 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     }
     return user;
   };
+
+  // Catálogos fiscales: lectura exclusiva. Las elecciones se guardan solamente
+  // en el documento local hasta una futura acción autorizada de borrador Odoo.
+  server.middlewares.use("/api/odoo/supplier-invoices/inbox/fiscal-options", async (request: any, response: any) => {
+    const user = requireUser(request, response);
+    if (!user) return;
+    try {
+      const session = await odooSession(deps.env);
+      const [taxRows, accountRows] = await Promise.all([
+        searchRead(session.config, session.uid, "account.tax", [["active", "=", true], ["type_tax_use", "=", "purchase"]], ["id", "name", "amount"], { order: "name asc", limit: 300 }),
+        searchRead(session.config, session.uid, "account.account", [["deprecated", "=", false]], ["id", "code", "name"], { order: "code asc", limit: 500 }),
+      ]);
+      sendJson(response, 200, {
+        taxes: taxRows.map((r) => ({ id: Number(r.id), name: String(r.name ?? "Impuesto"), rate: Number(r.amount ?? 0) })),
+        accounts: accountRows.map((r) => ({ id: Number(r.id), name: `${String(r.code ?? "")} · ${String(r.name ?? "")}`.replace(/^\s*·\s*/, "") })),
+      });
+    } catch (e) {
+      sendJson(response, 502, { message: e instanceof Error ? e.message : "No se pudieron leer impuestos y cuentas de Odoo" });
+    }
+  });
 
   const enrichedOrders = () =>
     computeBilling(poLedger.getStore().orders, invoiceService.getStore().invoices.map((i) => ({
@@ -162,40 +184,28 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     const user = requireUser(request, response);
     if (!user) return;
     if ((request.method ?? "POST").toUpperCase() !== "POST") return sendJson(response, 405, { message: "Usa POST" });
-    let body: { id?: string; status?: string; notes?: string } = {};
+    let body: { id?: string; driveFileId?: string; status?: string; notes?: string } = {};
     try { body = JSON.parse(await readBody(request) || "{}"); } catch { /* body vacio */ }
-    if (!body.id || !body.status) return sendJson(response, 400, { message: "Faltan id o status" });
+    const documentId = body.id ?? body.driveFileId;
+    if (!documentId || !body.status) return sendJson(response, 400, { message: "Faltan id o status" });
     const allowed = ["SIN_REVISAR", "EN_REVISION", "PENDIENTE_COTEJO", "PENDIENTE_VALIDAR", "VALIDADA", "INCIDENCIA"];
     if (!allowed.includes(body.status)) return sendJson(response, 400, { message: "Estado no permitido" });
-    const doc = inboxService.setStatus(body.id, body.status as any, user.name, body.notes);
-    if (!doc) return sendJson(response, 404, { message: "Documento no encontrado" });
-    // Fase 3: al validar se crea automaticamente el BORRADOR en Odoo (solo con puerta abierta).
-    const anyDoc = doc as any;
-    let odooNote: { created?: boolean; moveId?: number; name?: string; skipped?: boolean; error?: string } | null = null;
-    if (body.status === "VALIDADA" && odooWriteEnabled(deps.env) && !anyDoc.odooDraftMoveId) {
-      try {
-        const session = await odooSession(deps.env);
-        const orders = poLedger.getStore().orders.map((o) => ({
-          id: o.id, name: o.name, partnerId: o.partnerId, partnerName: o.partnerName, partnerVat: o.partnerVat, amountTotal: o.amountTotal as number | null,
-          lines: o.lines.map((l) => ({ productId: l.productId, productName: l.productName, qtyOrdered: l.qtyOrdered, qtyReceived: l.qtyReceived, qtyInvoiced: l.qtyInvoiced, qtyPending: l.qtyPending, priceUnit: l.priceUnit, subtotal: l.subtotal })),
-        }));
-        const result = await createSupplierDraft(session.config, session.uid, doc as any, orders);
-        if (result.ok && result.moveId) {
-          anyDoc.odooDraftMoveId = result.moveId;
-          anyDoc.odooDraftName = result.name ?? null;
-          anyDoc.odooDraftState = result.state ?? "draft";
-          odooNote = { created: true, moveId: result.moveId, name: result.name ?? undefined };
-          doc.notes = [...(doc.notes ? [doc.notes] : []), `Borrador Odoo ${result.name} creado por ${user.name}`].join("; ").slice(0, 400);
-        } else {
-          odooNote = { error: result.message };
-          doc.notes = [...(doc.notes ? [doc.notes] : []), `No se creo borrador: ${result.message}`].join("; ").slice(0, 400);
-        }
-      } catch (e) {
-        odooNote = { error: e instanceof Error ? e.message : "Error creando borrador" };
+    const existingDoc = inboxService.getDocument(documentId);
+    if (!existingDoc) return sendJson(response, 404, { message: "Documento no encontrado" });
+    // Una factura de mercancía puede revisarse antes de recibirla, pero no se
+    // cierra/contabiliza hasta que Odoo confirme la recepción. Servicios sin
+    // líneas de pedido no entran en esta protección.
+    if (body.status === "VALIDADA" && (existingDoc.assignedPurchaseOrderIds?.length ?? 0) > 0) {
+      const selected = poLedger.getStore().orders.filter((o) => existingDoc.assignedPurchaseOrderIds!.includes(o.id));
+      const pendingReception = selected.some((o) => o.lines.some((l) => l.qtyOrdered > 0 && l.qtyReceived + 1e-6 < l.qtyOrdered));
+      if (pendingReception) {
+        return sendJson(response, 409, { message: "Factura revisada, pendiente de recepción en Odoo. Actualiza las recepciones cuando llegue la mercancía antes de validar." });
       }
-      inboxService.save();
     }
-    sendJson(response, 200, { status: "ok", document: doc, odooDraft: odooNote });
+    const doc = inboxService.setStatus(documentId, body.status as any, user.name, body.notes)!;
+    // Validar sólo certifica el cotejo humano. Crear un borrador es una acción
+    // separada, visible y explícita en su propio botón / ruta autorizada.
+    sendJson(response, 200, { status: "ok", document: doc, odooDraft: null });
   });
 
   // Recotejo manual de un documento contra el cache actual.
@@ -209,10 +219,15 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     const doc = inboxService.getDocument(body.id);
     if (!doc) return sendJson(response, 404, { message: "Documento no encontrado" });
     const match = matchDocument(doc, invoiceService.getStore().invoices, buildPoIndex(poLedger.getStore()));
-    const target = store.documents.find((d) => d.driveFileId === body.id);
+    const target = inboxService.getStore().documents.find((d) => d.driveFileId === body.id);
     if (target) target.match = match;
-    inboxService.setStatus(body.id, match && match.band === "alta" ? "PENDIENTE_VALIDAR" : "PENDIENTE_COTEJO", user.name);
-    sendJson(response, 200, { status: "ok", match });
+    // Recalcular no deshace una decisión final humana ni una incidencia.
+    // Para estados abiertos actualiza el estado de trabajo junto al resultado.
+    const refreshed = inboxService.getDocument(body.id)!;
+    if (refreshed.status !== "VALIDADA" && refreshed.status !== "INCIDENCIA") {
+      inboxService.setStatus(body.id, match && match.band === "alta" ? "PENDIENTE_VALIDAR" : "PENDIENTE_COTEJO", user.name);
+    }
+    sendJson(response, 200, { status: "ok", match, document: inboxService.getDocument(body.id) });
   });
 
   // Edicion local de lineas extraidas (editor de productos, 2.4). Solo persiste el
@@ -221,7 +236,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     const user = requireUser(request, response);
     if (!user) return;
     if ((request.method ?? "POST").toUpperCase() !== "POST") return sendJson(response, 405, { message: "Usa POST" });
-    let body: { id?: string; lines?: { description: string; reference: string | null; quantity: number | null; priceUnit: number | null; discount: number | null; taxNames: string[]; total: number | null }[] } = {};
+    let body: { id?: string; base?: unknown; taxes?: unknown; lines?: { description: string; reference: string | null; quantity: number | null; priceUnit: number | null; discount: number | null; taxNames: string[]; taxId?: number | null; taxAmount?: number | null; accountId?: number | null; accountName?: string | null; total: number | null; sourcePurchaseOrder?: string | null }[] } = {};
     try { body = JSON.parse(await readBody(request) || "{}"); } catch { /* body vacio */ }
     if (!body.id || !Array.isArray(body.lines)) return sendJson(response, 400, { message: "Faltan id o lines" });
     const doc = inboxService.getDocument(body.id);
@@ -234,14 +249,27 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
       priceUnit: typeof l.priceUnit === "number" && Number.isFinite(l.priceUnit) ? Math.round(l.priceUnit * 100) / 100 : null,
       discount: typeof l.discount === "number" && Number.isFinite(l.discount) ? Math.round(l.discount * 100) / 100 : null,
       taxNames: Array.isArray(l.taxNames) ? l.taxNames.filter((t): t is string => typeof t === "string").slice(0, 4) : [],
+      taxId: typeof l.taxId === "number" && Number.isInteger(l.taxId) ? l.taxId : null,
+      taxAmount: typeof l.taxAmount === "number" && Number.isFinite(l.taxAmount) ? Math.round(l.taxAmount * 100) / 100 : null,
+      accountId: typeof l.accountId === "number" && Number.isInteger(l.accountId) ? l.accountId : null,
+      accountName: l.accountName ? String(l.accountName).slice(0, 160) : null,
       total: typeof l.total === "number" && Number.isFinite(l.total) ? Math.round(l.total * 100) / 100 : null,
+      sourcePurchaseOrder: l.sourcePurchaseOrder ? String(l.sourcePurchaseOrder).slice(0, 40) : null,
       confidence: 95,
     }));
     doc.extracted.lines = clean;
-    const sum = clean.reduce((acc, l) => acc + (l.total ?? 0), 0);
+    const money = (value: unknown) => typeof value === "number" ? value : Number(String(value ?? "").replace(",", "."));
+    if (body.base !== undefined) {
+      const base = money(body.base);
+      if (Number.isFinite(base)) doc.extracted.base = Math.round(base * 100) / 100;
+    }
+    if (body.taxes !== undefined) {
+      const tax = money(body.taxes);
+      if (Number.isFinite(tax)) doc.extracted.taxes = Math.round(tax * 100) / 100;
+    }
     doc.notes = [...(doc.notes ? [doc.notes] : []), `Lineas editadas por ${user.name}`].join("; ").slice(0, 400);
     inboxService.save();
-    sendJson(response, 200, { status: "ok", lines: doc.extracted.lines, total: doc.extracted.total });
+    sendJson(response, 200, { status: "ok", lines: doc.extracted.lines, total: doc.extracted.total, document: doc });
   });
 
   // Edicion de campos extraidos (cabecera) + memoria de mapeos por proveedor:
@@ -320,12 +348,29 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     const supName = normalizeSupplierName(ex.supplier);
     const normVat = (v: string | null) => (v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
     const supVat = normVat(ex.supplierVat);
+    const assignedIds = new Set(doc?.assignedPurchaseOrderIds ?? []);
+    // Referencias explícitas del PDF: 04957 y P04957 son el mismo pedido.
+    // Deben verse aunque el proveedor aún esté sin corregir o la IA falle.
+    let referenceText = ex.textPreview ?? "";
+    const cachedPdf = `${deps.dataDir.replace(/\/$/, "")}/supplier-invoices/inbox/${id}.pdf`;
+    // textPreview es deliberadamente corto para la bandeja. Para sugerir pedidos
+    // hay que leer el PDF entero: una factura puede mencionar varios pedidos en
+    // páginas o bloques posteriores.
+    if (existsSync(cachedPdf)) {
+      try { referenceText = (await pdfParse(readFileSync(cachedPdf))).text ?? referenceText; } catch { /* se conserva el resumen */ }
+    }
+    const explicitOrderNames = new Set(
+      referenceText.match(/\bP?0\d{4,}\b/gi)?.map((value) =>
+        value.toUpperCase().startsWith("P") ? value.toUpperCase() : `P${value}`,
+      ) ?? [],
+    );
     // Normaliza el prefijo de país del VAT (ESB87629895 == B87629895) para comparar con el ledger.
     const countryStrip = (v: string) => (v.length > 9 && /^[A-Z]{2}/.test(v) ? v.slice(2) : v);
     const orders = poLedger.getStore().orders
       .filter((o) => o.state === "purchase" || o.state === "done")
       .filter((o) => (o.billedPct ?? 0) < 99)
       .filter((o) => {
+        if (assignedIds.has(o.id) || explicitOrderNames.has(o.name.toUpperCase())) return true;
         const poVat = normVat(o.partnerVat);
         if (supVat && poVat) {
           return poVat === supVat || countryStrip(poVat) === countryStrip(supVat);
@@ -354,6 +399,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
           qtyPending: l.qtyPending,
           priceUnit: l.priceUnit,
           subtotal: l.subtotal,
+          discount: l.discount,
         })),
       }));
     sendJson(response, 200, { status: "ok", total: orders.length, orders });
@@ -370,12 +416,86 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     const doc = inboxService.getDocument(body.id);
     if (!doc) return sendJson(response, 404, { message: "Documento no encontrado" });
     const ids = [...new Set(body.purchaseOrderIds.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0))].slice(0, 20);
+    if (!doc.extracted) return sendJson(response, 400, { message: "El documento no tiene datos extraídos" });
     (doc as any).assignedPurchaseOrderIds = ids.length ? ids : null;
+    const selectedOrders = poLedger.getStore().orders.filter((order) => ids.includes(order.id));
+    // Una selección humana vuelve a importar la propuesta completa desde Odoo.
+    // No se mezclan líneas de una extracción previa del PDF: se muestran las
+    // cantidades, precios, descuentos e impuestos de la fuente confirmada.
+    const importedLines = selectedOrders.flatMap((order) => order.lines
+      // Si todavía no hay recepción se coteja contra lo pedido, no se oculta
+      // la línea. Cuando sí la hay, la cantidad disponible es la recibida.
+      .filter((line) => Math.max(0, (line.qtyReceived > 0 ? line.qtyReceived : line.qtyOrdered) - line.qtyInvoiced) > 0)
+      .map((line) => {
+        const quantity = Math.max(0, (line.qtyReceived > 0 ? line.qtyReceived : line.qtyOrdered) - line.qtyInvoiced);
+        const discount = line.discount ?? 0;
+        const priceUnit = line.priceUnit;
+        const receptionStatus = line.qtyReceived <= 0 ? "sin_recepcion" : line.qtyReceived + 1e-6 < line.qtyOrdered ? "parcial" : "completa";
+        return {
+          description: line.productName ?? "(producto sin nombre)",
+          reference: line.productId != null ? String(line.productId) : null,
+          quantity,
+          priceUnit,
+          discount,
+          taxNames: ["IVA pendiente de cotejar"],
+          total: Math.round(quantity * priceUnit * (1 - discount / 100) * 100) / 100,
+          sourcePurchaseOrder: order.name,
+          sourceQtyOrdered: line.qtyOrdered,
+          sourceQtyReceived: line.qtyReceived,
+          sourceQtyInvoiced: line.qtyInvoiced,
+          sourceReceptionStatus: receptionStatus,
+          confidence: 100,
+        };
+      }));
+    const previousOrderLines = doc.extracted.lines.filter((line) => Boolean(line.sourcePurchaseOrder)).length;
+    doc.extracted.lines = importedLines;
     doc.notes = [...(doc.notes ? [doc.notes] : []), `Pedidos asociados por ${user.name}: ${ids.length ? ids.join(", ") : "ninguno"}`].join("; ").slice(0, 400);
     // Confirmacion humana de pedidos: si hay al menos uno, la factura pasa a validacion.
     if (ids.length && doc.status !== "VALIDADA" && doc.status !== "INCIDENCIA") doc.status = "PENDIENTE_VALIDAR";
     inboxService.save();
-    sendJson(response, 200, { status: "ok", document: doc });
+    sendJson(response, 200, {
+      status: "ok",
+      document: doc,
+      addedLines: importedLines.length,
+      replacedLines: previousOrderLines,
+      missingPriceLines: importedLines.filter((line) => !line.priceUnit).length,
+    });
+  });
+
+  // Refresco explícito y sólo lectura: actualiza las columnas de recepción,
+  // pero preserva producto, precio, descuento, IVA y correcciones humanas.
+  server.middlewares.use("/api/odoo/supplier-invoices/inbox/receipt-refresh", async (request: any, response: any) => {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if ((request.method ?? "POST").toUpperCase() !== "POST") return sendJson(response, 405, { message: "Usa POST" });
+    let body: { id?: string } = {};
+    try { body = JSON.parse(await readBody(request) || "{}"); } catch { /* body vacio */ }
+    const doc = body.id ? inboxService.getDocument(body.id) : null;
+    if (!doc || !doc.extracted) return sendJson(response, 404, { message: "Documento no encontrado" });
+    if (!(doc.assignedPurchaseOrderIds?.length)) return sendJson(response, 400, { message: "Asocia al menos un pedido antes de actualizar recepciones" });
+    try { await poLedger.syncFromOdoo(deps.env); } catch (e) { return sendJson(response, 502, { message: e instanceof Error ? e.message : "No se pudieron leer las recepciones de Odoo" }); }
+    const orders = poLedger.getStore().orders.filter((o) => doc.assignedPurchaseOrderIds!.includes(o.id));
+    const bySource = new Map<string, typeof orders[number]>();
+    orders.forEach((o) => bySource.set(o.name, o));
+    let updated = 0;
+    doc.extracted.lines = doc.extracted.lines.map((line) => {
+      const order = line.sourcePurchaseOrder ? bySource.get(line.sourcePurchaseOrder) : null;
+      if (!order) return line;
+      const productId = Number(line.reference);
+      const candidate = order.lines.find((l) => Number.isFinite(productId) && l.productId === productId)
+        ?? order.lines.find((l) => l.productName === line.description);
+      if (!candidate) return line;
+      updated++;
+      return { ...line,
+        sourceQtyOrdered: candidate.qtyOrdered,
+        sourceQtyReceived: candidate.qtyReceived,
+        sourceQtyInvoiced: candidate.qtyInvoiced,
+        sourceReceptionStatus: candidate.qtyReceived <= 0 ? "sin_recepcion" : candidate.qtyReceived + 1e-6 < candidate.qtyOrdered ? "parcial" : "completa",
+      };
+    });
+    doc.notes = [...(doc.notes ? [doc.notes] : []), `Recepciones actualizadas desde Odoo por ${user.name}: ${updated} líneas`].join("; ").slice(0, 400);
+    inboxService.save();
+    sendJson(response, 200, { status: "ok", document: doc, updatedLines: updated });
   });
 
   // Reclasificacion manual del tipo de documento (factura / albaran / aduana / transporte / otro).
@@ -476,6 +596,9 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     if (!body.id || !body.targetFolderId) return sendJson(response, 400, { message: "Faltan id o targetFolderId" });
     const doc = inboxService.getDocument(body.id);
     if (!doc) return sendJson(response, 404, { message: "Documento no encontrado" });
+    if (doc.status !== "VALIDADA" || !(doc as any).odooDraftMoveId) {
+      return sendJson(response, 409, { message: "Guardar en Drive sólo está disponible tras validar la factura y crear el borrador en Odoo" });
+    }
     const client = new DriveClient(deps.env);
     const err = client.configError();
     if (err) return sendJson(response, 400, { message: err });

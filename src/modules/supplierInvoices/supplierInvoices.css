@@ -465,10 +465,17 @@
 }
 .si-drawer-split {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 20px;
+  grid-template-columns: minmax(0, var(--si-pdf-width, 48%)) 38px minmax(0, 1fr);
+  gap: 12px;
   margin-top: 4px;
 }
+.si-form-pane {
+  display: flex;
+  flex-direction: column;
+}
+.si-split-control { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 8px 0; color: #536878; font-size: 10px; font-weight: 700; }
+.si-split-control label { writing-mode: vertical-rl; transform: rotate(180deg); }
+.si-split-control input { width: 112px; transform: rotate(-90deg); accent-color: #2563eb; }
 .si-pdf-pane {
   min-width: 0;
 }
@@ -498,6 +505,8 @@
   font-weight: 600;
 }
 .si-form-pane {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   overflow-y: auto;
   max-height: 70vh;
@@ -591,13 +600,43 @@
   display: grid;
   gap: 8px;
 }
+.si-bulk-fiscal {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(180px, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+  padding: 9px;
+  border: 1px solid #cfe3f5;
+  border-radius: 7px;
+  background: #f5faff;
+}
+.si-bulk-fiscal label { display: grid; gap: 4px; color: #38546a; font-size: 11px; font-weight: 700; }
+.si-bulk-fiscal select { min-height: 32px; }
+.si-bulk-fiscal button { min-height: 32px; border: 1px solid #5a9fc8; border-radius: 6px; background: #fff; color: #155e9b; font: 700 12px inherit; cursor: pointer; }
+.si-bulk-fiscal button:disabled { cursor: not-allowed; opacity: .55; }
 .si-editor-line {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) 64px 84px 74px 30px;
+  grid-template-columns: minmax(180px, 2fr) 74px 64px 84px 72px minmax(130px, 1fr) 78px minmax(150px, 1fr) 84px 88px 34px;
   gap: 6px;
   align-items: center;
   font-size: 12px;
 }
+.si-editor-line select { box-sizing: border-box; width: 100%; min-width: 0; padding: 5px 7px; border: 1px solid #d8e2e7; border-radius: 5px; font-size: 12px; background: #fff; }
+.si-line-gross { font-weight: 700; text-align: right; white-space: nowrap; }
+.si-totals-grid { display: flex; align-items: end; gap: 14px; flex-wrap: wrap; }
+.si-totals-grid label { display: grid; gap: 3px; color: #536878; font-size: 11px; }
+.si-totals-grid input { width: 110px; padding: 5px 7px; border: 1px solid #d8e2e7; border-radius: 5px; }
+.si-line-origin {
+  color: #174e68;
+  font-weight: 700;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.si-pick-top { margin: 0 0 10px; }
+/* El editor de factura necesita espacio para trazabilidad y descuentos. */
+.si-drawer.si-drawer-wide { width: min(96vw, 1600px); max-width: 96vw; }
 .si-editor-line input {
   box-sizing: border-box;
   width: 100%;
@@ -607,6 +646,10 @@
   font-size: 12px;
 }
 .si-editor-line .si-remove-line {
+  justify-self: end;
+  width: 34px;
+  min-width: 34px;
+  min-height: 32px;
   border: 0;
   background: transparent;
   color: #ba343a;
@@ -614,6 +657,13 @@
   display: inline-flex;
   justify-content: center;
 }
+.si-drive-section {
+  order: 99;
+  margin-top: 12px;
+  border-top: 2px solid #d8e2e7;
+  padding-top: 12px;
+}
+.si-odoo-section { order: 98; }
 .si-editor-add {
   margin-top: 10px;
   display: inline-flex;
@@ -967,6 +1017,13 @@
   color: #b3541e;
   font-size: 12px;
 }
+@media (max-width: 900px) {
+  .si-drawer-split { grid-template-columns: 1fr; gap: 10px; }
+  .si-split-control { flex-direction: row; padding: 0; }
+  .si-split-control label { writing-mode: horizontal-tb; transform: none; }
+  .si-split-control input { width: 180px; transform: none; }
+  .si-bulk-fiscal { grid-template-columns: 1fr auto; }
+}
 .si-edit-fields select {
   border: 1px solid #d8e2e7;
   border-radius: 6px;
@@ -1093,3 +1150,22 @@
   gap: 8px;
   margin-top: 6px;
 }
+
+/* Estado operativo de recepción: informa, no oculta líneas ni modifica importes. */
+.si-reception-state {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+.si-reception-state.pending { background: #fff6df; border: 1px solid #f0c56b; color: #744d00; }
+.si-reception-state.complete { background: #eaf8ee; border: 1px solid #87c99a; color: #155b2c; }
+.si-reception-state .si-editor-add { margin-left: auto; }
+.si-reception-badge { white-space: nowrap; font-weight: 600; }
+.si-reception-badge.sin_recepcion { color: #9a6700; }
+.si-reception-badge.parcial { color: #a05a00; }
+.si-reception-badge.completa { color: #1a7f37; }

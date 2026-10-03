@@ -18,7 +18,20 @@ export interface PdfExtractedLine {
   priceUnit: number | null;
   discount: number | null;
   taxNames: string[];
+  /** Impuesto elegido localmente desde account.tax (Odoo, solo lectura). */
+  taxId?: number | null;
+  taxAmount?: number | null;
+  /** Cuenta contable local elegida desde account.account. */
+  accountId?: number | null;
+  accountName?: string | null;
   total: number | null;
+  /** Pedido de compra que aportó esta línea (asociación local de la factura). */
+  sourcePurchaseOrder?: string | null;
+  /** Instantánea operativa de recepción de Odoo. Nunca sustituye los importes corregidos por el operario. */
+  sourceQtyOrdered?: number | null;
+  sourceQtyReceived?: number | null;
+  sourceQtyInvoiced?: number | null;
+  sourceReceptionStatus?: "sin_recepcion" | "parcial" | "completa" | null;
   confidence: number; // 0-100 heuristico
 }
 
@@ -154,6 +167,7 @@ export interface PurchaseOrderRecord {
     qtyPending: number;
     priceUnit: number;
     subtotal: number;
+    discount: number;
   }[];
   status: "SIN_FACTURA" | "FACTURACION_PARCIAL" | "FACTURADO" | "INCIDENCIA" | "SIN_RECEPCION";
 }

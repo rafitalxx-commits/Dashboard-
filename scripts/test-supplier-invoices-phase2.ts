@@ -12,6 +12,7 @@ import {
   buildPoIndex,
   DocumentInboxService,
 } from "../backend/supplierInvoices/documentInbox.ts";
+import { mergeExtracted } from "../backend/supplierInvoices/aiExtract.ts";
 import type {
   InboxDocument,
   InboxStore,
@@ -150,6 +151,32 @@ function testMatchingBands() {
   assert.ok(mSin && mSin.band === "sin", "debe ser sin, fue " + mSin?.band);
 
   console.log("✅ testMatchingBands passed");
+}
+
+// ---------- Test 2b: patrón humano DIRU (referencias y líneas no se pierden) ----------
+
+function testDiruHumanPattern() {
+  const pdfReferences = ["04957", "04964", "P04976"];
+  const normalized = pdfReferences.map((value) => value.startsWith("P") ? value : `P${value}`);
+  assert.deepEqual(normalized, ["P04957", "P04964", "P04976"]);
+  assert.ok(!normalized.includes("P04676"), "el PDF ILA5467106 no menciona P04676");
+  const odooLines = [
+    { sourcePurchaseOrder: "P04957", description: "Rejilla 300x100" },
+    { sourcePurchaseOrder: "P04964", description: "Rejilla 350x150" },
+    { sourcePurchaseOrder: "P04976", description: "Marco 500" },
+  ];
+  const afterAi = mergeExtracted({
+    supplier: "INDUSTRIAS DIRU SL", supplierVat: "B28960987", country: "ES", invoiceNumber: null,
+    invoiceDate: null, dueDate: null, currency: "EUR", base: null, taxes: null, total: null,
+    lines: odooLines.map((line) => ({ ...line, reference: null, quantity: 1, priceUnit: 1, discount: 52.5, taxNames: [], total: 1, confidence: 100 })),
+    textPreview: "", needsOcr: false, warnings: [], pdfPages: 1,
+  }, {
+    supplier: null, supplierVat: null, country: null, invoiceNumber: null, invoiceDate: null, dueDate: null,
+    currency: null, base: null, taxes: null, total: null, confidence: 90, warnings: [],
+    lines: [{ description: "Rejilla 300x100", reference: null, quantity: 1, priceUnit: 9, discount: null, taxNames: [], total: 9, confidence: 90 }],
+  }, "test");
+  assert.equal(afterAi.lines.filter((line) => line.sourcePurchaseOrder).length, 3, "IA no puede borrar líneas Odoo confirmadas");
+  console.log("✅ testDiruHumanPattern passed");
 }
 
 // ---------- Test 3: no escrituras Drive/Odoo (assert paths) ----------
@@ -317,6 +344,7 @@ async function main() {
   console.log("=== FASE 2 TESTS ===\n");
   testExtractPdf();
   testMatchingBands();
+  testDiruHumanPattern();
   testNoWrites();
   await testInboxStoreRoundtrip();
   await testRealPdfs();

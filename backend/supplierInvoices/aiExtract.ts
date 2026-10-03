@@ -238,6 +238,21 @@ export function mergeExtracted(
   const warnings = b.warnings.filter((w) => !w.includes("OCR pendiente") && !w.includes("fase posterior"));
   warnings.push(note);
   warnings.push(...ai.warnings.slice(0, 3));
+  // Las líneas importadas de un pedido confirmado por una persona son la fuente
+  // de verdad del editor. Una nueva extracción sólo puede completar líneas PDF
+  // que todavía no estén cubiertas por esos pedidos; nunca puede borrarlas.
+  const orderLines = b.lines.filter((line) => Boolean(line.sourcePurchaseOrder));
+  const freeLines = b.lines.filter((line) => !line.sourcePurchaseOrder);
+  const normalizeLine = (line: PdfExtractedLine) =>
+    `${line.reference ?? ""} ${line.description}`.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const isCoveredByOrder = (line: PdfExtractedLine) => {
+    const candidate = normalizeLine(line);
+    return orderLines.some((orderLine) => {
+      const source = normalizeLine(orderLine);
+      return candidate.length > 8 && source.length > 8 && (candidate.includes(source) || source.includes(candidate));
+    });
+  };
+  const aiLines = ai.lines.filter((line) => !isCoveredByOrder(line));
   return {
     supplier: ai.supplier ?? b.supplier,
     supplierVat: ai.supplierVat ?? b.supplierVat,
@@ -249,7 +264,9 @@ export function mergeExtracted(
     base: ai.base ?? b.base,
     taxes: ai.taxes ?? b.taxes,
     total: ai.total ?? b.total,
-    lines: ai.lines.length ? ai.lines : b.lines,
+    // Conservamos las líneas confirmadas desde Odoo y las manuales. Las de IA
+    // sólo se agregan si no representan ya una línea del pedido confirmado.
+    lines: orderLines.length ? [...orderLines, ...freeLines, ...aiLines] : (ai.lines.length ? ai.lines : b.lines),
     textPreview: b.textPreview,
     needsOcr: false,
     warnings: warnings.slice(0, 8),

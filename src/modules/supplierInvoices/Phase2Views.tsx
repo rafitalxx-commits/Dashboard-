@@ -2,6 +2,7 @@
 // Se integra en SupplierInvoicesView mediante tabs. UI con feedback de carga en cada acción.
 
 import { useEffect, useMemo, useState } from "react";
+import type { CSSProperties } from "react";
 import {
   AlertTriangle,
   ArrowRight,
@@ -33,7 +34,12 @@ type DocLine = {
   priceUnit: number | null;
   discount: number | null;
   taxNames: string[];
+  taxId?: number | null;
+  taxAmount?: number | null;
+  accountId?: number | null;
+  accountName?: string | null;
   total: number | null;
+  sourcePurchaseOrder?: string | null;
   confidence: number;
 };
 
@@ -459,7 +465,7 @@ type PoCandidate = {
   pendingAmount: number;
   allReceived: boolean;
   lastReceptionAt: string | null;
-  lines: { productName: string | null; qtyOrdered: number; qtyReceived: number; qtyInvoiced: number; qtyPending: number; priceUnit: number; subtotal: number }[];
+  lines: { productId: number | null; productName: string | null; qtyOrdered: number; qtyReceived: number; qtyInvoiced: number; qtyPending: number; priceUnit: number; subtotal: number; discount: number }[];
 };
 
 type ProductLineEdit = {
@@ -469,7 +475,16 @@ type ProductLineEdit = {
   priceUnit: number | null;
   discount: number | null;
   taxNames: string[];
+  taxId?: number | null;
+  taxAmount?: number | null;
+  accountId?: number | null;
+  accountName?: string | null;
   total: number | null;
+  sourcePurchaseOrder?: string | null;
+  sourceQtyOrdered?: number | null;
+  sourceQtyReceived?: number | null;
+  sourceQtyInvoiced?: number | null;
+  sourceReceptionStatus?: "sin_recepcion" | "parcial" | "completa" | null;
 };
 
 function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDocUpdated, base }: { doc: Doc; close: () => void; acting: string | null; extracting: string | null; onStatus: (id: string, s: string) => void; onAiExtract: (id: string) => void; onDocUpdated: (doc: Doc) => void; base?: string }) {
@@ -478,6 +493,9 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDo
   const [lines, setLines] = useState<ProductLineEdit[]>(() => (doc.extracted?.lines ?? []).map((l) => ({ ...l })));
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
+  const [linesDirty, setLinesDirty] = useState(false);
+  const [rematching, setRematching] = useState(false);
+  const [rematchMsg, setRematchMsg] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [term, setTerm] = useState("");
   const [catalog, setCatalog] = useState<CatalogProduct[]>([]);
@@ -507,6 +525,8 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDo
   const [selectedPoIds, setSelectedPoIds] = useState<number[]>(doc.assignedPurchaseOrderIds ?? []);
   const [poSaving, setPoSaving] = useState(false);
   const [poMsg, setPoMsg] = useState("");
+  const [receiptRefreshing, setReceiptRefreshing] = useState(false);
+  const [receiptMsg, setReceiptMsg] = useState("");
   // Mini navegador de Drive (Fase 2.4): alojar el PDF validado en su carpeta definitiva
   const [driveOpen, setDriveOpen] = useState(false);
   const [driveLoading, setDriveLoading] = useState(false);
@@ -522,9 +542,41 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDo
   // Fase 3: puente con Odoo (borrador + contabilizar)
   const [odooBusy, setOdooBusy] = useState(false);
   const [odooMsg, setOdooMsg] = useState("");
+  const [fiscalLoading, setFiscalLoading] = useState(false);
+  const [fiscalMsg, setFiscalMsg] = useState("");
+  const [taxOptions, setTaxOptions] = useState<{ id: number; name: string; rate: number }[]>([]);
+  const [accountOptions, setAccountOptions] = useState<{ id: number; name: string }[]>([]);
+  const [bulkTaxId, setBulkTaxId] = useState("");
+  const [bulkAccountId, setBulkAccountId] = useState("");
+  const [pdfWidth, setPdfWidth] = useState(() => {
+    const stored = Number(localStorage.getItem("supplier-invoice-pdf-width"));
+    return Number.isFinite(stored) && stored >= 25 && stored <= 55 ? stored : 42;
+  });
 
   const apiPath = api("/api/odoo/supplier-invoices/inbox");
   const previewUrl = `${apiPath}/preview?id=${encodeURIComponent(doc.driveFileId)}`;
+  const canSaveToDrive = doc.status === "VALIDADA" && Boolean(doc.odooDraftMoveId);
+
+  useEffect(() => {
+    setLines((doc.extracted?.lines ?? []).map((line) => ({ ...line })));
+    setSelectedPoIds(doc.assignedPurchaseOrderIds ?? []);
+    setLinesDirty(false);
+  }, [doc.driveFileId, doc.extracted?.lines, doc.assignedPurchaseOrderIds]);
+
+  useEffect(() => { localStorage.setItem("supplier-invoice-pdf-width", String(pdfWidth)); }, [pdfWidth]);
+
+  const loadFiscalOptions = async () => {
+    if (taxOptions.length || fiscalLoading) return;
+    setFiscalLoading(true); setFiscalMsg("");
+    try {
+      const r = await fetch(`${apiPath}/fiscal-options`);
+      const x = await r.json();
+      if (!r.ok) throw new Error(x.message || "No se pudieron leer impuestos y cuentas");
+      setTaxOptions(Array.isArray(x.taxes) ? x.taxes : []);
+      setAccountOptions(Array.isArray(x.accounts) ? x.accounts : []);
+    } catch (e) { setFiscalMsg(e instanceof Error ? e.message : "No se pudieron leer impuestos y cuentas"); }
+    finally { setFiscalLoading(false); }
+  };
 
   const loadCatalog = async () => {
     setCatalogError("");
@@ -568,18 +620,53 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDo
       priceUnit: null,
       discount: null,
       taxNames: product.type === "service" ? [] : ["21%"],
+      taxId: null, taxAmount: null, accountId: null, accountName: null,
       total: null,
     }]);
+    setLinesDirty(true);
     setPickerOpen(false);
     setTerm("");
   };
 
   const updateLine = (i: number, patch: Partial<ProductLineEdit>) => {
-    setLines((prev) => prev.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+    setLines((prev) => prev.map((l, idx) => {
+      if (idx !== i) return l;
+      const next = { ...l, ...patch };
+      // Cantidad, precio y descuento son las fuentes del cálculo. El total
+      // sigue siendo editable: si el operario modifica sólo el total, es una
+      // corrección deliberada y no se sobrescribe.
+      if (patch.quantity !== undefined || patch.priceUnit !== undefined || patch.discount !== undefined) {
+        const quantity = next.quantity ?? 0;
+        const priceUnit = next.priceUnit ?? 0;
+        const discount = next.discount ?? 0;
+        const base = quantity * priceUnit * (1 - discount / 100);
+        // `total` sigue siendo la base neta: así el contrato existente del
+        // borrador Odoo (líneas = base) no cambia. El total con IVA se deriva
+        // visualmente de base + cuota.
+        next.total = Math.round(base * 100) / 100;
+      }
+      return next;
+    }));
+    setLinesDirty(true);
+  };
+
+  const applyTaxToAllLines = () => {
+    const taxId = bulkTaxId ? Number(bulkTaxId) : null;
+    const tax = taxOptions.find((item) => item.id === taxId);
+    setLines((prev) => prev.map((line) => ({ ...line, taxId, taxNames: tax ? [tax.name] : [] })));
+    setLinesDirty(true);
+  };
+
+  const applyAccountToAllLines = () => {
+    const accountId = bulkAccountId ? Number(bulkAccountId) : null;
+    const account = accountOptions.find((item) => item.id === accountId);
+    setLines((prev) => prev.map((line) => ({ ...line, accountId, accountName: account?.name ?? null })));
+    setLinesDirty(true);
   };
 
   const removeLine = (i: number) => {
     setLines((prev) => prev.filter((_, idx) => idx !== i));
+    setLinesDirty(true);
   };
 
   const saveLinesLocal = async () => {
@@ -589,15 +676,35 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDo
       const r = await fetch(`${apiPath}/lines`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: doc.driveFileId, lines }),
+        body: JSON.stringify({ id: doc.driveFileId, lines, base: fields.base, taxes: fields.taxes }),
       });
       const x = await r.json();
       if (!r.ok) throw new Error(x.message || "No se pudo guardar");
+      if (x.lines) setLines(x.lines);
+      if (x.document) onDocUpdated(x.document);
+      setLinesDirty(false);
       setSaveMsg("Líneas guardadas en el registro local del LAB.");
     } catch (e) {
       setSaveMsg(e instanceof Error ? e.message : "Error guardando líneas");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const rematch = async () => {
+    setRematching(true);
+    setRematchMsg("");
+    try {
+      const r = await fetch(`${apiPath}/rematch`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: doc.driveFileId }) });
+      const x = await r.json();
+      if (!r.ok) throw new Error(x.message || "No se pudo recalcular el cotejo");
+      if (x.document) onDocUpdated(x.document);
+      const match = x.match;
+      setRematchMsg(match ? `Cotejo actualizado: ${match.score}% · ${BAND_ES[match.band] ?? match.band}.` : "Cotejo actualizado; no hay candidato automático.");
+    } catch (e) {
+      setRematchMsg(e instanceof Error ? e.message : "Error recalculando el cotejo");
+    } finally {
+      setRematching(false);
     }
   };
 
@@ -640,28 +747,63 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDo
   };
 
   const togglePo = (poId: number) => {
-    setSelectedPoIds((prev) => prev.includes(poId) ? prev.filter((n) => n !== poId) : [...prev, poId]);
+    const next = selectedPoIds.includes(poId)
+      ? selectedPoIds.filter((n) => n !== poId)
+      : [...selectedPoIds, poId];
+    setSelectedPoIds(next);
+    // La confirmación de la casilla es la decisión humana: persiste la
+    // asociación local e importa al instante los datos reales de Odoo.
+    void savePoLink(next);
   };
 
-  const savePoLink = async () => {
+  const savePoLink = async (ids = selectedPoIds) => {
     setPoSaving(true);
     setPoMsg("");
     try {
       const r = await fetch(`${apiPath}/polink`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: doc.driveFileId, purchaseOrderIds: selectedPoIds }),
+        body: JSON.stringify({ id: doc.driveFileId, purchaseOrderIds: ids }),
       });
       const x = await r.json();
       if (!r.ok) throw new Error(x.message || "No se pudo guardar");
-      if (x.document) onDocUpdated(x.document);
-      setPoMsg(`Pedidos asociados: ${selectedPoIds.length ? selectedPoIds.join(", ") : "ninguno"}.`);
+      if (x.document) {
+        onDocUpdated(x.document);
+        setLines((x.document.extracted?.lines ?? []).map((line: ProductLineEdit) => ({ ...line })));
+      }
+      const warning = x.missingPriceLines ? ` Aviso: ${x.missingPriceLines} línea(s) sin precio se han añadido igualmente.` : "";
+      setPoMsg(`Pedidos guardados e importados desde Odoo: ${x.addedLines ?? 0} línea(s).${warning}`);
     } catch (e) {
       setPoMsg(e instanceof Error ? e.message : "Error guardando asociación");
     } finally {
       setPoSaving(false);
     }
   };
+
+  const refreshReceipts = async () => {
+    setReceiptRefreshing(true);
+    setReceiptMsg("");
+    try {
+      const r = await fetch(`${apiPath}/receipt-refresh`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: doc.driveFileId }) });
+      const x = await r.json();
+      if (!r.ok) throw new Error(x.message || "No se pudieron actualizar las recepciones");
+      if (x.document) {
+        onDocUpdated(x.document);
+        setLines((x.document.extracted?.lines ?? []).map((line: ProductLineEdit) => ({ ...line })));
+      }
+      setReceiptMsg(`Recepciones actualizadas desde Odoo: ${x.updatedLines ?? 0} línea(s).`);
+    } catch (e) {
+      setReceiptMsg(e instanceof Error ? e.message : "Error actualizando recepciones");
+    } finally { setReceiptRefreshing(false); }
+  };
+
+  const receptionSummary = lines.filter((l) => l.sourcePurchaseOrder).reduce((acc, l) => {
+    if (l.sourceReceptionStatus === "sin_recepcion") acc.none++;
+    else if (l.sourceReceptionStatus === "parcial") acc.partial++;
+    else if (l.sourceReceptionStatus === "completa") acc.complete++;
+    return acc;
+  }, { none: 0, partial: 0, complete: 0 });
+  const receiptPending = receptionSummary.none > 0 || receptionSummary.partial > 0;
 
   // ===== Mini navegador de Drive =====
 
@@ -836,13 +978,18 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDo
         </span>}
         {doc.ocrStatus === "needs_ocr" && <p className="si-warn"><AlertTriangle /> PDF escaneado sin capa de texto: OCR pendiente (fase posterior).</p>}
 
-        <div className="si-drawer-split">
+        <div className="si-drawer-split" style={{ "--si-pdf-width": `${pdfWidth}%` } as CSSProperties}>
           <div className="si-pdf-pane">
             <h3><FileText size={14} /> PDF · streaming directo desde Drive</h3>
             <iframe className="si-pdf-frame" src={previewUrl} title={`Visor PDF: ${doc.name}`} />
             <a className="si-primary si-pdf-open" href={previewUrl} target="_blank" rel="noopener noreferrer">
               <FileText size={14} /> Abrir PDF
             </a>
+          </div>
+
+          <div className="si-split-control" aria-label="Ancho del PDF y edición">
+            <label htmlFor="si-pdf-width">PDF {pdfWidth}% · Edición {100 - pdfWidth}%</label>
+            <input id="si-pdf-width" type="range" min="25" max="55" value={pdfWidth} onChange={(e) => setPdfWidth(Number(e.target.value))} />
           </div>
 
           <div className="si-form-pane">
@@ -913,15 +1060,17 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDo
                 <h3>Cotejo con Odoo</h3>
                 <p className="si-match-line">
                   <b>{doc.match.purchaseOrderName || "Sin candidato"}</b>
-                  <span className={`si-match si-match-${doc.match.band}`}>{doc.match.score}% · {BAND_ES[doc.match.band]}</span>
+                  <span className={`si-match si-match-${doc.status === "VALIDADA" ? "alta" : doc.match.band}`}>{doc.status === "VALIDADA" ? "Cotejo confirmado" : `${doc.match.score}% · ${BAND_ES[doc.match.band]}`}</span>
                   {doc.match.totalDiff != null && <small>Diferencia total: {doc.match.totalDiff >= 0 ? "+" : ""}{money(doc.match.totalDiff)}</small>}
                 </p>
                 <ul className="si-criteria">
-                  {doc.match.criteria.map((c) => (
-                    <li key={c.key} className={c.ok ? "ok" : "bad"}>
-                      {c.ok ? <CheckCircle2 size={14} /> : <X size={14} />} {c.label} — {c.detail}
+                  {doc.match.criteria.map((c) => {
+                    const confirmed = doc.status === "VALIDADA";
+                    const ok = confirmed || c.ok;
+                    return <li key={c.key} className={ok ? "ok" : "bad"}>
+                      {ok ? <CheckCircle2 size={14} /> : <X size={14} />} {c.label} — {confirmed ? "Confirmado manualmente" : c.detail}
                     </li>
-                  ))}
+                  })}
                 </ul>
                 {doc.match.invoiceNameOdoo && <p className="si-warn"><AlertTriangle /> Posible duplicado: ya existe {doc.match.invoiceNameOdoo} en Odoo.</p>}
               </section>
@@ -930,17 +1079,23 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDo
             {!isExcluded && (
               <section>
                 <h3>¿Varios pedidos en una factura?</h3>
-                <p className="si-note">Si esta factura agrupa varios pedidos de compra, asígnalos aquí: se muestran los pedidos sin facturar del proveedor, del más reciente al más antiguo, con lo pedido, lo recibido y lo facturado.</p>
+                <p className="si-note">Confirma aquí los pedidos de la factura. Al marcar o desmarcar uno se guarda la asociación local e importa de Odoo sus líneas pendientes, con origen, precio, descuento e impuestos pendientes de cotejo.</p>
                 <button className="si-editor-add" disabled={poLoading} onClick={() => { if (!poOpen) void loadPoCandidates(); setPoOpen((v) => !v); }} type="button">
                   {poLoading ? <RefreshCw className="spin" size={14} /> : <ShoppingCart size={14} />} {poOpen ? "Ocultar pedidos" : "Asociar pedidos de compra"}
                 </button>
-                {poMsg && <p className={poMsg.startsWith("Pedidos asociados") ? "si-msg" : "error"} role="status">{poMsg}</p>}
+                {poMsg && <p className={poMsg.startsWith("Pedidos guardados") ? "si-msg" : "error"} role="status">{poMsg}</p>}
                 {poOpen && (
                   <div className="si-multipo">
                     {poCandidates.length === 0 ? (
                       <p className="si-note">No hay pedidos sin factura de este proveedor.</p>
                     ) : (
                       <>
+                        <div className="si-pick si-pick-top">
+                          <span>Seleccionados: <b>{selectedPoIds.length}</b> pedido(s)</span>
+                          <button className="si-editor-add" disabled={poSaving} onClick={() => void savePoLink()} type="button">
+                            {poSaving ? <RefreshCw className="spin" size={14} /> : <CheckCircle2 size={14} />} {poSaving ? "Importando desde Odoo…" : "Reimportar pedidos seleccionados"}
+                          </button>
+                        </div>
                         <table>
                           <thead>
                             <tr><th></th><th>Pedido</th><th>Fecha</th><th>Total</th><th>Facturado</th><th>Pendiente</th></tr>
@@ -958,31 +1113,6 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDo
                             ))}
                           </tbody>
                         </table>
-                        <p className="si-note">Detalle por pedido — productos pedidos / recibidos / facturados por el proveedor:</p>
-                        {poCandidates.map((po) => (
-                          <details key={po.id} className="si-multipo-po">
-                            <summary>{po.name} — {po.lines.length} líneas</summary>
-                            <table>
-                              <thead><tr><th>Producto</th><th>Pedido</th><th>Recibido</th><th>Facturado</th></tr></thead>
-                              <tbody>
-                                {po.lines.map((l, i) => (
-                                  <tr key={i}>
-                                    <td>{l.productName ?? "—"}</td>
-                                    <td className="qty-cell">{l.qtyOrdered}</td>
-                                    <td className="qty-cell">{l.qtyReceived}</td>
-                                    <td className="qty-cell">{l.qtyInvoiced}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </details>
-                        ))}
-                        <div className="si-pick">
-                          <span>Seleccionados: <b>{selectedPoIds.length}</b> pedido(s)</span>
-                          <button className="si-editor-add" disabled={poSaving} onClick={() => void savePoLink()} type="button">
-                            {poSaving ? <RefreshCw className="spin" size={14} /> : <CheckCircle2 size={14} />} Guardar asociación
-                          </button>
-                        </div>
                       </>
                     )}
                   </div>
@@ -991,16 +1121,17 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDo
             )}
 
             {!isExcluded && (
-              <section>
-                <h3>Alojar en Drive</h3>
+              <section className="si-drive-section">
+                <h3>Guardar en Drive</h3>
                 {doc.movedTo ? (
                   <p className="si-msg"><CheckCircle2 size={14} /> PDF ya archivado en {doc.targetFolderPath ?? doc.movedTo}.</p>
                 ) : (
                   <>
-                    <p className="si-note">Mueve la factura validada a su carpeta definitiva (/AÑO/PROVEEDOR/TRIMESTRE). La ruta queda guardada en el registro.</p>
-                    <button className="si-editor-add" onClick={() => void openDrive()} type="button">
-                      <Folder size={14} /> {driveOpen ? "Ocultar navegador" : "Abrir navegador de Drive"}
+                    <p className="si-note">Última acción: guarda el PDF en su carpeta definitiva (/AÑO/PROVEEDOR/TRIMESTRE) sólo después de validar la factura y crear su borrador en Odoo.</p>
+                    <button className="si-editor-add" disabled={!canSaveToDrive || moving} onClick={() => void openDrive()} type="button">
+                      <Folder size={14} /> {driveOpen ? "Ocultar Guardar en Drive" : "Guardar en Drive"}
                     </button>
+                    {!canSaveToDrive && <p className="si-note">Disponible tras <b>Validar</b> y cuando exista el <b>borrador en Odoo</b>.</p>}
                     {driveMsg && <p className={driveMsg.startsWith("PDF movido") || driveMsg.startsWith("Carpeta") ? "si-msg" : "error"} role="status">{driveMsg}</p>}
                     {driveOpen && (
                       <div className="si-drive-nav">
@@ -1045,7 +1176,7 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDo
             )}
 
             {!isExcluded && (
-              <section>
+              <section className="si-odoo-section">
                 <h3>Factura en Odoo</h3>
                 {doc.odooDraftMoveId ? (
                   <div className="si-odoo-state">
@@ -1060,7 +1191,7 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDo
                   </div>
                 ) : (
                   <>
-                    <p className="si-note">Con la puerta de escritura abierta, al validar la factura se crea automáticamente el borrador en Odoo. También puedes crearlo aquí sin cambiar el estado.</p>
+                    <p className="si-note">El borrador se crea únicamente con este botón final, después de validar el cotejo.</p>
                     <button className="si-editor-add" disabled={odooBusy || doc.status !== "VALIDADA"} onClick={() => void createOdooDraft()} type="button">
                       {odooBusy ? <RefreshCw className="spin" size={14} /> : <Plus size={14} />} Crear borrador en Odoo
                     </button>
@@ -1073,6 +1204,16 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDo
 
             <section>
               <h3>Líneas del documento {lines.length ? `(${lines.length})` : ""}</h3>
+              {selectedPoIds.length > 0 && (
+                <div className={receiptPending ? "si-reception-state pending" : "si-reception-state complete"} role="status">
+                  <span>{receiptPending ? "Pendiente de recepción en Odoo" : "Recepción completa en Odoo"}</span>
+                  <small>{receptionSummary.complete} completa(s) · {receptionSummary.partial} parcial(es) · {receptionSummary.none} sin recepción</small>
+                  <button type="button" className="si-editor-add" disabled={receiptRefreshing} onClick={() => void refreshReceipts()}>
+                    {receiptRefreshing ? <RefreshCw className="spin" size={14} /> : <RefreshCw size={14} />} Actualizar recepción Odoo
+                  </button>
+                </div>
+              )}
+              {receiptMsg && <p className={receiptMsg.startsWith("Recepciones") ? "si-msg" : "error"} role="status">{receiptMsg}</p>}
               {lines.length ? (
                 <ul className="si-doc-lines">
                   {lines.map((l, i) => (
@@ -1085,9 +1226,13 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDo
               ) : <p className="si-note">Sin líneas detectadas. Usa el editor para añadir productos (consumibles, servicios…).</p>}
 
               <div className="si-product-editor">
-                <button className="si-editor-add" onClick={() => { setPickerOpen((v) => !v); if (!catalog.length) void loadCatalog(); }} type="button">
+                <button className="si-editor-add" onClick={() => { setPickerOpen((v) => !v); if (!catalog.length) void loadCatalog(); void loadFiscalOptions(); }} type="button">
                   {catalogLoading ? <RefreshCw className="spin" size={14} /> : <Plus size={14} />} Editar productos
                 </button>
+                {!pickerOpen && lines.length > 0 && <button className="si-editor-add" onClick={() => void loadFiscalOptions()} disabled={fiscalLoading} type="button">
+                  {fiscalLoading ? <RefreshCw className="spin" size={14} /> : <RefreshCw size={14} />} Cargar impuestos y cuentas de Odoo
+                </button>}
+                {fiscalMsg && <p className="error" role="alert">{fiscalMsg}</p>}
                 {pickerOpen && (
                   <div className="si-product-picker">
                     <label>Buscar en el catálogo de Odoo (no almacenables incluidos)
@@ -1113,12 +1258,48 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDo
                 )}
                 {lines.length > 0 && (
                   <div className="si-editor-lines">
+                    <div className="si-bulk-fiscal" aria-label="Aplicar impuesto y cuenta a todas las líneas">
+                      <label>Aplicar impuesto a todas
+                        <select value={bulkTaxId} onFocus={() => void loadFiscalOptions()} onChange={(e) => setBulkTaxId(e.target.value)}>
+                          <option value="">Seleccionar impuesto de compra</option>
+                          {taxOptions.map((tax) => <option key={tax.id} value={tax.id}>{tax.name}</option>)}
+                        </select>
+                      </label>
+                      <button type="button" onClick={applyTaxToAllLines} disabled={!bulkTaxId}>Aplicar impuesto</button>
+                      <label>Aplicar cuenta a todas
+                        <select value={bulkAccountId} onFocus={() => void loadFiscalOptions()} onChange={(e) => setBulkAccountId(e.target.value)}>
+                          <option value="">Seleccionar cuenta</option>
+                          {accountOptions.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+                        </select>
+                      </label>
+                      <button type="button" onClick={applyAccountToAllLines} disabled={!bulkAccountId}>Aplicar cuenta</button>
+                    </div>
                     {lines.map((l, i) => (
-                      <div className="si-editor-line" key={i}>
+                      <div className="si-editor-line" key={`${l.sourcePurchaseOrder ?? "manual"}-${i}`}>
                         <input aria-label="Descripción" value={l.description} onChange={(e) => updateLine(i, { description: e.target.value })} />
+                        <span className="si-line-origin" title="Pedido de compra de origen">{l.sourcePurchaseOrder ?? "Manual"}</span>
+                        {l.sourcePurchaseOrder && <small className={`si-reception-badge ${l.sourceReceptionStatus ?? "sin_recepcion"}`}> {l.sourceReceptionStatus === "completa" ? "Recibido" : l.sourceReceptionStatus === "parcial" ? `Parcial ${l.sourceQtyReceived ?? 0}/${l.sourceQtyOrdered ?? 0}` : "Sin recepción"}</small>}
                         <input aria-label="Cantidad" type="number" min="0" step="any" placeholder="Cant." value={l.quantity ?? ""} onChange={(e) => updateLine(i, { quantity: e.target.value === "" ? null : Number(e.target.value) })} />
                         <input aria-label="Precio unitario" type="number" min="0" step="0.01" placeholder="Precio" value={l.priceUnit ?? ""} onChange={(e) => updateLine(i, { priceUnit: e.target.value === "" ? null : Number(e.target.value) })} />
-                        <input aria-label="Total" type="number" min="0" step="0.01" placeholder="Total" value={l.total ?? ""} onChange={(e) => updateLine(i, { total: e.target.value === "" ? null : Number(e.target.value) })} />
+                        <input aria-label="Descuento" type="number" min="0" max="100" step="0.01" placeholder="Dto. %" value={l.discount ?? ""} onChange={(e) => updateLine(i, { discount: e.target.value === "" ? null : Number(e.target.value) })} />
+                        <select aria-label="Impuesto Odoo" value={l.taxId ?? ""} onFocus={() => void loadFiscalOptions()} onChange={(e) => {
+                          const taxId = e.target.value ? Number(e.target.value) : null;
+                          const tax = taxOptions.find((item) => item.id === taxId);
+                          updateLine(i, { taxId, taxNames: tax ? [tax.name] : [] });
+                        }}>
+                          <option value="">Impuesto</option>
+                          {taxOptions.map((tax) => <option key={tax.id} value={tax.id}>{tax.name} ({tax.rate}%)</option>)}
+                        </select>
+                        <input aria-label="Cuota impuesto" type="number" min="0" step="0.01" placeholder="Cuota IVA" value={l.taxAmount ?? ""} onChange={(e) => updateLine(i, { taxAmount: e.target.value === "" ? null : Number(e.target.value) })} />
+                        <select aria-label="Cuenta contable Odoo" value={l.accountId ?? ""} onFocus={() => void loadFiscalOptions()} onChange={(e) => {
+                          const accountId = e.target.value ? Number(e.target.value) : null;
+                          updateLine(i, { accountId, accountName: accountOptions.find((account) => account.id === accountId)?.name ?? null });
+                        }}>
+                          <option value="">Cuenta</option>
+                          {accountOptions.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+                        </select>
+                        <input aria-label="Base neta" type="number" min="0" step="0.01" placeholder="Base" value={l.total ?? ""} onChange={(e) => updateLine(i, { total: e.target.value === "" ? null : Number(e.target.value) })} />
+                        <output className="si-line-gross" aria-label="Total con IVA">{money((l.total ?? 0) + (l.taxAmount ?? 0), ex?.currency ?? "EUR")}</output>
                         <button className="si-remove-line" aria-label="Quitar línea" onClick={() => removeLine(i)} type="button"><Trash2 size={14} /></button>
                       </div>
                     ))}
@@ -1127,24 +1308,32 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDo
                 {lines.length > 0 && (
                   <div className="si-lines-totals">
                     {(() => {
-                      const sum = lines.reduce((acc, l) => acc + (l.total ?? 0), 0);
+                      const calculatedBase = lines.reduce((acc, l) => acc + (l.total ?? 0), 0);
+                      const calculatedTax = lines.reduce((acc, l) => acc + (l.taxAmount ?? 0), 0);
+                      const declaredBase = fields.base !== "" ? Number(fields.base) : calculatedBase;
+                      const declaredTax = fields.taxes !== "" ? Number(fields.taxes) : calculatedTax;
                       const declared = fields.total !== "" ? Number(fields.total) : null;
                       return (
-                        <>
-                          <span>Total líneas: <b>{money(sum, ex?.currency ?? "EUR")}</b></span>
-                          {declared != null && Math.abs(declared - sum) > 0.005 && (
-                            <small>El total declarado difiere: {money(declared, ex?.currency ?? "EUR")}</small>
-                          )}
-                        </>
+                        <div className="si-totals-grid">
+                          <label>Base imponible total
+                            <input aria-label="Base imponible total" type="number" min="0" step="0.01" value={fields.base} onChange={(e) => { setFields({ ...fields, base: e.target.value }); setLinesDirty(true); }} />
+                          </label>
+                          <label>Impuesto total
+                            <input aria-label="Impuesto total" type="number" min="0" step="0.01" value={fields.taxes} onChange={(e) => { setFields({ ...fields, taxes: e.target.value }); setLinesDirty(true); }} />
+                          </label>
+                          <span>Total con IVA: <b>{money((Number.isFinite(declaredBase) ? declaredBase : 0) + (Number.isFinite(declaredTax) ? declaredTax : 0), ex?.currency ?? "EUR")}</b></span>
+                          {declared != null && Math.abs(declared - ((Number.isFinite(declaredBase) ? declaredBase : 0) + (Number.isFinite(declaredTax) ? declaredTax : 0))) > 0.005 && <small>El total PDF declarado difiere: {money(declared, ex?.currency ?? "EUR")}</small>}
+                        </div>
                       );
                     })()}
                   </div>
                 )}
                 {lines.length > 0 && (
                   <button className="si-editor-add" disabled={saving} onClick={() => void saveLinesLocal()} type="button">
-                    {saving ? <RefreshCw className="spin" size={14} /> : <CheckCircle2 size={14} />} Guardar líneas
+                    {saving ? <RefreshCw className="spin" size={14} /> : <CheckCircle2 size={14} />} {saving ? "Guardando cambios…" : "Guardar cambios de productos"}
                   </button>
                 )}
+                {linesDirty && !saving && <p className="si-note" role="status">Cambios sin guardar en el registro local.</p>}
                 {saveMsg && <p className={saveMsg.startsWith("Líneas") ? "si-msg" : "error"} role="status">{saveMsg}</p>}
                 <p className="si-note">Solo se guarda en el registro local del LAB; nada se escribe en Odoo ni Drive.</p>
               </div>
@@ -1156,18 +1345,20 @@ function DocDetail({ doc, close, acting, extracting, onStatus, onAiExtract, onDo
                 <button disabled={extracting !== null || isExcluded} onClick={() => onAiExtract(doc.driveFileId)} title="Extraer proveedor, nº factura, fechas e importes con IA">
                   {extracting === doc.driveFileId ? <RefreshCw className="spin" /> : <Sparkles />} Extraer con IA
                 </button>
-                <button disabled={acting !== null || doc.status === "PENDIENTE_COTEJO" || isExcluded} onClick={() => onStatus(doc.driveFileId, "PENDIENTE_COTEJO")}>
-                  {acting === doc.driveFileId + "PENDIENTE_COTEJO" ? <RefreshCw className="spin" /> : <Clock />} Marcar en cotejo
+                <button disabled={rematching || isExcluded} onClick={() => void rematch()} title="Recalcula coincidencias y diferencias con los datos actuales">
+                  {rematching ? <RefreshCw className="spin" /> : <RefreshCw />} {rematching ? "Recalculando cotejo…" : "Recalcular cotejo"}
                 </button>
-                <button disabled={acting !== null || doc.status === "VALIDADA" || isExcluded} onClick={() => onStatus(doc.driveFileId, "VALIDADA")}>
+                <button disabled={acting !== null || doc.status === "VALIDADA" || isExcluded || receiptPending} onClick={() => onStatus(doc.driveFileId, "VALIDADA")} title={receiptPending ? "Actualiza y completa la recepción de Odoo antes de validar" : "Confirma que las correcciones manuales son correctas; no crea el borrador Odoo"}>
                   {acting === doc.driveFileId + "VALIDADA" ? <RefreshCw className="spin" /> : <CheckCircle2 />} Validar
                 </button>
                 <button disabled={acting !== null || doc.status === "INCIDENCIA" || isExcluded} onClick={() => onStatus(doc.driveFileId, "INCIDENCIA")}>
                   {acting === doc.driveFileId + "INCIDENCIA" ? <RefreshCw className="spin" /> : <AlertTriangle />} Incidencia
                 </button>
               </div>
-              <p className="si-note">Solo lectura: validar aquí no crea la factura en Odoo; eso llegará en la Fase 3 con tu aprobación.</p>
+              {rematchMsg && <p className={rematchMsg.startsWith("Cotejo actualizado") ? "si-msg" : "error"} role="status">{rematchMsg}</p>}
+              <p className="si-note">«Validar» confirma tu revisión manual y deja todos los criterios en verde; no crea un borrador. Cuando quieras, usa después «Crear borrador en Odoo».</p>
             </section>
+
           </div>
         </div>
       </aside>

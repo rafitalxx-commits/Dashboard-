@@ -131,6 +131,7 @@ export class PurchaseOrdersLedger {
           qtyPending: Math.max(0, num(l.qty_received) - num(l.qty_invoiced)),
           priceUnit: num(l.price_unit),
           subtotal: num(l.price_subtotal),
+          discount: num(l.discount),
         };
       });
       const pickingsRaw = pickingsByOrder.get(id) ?? [];

@@ -210,7 +210,7 @@ export async function resolvePurchaseTax(
 export async function createSupplierDraft(
   config: OdooConfig,
   uid: number,
-  doc: { driveFileId: string; name: string; extracted: { supplier: string | null; supplierVat: string | null; invoiceNumber: string | null; invoiceDate: string | null; dueDate: string | null; currency: string | null; base: number | null; taxes: number | null; total: number | null; lines: { description: string | null; quantity: number | null; priceUnit: number | null; total: number | null; taxNames: string[] }[] } | null; assignedPurchaseOrderIds: number[] | null; match: { purchaseOrderId: number | null } | null },
+  doc: { driveFileId: string; name: string; extracted: { supplier: string | null; supplierVat: string | null; invoiceNumber: string | null; invoiceDate: string | null; dueDate: string | null; currency: string | null; base: number | null; taxes: number | null; total: number | null; lines: { description: string | null; quantity: number | null; priceUnit: number | null; total: number | null; taxNames: string[]; taxId?: number | null; accountId?: number | null }[] } | null; assignedPurchaseOrderIds: number[] | null; match: { purchaseOrderId: number | null } | null },
   orders: OrderShape[],
 ): Promise<DraftResult> {
   const ex = doc.extracted;
@@ -220,9 +220,12 @@ export async function createSupplierDraft(
   const { base, taxes, total } = ex;
 
   // ===== GATE 1-3: validacion de importes (base+impuestos=total, lineas=base, total=pedido) =====
+  // Sólo un pedido confirmado por el operario puede bloquear el borrador por
+  // importe. `match` es una sugerencia automática y no debe convertirse en
+  // una asociación contable (puede ser un pedido parcial o simplemente afín).
   const assignedIds = doc.assignedPurchaseOrderIds?.length
     ? doc.assignedPurchaseOrderIds
-    : doc.match?.purchaseOrderId ? [doc.match.purchaseOrderId] : [];
+    : [];
   const pos = orders.filter((o) => assignedIds.includes(o.id));
   const check = validateAmounts(ex.base, ex.taxes, ex.total, lines, pos);
   if (!check.ok) return { ok: false, message: check.message, warnings: [] };
@@ -253,9 +256,14 @@ export async function createSupplierDraft(
 
     // Tasa de la linea: por nombre ("IVA 21%") o la global de la factura
     const lineRate = parseRateFromNames(l.taxNames ?? []) ?? globalRate;
-    let taxId: number | null = null;
+    // La elección explícita del operario en el Dashboard tiene prioridad sobre
+    // la inferencia por nombre/tasa. Es un ID de impuesto de compra leído de Odoo.
+    let taxId: number | null = Number.isFinite(l.taxId) ? Number(l.taxId) : null;
     let taxName: string | null = null;
-    if (lineRate != null && lineRate > 0) {
+    if (taxId) {
+      taxName = (l.taxNames ?? [])[0] ?? null;
+      taxDetail.push({ lineIndex: i, taxId, taxName: taxName ?? `Impuesto ${taxId}`, rate: lineRate ?? 0 });
+    } else if (lineRate != null && lineRate > 0) {
       const resolved = await resolvePurchaseTax(config, uid, taxCountry, lineRate);
       if (resolved) {
         taxId = resolved.id;
@@ -274,6 +282,7 @@ export async function createSupplierDraft(
     if (productId) cmd.product_id = productId;
     else warnings.push(`Línea ${i + 1} sin producto en Odoo: ${l.description ?? "?"} (solo importe)`);
     if (taxId) cmd.tax_ids = [[6, 0, [taxId]]];
+    if (Number.isFinite(l.accountId)) cmd.account_id = Number(l.accountId);
     odooLines.push([0, 0, cmd]);
   }
 

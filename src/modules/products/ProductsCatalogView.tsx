@@ -87,6 +87,7 @@ export function ProductsCatalogView({
     "ids" | "filtered" | "all"
   >("ids");
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [exporting, setExporting] = useState<"csv" | "pdf" | null>(null);
   const load = async () => {
     setLoading(true);
     try {
@@ -237,13 +238,24 @@ export function ProductsCatalogView({
     });
   };
   const downloadCsv = () => {
+    if (exporting) return;
+    setExporting("csv");
+    const locationText = (product: CatalogProduct) => {
+      const entries = product.localLocations ?? [];
+      if (!entries.length) return "Sin ubicaciones registradas";
+      return entries.map((entry) => {
+        const label = locationCatalog.find((location) => location.code === entry.code)?.label;
+        return `${label || entry.code}: ${fmt(entry.quantity, product.uom)}`;
+      }).join("; ");
+    };
     const rowsCsv = [
-      ["Referencia", "Producto", "EAN", "Stock Odoo"],
+      ["Referencia", "Producto", "EAN", "Stock Odoo", "Ubicaciones Dashboard"],
       ...selectedProducts.map((product) => [
         product.reference,
         product.name,
         product.barcode,
         String(product.onHand),
+        locationText(product),
       ]),
     ]
       .map((row) =>
@@ -258,27 +270,42 @@ export function ProductsCatalogView({
     link.download = "productos-seleccionados.csv";
     link.click();
     URL.revokeObjectURL(url);
+    setMessage("Descarga CSV iniciada con las ubicaciones del Dashboard.");
+    window.setTimeout(() => setExporting(null), 350);
   };
   const printSelection = () => {
+    if (exporting) return;
+    setExporting("pdf");
     // `noopener` makes window.open return null in several browsers, which was
     // the cause of the blank PDF/print window in LAB.
     const popup = window.open("", "_blank");
     if (!popup) {
       setMessage("El navegador ha bloqueado la ventana. Permite ventanas emergentes para guardar el PDF.");
+      setExporting(null);
       return;
     }
+    const locationText = (product: CatalogProduct) => {
+      const entries = product.localLocations ?? [];
+      if (!entries.length) return "Sin ubicaciones registradas";
+      return entries.map((entry) => {
+        const label = locationCatalog.find((location) => location.code === entry.code)?.label;
+        return `${label || entry.code}: ${fmt(entry.quantity, product.uom)}`;
+      }).join(" · ");
+    };
     const lines = selectedProducts
       .map(
         (product) =>
-          `<tr><td>${escapePrintHtml(product.reference || "—")}</td><td>${escapePrintHtml(product.name)}</td><td>${escapePrintHtml(product.barcode || "—")}</td><td>${escapePrintHtml(String(product.onHand))}</td></tr>`,
+          `<tr><td>${escapePrintHtml(product.reference || "—")}</td><td>${escapePrintHtml(product.name)}</td><td>${escapePrintHtml(product.barcode || "—")}</td><td>${escapePrintHtml(String(product.onHand))}</td><td>${escapePrintHtml(locationText(product))}</td></tr>`,
       )
       .join("");
     popup.document.write(
-      `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Productos seleccionados</title><style>body{font:12px Arial;padding:16px;color:#172033}h1{font-size:18px}p{color:#475569}table{width:100%;border-collapse:collapse}th,td{border:1px solid #cbd5e1;padding:7px;text-align:left}th{background:#f1f5f9}</style></head><body><h1>Productos seleccionados</h1><p>${selectedProducts.length} productos · usa «Guardar como PDF» en el diálogo de impresión.</p><table><thead><tr><th>Referencia</th><th>Producto</th><th>EAN</th><th>Stock</th></tr></thead><tbody>${lines}</tbody></table></body></html>`,
+      `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Productos seleccionados</title><style>body{font:12px Arial;padding:16px;color:#172033}h1{font-size:18px}p{color:#475569}table{width:100%;border-collapse:collapse}th,td{border:1px solid #cbd5e1;padding:7px;text-align:left;vertical-align:top}th{background:#f1f5f9}</style></head><body><h1>Productos seleccionados</h1><p>${selectedProducts.length} productos · usa «Guardar como PDF» en el diálogo de impresión.</p><table><thead><tr><th>Referencia</th><th>Producto</th><th>EAN</th><th>Stock</th><th>Ubicaciones Dashboard</th></tr></thead><tbody>${lines}</tbody></table></body></html>`,
     );
     popup.document.close();
     popup.focus();
     popup.print();
+    setMessage("Vista de impresión abierta con las ubicaciones del Dashboard. Elige «Guardar como PDF».");
+    window.setTimeout(() => setExporting(null), 350);
   };
   const sendSelectionToInventory = () => {
     if (!selectedProducts.length) return;
@@ -639,18 +666,20 @@ export function ProductsCatalogView({
           Todo el catálogo
         </button>
         <button
-          disabled={!selectedProducts.length}
+          aria-live="polite"
+          disabled={!selectedProducts.length || exporting !== null}
           onClick={downloadCsv}
           type="button"
         >
-          CSV
+          {exporting === "csv" ? "Preparando CSV…" : "CSV"}
         </button>
         <button
-          disabled={!selectedProducts.length}
+          aria-live="polite"
+          disabled={!selectedProducts.length || exporting !== null}
           onClick={printSelection}
           type="button"
         >
-          PDF
+          {exporting === "pdf" ? "Preparando PDF…" : "PDF"}
         </button>
         <button
           className="primary-button"
@@ -692,7 +721,7 @@ export function ProductsCatalogView({
               <span>Reservado</span>
               <span>Por recibir</span>
               <span>Pronóstico</span>
-              <span>Estado</span>
+              <span>Ubicaciones</span>
             </div>
             {visibleRows.map((p) => (
               <div
@@ -729,15 +758,13 @@ export function ProductsCatalogView({
                 <span>{fmt(p.reserved, p.uom)}</span>
                 <span>{fmt(p.incoming, p.uom)}</span>
                 <span>{fmt(p.forecast, p.uom)}</span>
-                <span className="product-tags">
-                  {p.mto && <i className="tag warn">Bajo pedido</i>}
-                  {!p.barcode && <i className="tag">Sin EAN</i>}
-                  {p.locationSummary?.needsReplenishment && (
-                    <i className="tag danger">Reponer</i>
-                  )}
-                  {!p.physicalLocations.length && (
-                    <i className="tag">Sin ubicación</i>
-                  )}
+                <span className="product-locations-cell" title={(p.localLocations ?? []).map((location) => `${location.code}: ${fmt(location.quantity, p.uom)}`).join(" · ") || "Sin ubicaciones registradas"}>
+                  {(p.localLocations ?? []).length ? (
+                    (p.localLocations ?? []).map((location) => {
+                      const label = locationCatalog.find((entry) => entry.code === location.code)?.label;
+                      return <i className="tag" key={location.code}>{label || location.code}: {fmt(location.quantity, p.uom)}</i>;
+                    })
+                  ) : <i className="tag">Sin ubicaciones registradas</i>}
                 </span>
               </div>
             ))}
