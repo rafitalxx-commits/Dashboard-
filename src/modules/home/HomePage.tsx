@@ -56,9 +56,9 @@ export function HomePage({ onOpen }: { onOpen: (metric: OperationalHomeMetric, i
   return <main className="operational-home">
     <header className="operational-home-header"><div><span className="operational-home-eyebrow">Panel operativo</span><h1>Inicio</h1><p>Lo que necesita atención, de un vistazo.</p></div><button className="operational-home-refresh" disabled={loading} onClick={() => setRefreshId((id) => id + 1)} type="button"><RefreshCw aria-hidden="true" className={loading ? "spinning" : ""} size={16}/>{loading ? "Actualizando…" : seconds === null ? "Actualizar" : `Actualizado hace ${seconds} s`}</button></header>
     {error && <p className="operational-home-error" role="alert">{error} <button onClick={() => setRefreshId((id) => id + 1)} type="button">Reintentar</button></p>}
-    <HomeSection title="Operativa inmediata" className="operational-home-grid">{renderCard("unprinted")}{renderCard("unsent")}{renderCard("receptions")}</HomeSection>
+    <HomeSection title="Operativa inmediata" className="operational-home-grid operational-home-grid--primary">{renderCard("unprinted")}{renderCard("unsent")}{renderCard("receptions")}{renderCard("underOrder")}</HomeSection>
     <HomeSection title="Actividad y rendimiento" className="operational-home-charts"><ChartCard kind="shipments" title="Pedidos enviados" refreshId={refreshId}/><ChartCard kind="sales" title="Ventas" refreshId={refreshId}/></HomeSection>
-    <HomeSection title="Necesidades y actuación" className="operational-home-grid">{renderCard("underOrder")}{renderCard("noStock")}{renderCard("pendingPurchases")}</HomeSection>
+    <HomeSection title="Necesidades y actuación" className="operational-home-grid">{renderCard("noStock")}{renderCard("pendingPurchases")}</HomeSection>
   </main>;
 }
 

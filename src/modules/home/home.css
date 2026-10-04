@@ -11,6 +11,7 @@
 .operational-home-section{margin:0 0 30px}
 .operational-home-section h2{font-size:13px;font-weight:700;color:#617089;letter-spacing:.04em;margin:0 0 13px}
 .operational-home-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.operational-home-grid--primary{grid-template-columns:repeat(4,minmax(0,1fr))}
 .operational-home-kpi,.operational-home-chart{border:1px solid #e8edf5;border-radius:18px;background:#fff;box-shadow:0 7px 25px rgba(31,56,91,.045)}
 .operational-home-kpi{display:flex;flex-direction:column;text-align:left;min-width:0;padding:20px 21px;cursor:pointer;color:inherit;min-height:171px;transition:box-shadow .18s,border-color .18s,transform .18s}
 .operational-home-kpi:hover{border-color:#b6cced;box-shadow:0 11px 28px rgba(46,92,164,.13);transform:translateY(-2px)}
@@ -48,7 +49,7 @@
 .operational-home-skeleton.graph{height:126px;margin-top:60px}
 .operational-home-error,.operational-home-chart-error{color:#a33f37;background:#fff5f3;border:1px solid #f5d4ce;border-radius:11px;padding:11px 13px;font-size:13px}
 .operational-home-error button{background:none;border:0;color:#1f5cae;text-decoration:underline;cursor:pointer}
-@media(max-width:900px){.operational-home-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.operational-home-charts{grid-template-columns:1fr}}
-@media(max-width:620px){.operational-home{padding:18px 14px}.operational-home-header{align-items:flex-start;flex-direction:column;margin-bottom:24px}.operational-home h1{font-size:27px}.operational-home-grid{grid-template-columns:1fr;gap:12px}.operational-home-kpi{min-height:142px}.operational-home-chart{padding:17px}.operational-home-section{margin-bottom:25px}.operational-home-bars{min-width:450px}}
+@media(max-width:900px){.operational-home-grid,.operational-home-grid--primary{grid-template-columns:repeat(2,minmax(0,1fr))}.operational-home-charts{grid-template-columns:1fr}}
+@media(max-width:620px){.operational-home{padding:18px 14px}.operational-home-header{align-items:flex-start;flex-direction:column;margin-bottom:24px}.operational-home h1{font-size:27px}.operational-home-grid{gap:10px}.operational-home-kpi{min-height:142px;padding:14px}.operational-home-kpi strong{font-size:30px}.operational-home-chart{padding:17px}.operational-home-section{margin-bottom:25px}.operational-home-bars{min-width:450px}}
 .home-destination-filter{display:flex;align-items:center;flex-wrap:wrap;gap:8px;background:#eef5ff;border:1px solid #c8dcf6;color:#275486;border-radius:10px;padding:10px 12px;margin:0 0 14px;font-size:13px;font-weight:600}
 .home-destination-filter button{border:0;background:transparent;color:#18569f;text-decoration:underline;cursor:pointer;padding:2px 4px;font:inherit}
