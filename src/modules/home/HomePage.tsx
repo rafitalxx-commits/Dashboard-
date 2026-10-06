@@ -7,7 +7,7 @@ import "./home.css";
 let recentHome: { expiresAt: number; data: OperationalHomePayload } | null = null;
 const operationalCards: Array<{ key: OperationalHomeMetric; title: string; detail: string; icon: typeof Printer }> = [
   { key: "unprinted", title: "Pedidos sin imprimir", detail: "4 días · FBM + Website", icon: Printer },
-  { key: "unsent", title: "Pedidos sin enviar", detail: "4 días · sin etiqueta", icon: Truck },
+  { key: "unsent", title: "Pedidos sin enviar", detail: "4 días · sin entrega Odoo", icon: Truck },
   { key: "receptions", title: "Recepciones", detail: "Pendiente + Esperando", icon: PackageCheck },
   { key: "underOrder", title: "Compras Bajo pedido", detail: "Necesidades de clientes", icon: ShoppingCart },
   { key: "noStock", title: "Productos sin stock", detail: "Ubicaciones · sin Bajo pedido", icon: Boxes },

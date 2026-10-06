@@ -33,7 +33,7 @@ import {
   isCompleteExpeditionOrderReference,
 } from "./backend/expeditionOrderReference";
 import { formatOdooMadrid } from "./backend/odooDateTime";
-import { groupShipmentLabels, isHomeOrderUnprinted, isHomeOrderUnsent, labelReferences, periodBounds, type HomePeriod, type ShippingLabel } from "./backend/home/metrics";
+import { groupShipmentLabels, hasOdooOutboundDelivery, isHomeOrderChannel, isHomeOrderUnprinted, isHomeOrderUnsent, labelReferences, periodBounds, type HomePeriod, type ShippingLabel } from "./backend/home/metrics";
 import {
   createProductCatalog,
   formatCatalogProductName,
@@ -6153,8 +6153,6 @@ async function buildOperationalHomeKpis(
   const range = { from: start.toISOString().slice(0, 10), to: today.toISOString().slice(0, 10) };
   const ordersStore = readOrdersCache(env);
   const orders = filterCachedOrders(ordersStore.orders, range);
-  const labels = readHomeShippingLabels(env);
-  const refs = labelReferences(labels);
   const locationsStore = productLocations.summary();
   const physicalCodes = new Set(locationsStore.locationCatalog.filter((item) => item.kind === "physical").map((item) => item.code));
   const located = new Map<number, number>();
@@ -6162,7 +6160,6 @@ async function buildOperationalHomeKpis(
     located.set(item.productId, (located.get(item.productId) || 0) + item.quantity);
   });
   const mto = new Set(productCatalog.list().products.filter((item) => item.mto).map((item) => item.id));
-  const unsent = orders.filter((order) => isHomeOrderUnsent(order, refs));
   // The destination catalog also treats a product with no physical-location
   // row as zero stock. Build the same universe here so the KPI does not omit
   // catalog products that have never been located.
@@ -6171,15 +6168,19 @@ async function buildOperationalHomeKpis(
     .filter((product) => (located.get(product.id) ?? 0) <= 0 && !mto.has(product.id))
     .map((product) => product.id);
   const values: Record<string, { count?: number; ids?: string[]; error?: string }> = {
-    unsent: { count: unsent.length, ids: unsent.map((order) => order.id) },
     noStock: { count: noStock.length, ids: noStock.map((id) => String(id)) },
   };
-  const [unprintedResult, receptions, alerts, purchases] = await Promise.allSettled([
+  const [unsentResult, unprintedResult, receptions, alerts, purchases] = await Promise.allSettled([
+    getHomeOrdersWithoutOdooDelivery(env, orders),
     getHomeUnprintedOrders(env, range, orders),
     getOdooInventoryReceptions(env),
     getOdooSalesPurchaseAlerts(env),
     getOdooPurchaseReceptions(env),
   ]);
+  if (unsentResult.status === "fulfilled") {
+    const unsent = unsentResult.value;
+    values.unsent = { count: unsent.length, ids: unsent.map((order) => order.id) };
+  } else values.unsent = { error: String(unsentResult.reason) };
   if (unprintedResult.status === "fulfilled") {
     const unprinted = unprintedResult.value.filter(isHomeOrderUnprinted);
     values.unprinted = { count: unprinted.length, ids: unprinted.map((order) => order.id) };
@@ -6199,6 +6200,70 @@ async function buildOperationalHomeKpis(
   if (purchases.status === "fulfilled") values.pendingPurchases = { count: purchases.value.total, ids: purchases.value.receptions.map((item) => item.id) };
   else values.pendingPurchases = { error: String(purchases.reason) };
   return { updatedAt: new Date().toISOString(), range, source: ordersFastCacheEnabled(env) ? "dashboard-cache" : "odoo-live", values, cacheUpdatedAt: ordersStore.updatedAt };
+}
+
+/**
+ * Authoritatively checks the delivery relation in Odoo for the cached Home
+ * order set. A live read avoids relying on carrier allowlists or potentially
+ * stale label/printing metadata in the Dashboard cache.
+ */
+async function getHomeOrdersWithoutOdooDelivery(
+  env: Record<string, string>,
+  orders: OrdersCacheStore["orders"],
+) {
+  const candidates = orders.filter(isHomeOrderChannel);
+  if (!candidates.length) return [];
+
+  const idsByOrder = new Map<string, number>();
+  for (const order of candidates) {
+    const match = (order.odooRef || "").match(/^#(\d+)$/);
+    if (!match) throw new Error(`No se pudo identificar el pedido Odoo de ${order.id}`);
+    idsByOrder.set(order.id, Number(match[1]));
+  }
+
+  const config = getOdooConfig(env);
+  if (!config.url || !config.database || !config.username || !config.apiKey) {
+    throw new Error("Falta la conexión con Odoo para comprobar las entregas");
+  }
+  const uid = await authenticate(config);
+  const orderIds = [...new Set(idsByOrder.values())];
+  const saleOrders: Array<{ id: number; picking_ids?: number[] }> = [];
+  for (let offset = 0; offset < orderIds.length; offset += 500) {
+    const batch = orderIds.slice(offset, offset + 500);
+    const page = await executeKw(config, uid, "sale.order", "read", [batch], {
+      fields: ["id", "picking_ids"],
+    }) as Array<{ id: number; picking_ids?: number[] }>;
+    saleOrders.push(...page);
+  }
+  if (saleOrders.length !== orderIds.length) {
+    throw new Error("Odoo no devolvió todos los pedidos para comprobar las entregas");
+  }
+
+  const pickingIds = [...new Set(saleOrders.flatMap((order) => order.picking_ids ?? []))];
+  const pickings: Array<{ id: number; state?: string; picking_type_code?: string }> = [];
+  for (let offset = 0; offset < pickingIds.length; offset += 500) {
+    const batch = pickingIds.slice(offset, offset + 500);
+    const page = await executeKw(config, uid, "stock.picking", "read", [batch], {
+      fields: ["id", "state", "picking_type_code"],
+    }) as Array<{ id: number; state?: string; picking_type_code?: string }>;
+    pickings.push(...page);
+  }
+  if (pickings.length !== pickingIds.length) {
+    throw new Error("Odoo no devolvió todas las entregas para comprobar los pedidos");
+  }
+  const pickingById = new Map(pickings.map((picking) => [picking.id, picking]));
+  const saleOrderById = new Map(saleOrders.map((order) => [order.id, order]));
+
+  return candidates.filter((order) => {
+    const saleOrderId = idsByOrder.get(order.id)!;
+    const saleOrder = saleOrderById.get(saleOrderId);
+    if (!saleOrder) throw new Error(`Odoo no devolvió el pedido #${saleOrderId}`);
+    const linkedPickings = (saleOrder.picking_ids ?? [])
+      .map((id) => pickingById.get(id))
+      .filter((picking): picking is NonNullable<typeof picking> => Boolean(picking))
+      .map((picking) => ({ state: picking.state, pickingTypeCode: picking.picking_type_code }));
+    return isHomeOrderUnsent(order, hasOdooOutboundDelivery(linkedPickings));
+  });
 }
 
 async function getHomeUnprintedOrders(

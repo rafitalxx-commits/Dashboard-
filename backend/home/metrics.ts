@@ -56,8 +56,14 @@ export function isHomeOrderUnprinted(order: HomeOrder) {
   return isHomeOrderChannel(order) && !order.deliveryPrinted && !delivered;
 }
 
-export function isHomeOrderUnsent(order: HomeOrder, refs: Set<string>) {
-  return isHomeOrderChannel(order) && !hasExpeditionLabel(order, refs);
+export function hasOdooOutboundDelivery(pickings: Array<{ state?: string; pickingTypeCode?: string }>) {
+  return pickings.some((picking) => picking.pickingTypeCode === "outgoing" && picking.state !== "cancel");
+}
+
+export function isHomeOrderUnsent(order: HomeOrder, hasOdooDelivery: boolean) {
+  // The Odoo delivery is the shared signal for FBM and Website. Printing and
+  // carrier labels are deliberately irrelevant to this KPI.
+  return isHomeOrderChannel(order) && !hasOdooDelivery;
 }
 
 export type HomePeriod = "48h" | "day" | "week" | "month";
