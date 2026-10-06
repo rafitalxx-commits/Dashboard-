@@ -32,7 +32,7 @@ export type ProductInventory = {
   finalizedAt?: string;
   sentAt?: string;
   sentBy?: InventoryOperator;
-  odooResults?: Array<{ productId: number; before: number; counted: number; changed: boolean; error?: string }>;
+  odooResults?: Array<{ productId: number; before: number; counted: number; changed: boolean; error?: string; attemptedAt?: string; retryRequired?: boolean }>;
   counts: InventoryCount[];
   recountProductIds?: number[];
   recountRevision?: number;
@@ -226,6 +226,11 @@ export function createProductInventories(options: {
     const existing = inventory.counts.find((item) => item.productId === Number(input.productId) && item.locationCode === code && item.revision === revision);
     const entry: InventoryCount = { id: existing?.id || `count-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, productId: Number(input.productId), locationCode: code, quantity, operator: input.operator, countedAt: now, revision };
     inventory.counts = existing ? inventory.counts.map((item) => item.id === existing.id ? entry : item) : [...inventory.counts, entry]; inventory.updatedAt = now;
+    if (inventory.recountProductIds?.includes(productId)) {
+      inventory.odooResults = (inventory.odooResults || []).map((result) => result.productId === productId && result.error
+        ? { ...result, error: undefined, retryRequired: true }
+        : result);
+    }
     return save(inventory);
   };
   const status = (id: string, action: "review" | "validate", operator?: InventoryOperator) => {
@@ -235,18 +240,43 @@ export function createProductInventories(options: {
     inventory.updatedAt = now; return save(inventory);
   };
   const recount = (id: string, productIds: number[]) => {
-    const inventory = find(id); if (inventory.status !== "review") throw new Error("El inventario debe estar en revisión");
+    const inventory = find(id);
+    const failedProductIds = new Set((inventory.odooResults || []).filter((result) => result.error).map((result) => result.productId));
+    const canRecountFailures = inventory.status === "validated" && failedProductIds.size > 0;
+    if (inventory.status !== "review" && !canRecountFailures) throw new Error("El inventario debe estar en revisión o tener referencias fallidas");
     const selected = [...new Set(productIds.map(Number))].filter((productId) => inventory.plannedProductIds.includes(productId));
     if (!selected.length) throw new Error("Selecciona al menos un producto para recontar");
+    if (canRecountFailures && selected.some((productId) => !failedProductIds.has(productId))) throw new Error("Solo se pueden recontar referencias con error");
     const nextRevision = Math.max(1, ...inventory.counts.map((count) => count.revision || 1)) + 1;
     inventory.status = "in_progress"; inventory.recountProductIds = selected; inventory.recountRevision = nextRevision; inventory.updatedAt = new Date().toISOString(); return save(inventory);
+  };
+  const recordOdooResult = (id: string, result: NonNullable<ProductInventory["odooResults"]>[number]) => {
+    const inventory = find(id);
+    const results = inventory.odooResults || [];
+    inventory.odooResults = results.some((item) => item.productId === result.productId)
+      ? results.map((item) => item.productId === result.productId ? result : item)
+      : [...results, result];
+    inventory.updatedAt = new Date().toISOString();
+    return save(inventory);
   };
   const finalize = (id: string, operator: InventoryOperator, results: ProductInventory["odooResults"]) => {
     const inventory = find(id);
     if (inventory.status !== "validated") throw new Error("Primero valida el inventario");
-    if (results.some((result) => result.error)) throw new Error("Hay referencias con error; revisa y reintenta solo las fallidas");
-    inventory.status = "finalized"; inventory.sentAt = new Date().toISOString(); inventory.finalizedAt = inventory.sentAt; inventory.sentBy = operator; inventory.odooResults = results; inventory.updatedAt = inventory.sentAt;
+    inventory.odooResults = results || inventory.odooResults || [];
+    inventory.sentAt = new Date().toISOString(); inventory.sentBy = operator; inventory.updatedAt = inventory.sentAt;
+    if (inventory.odooResults.some((result) => result.error)) return save(inventory);
+    inventory.status = "finalized"; inventory.finalizedAt = inventory.sentAt;
     return save(inventory);
   };
-  return { create, list, find, start, count, status, recount, finalize };
+  /** Discards an unfinished Dashboard-only inventory. It never touches Odoo. */
+  const discard = (id: string) => {
+    const inventory = find(id);
+    if (inventory.status !== "draft" && inventory.status !== "in_progress") {
+      throw new Error("Solo se pueden cancelar inventarios en curso");
+    }
+    const store = read();
+    store.inventories = store.inventories.filter((item) => item.id !== id);
+    write(store);
+  };
+  return { create, list, find, start, count, status, recount, recordOdooResult, finalize, discard };
 }

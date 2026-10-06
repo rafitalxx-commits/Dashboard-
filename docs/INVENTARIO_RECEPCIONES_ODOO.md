@@ -209,3 +209,9 @@ Una línea Bajo pedido muestra el pedido de venta, avisa de que no debe almacena
 La asignación de un producto, el escáner, los inventarios y los repartos de recepción solo aceptan entradas físicas activas del catálogo. Escanear un código desconocido o inactivo no lo crea. `Pendiente de envío` es una entrada operativa activa del mismo catálogo y se propone por defecto para las líneas Bajo pedido.
 
 Los repartos se editan localmente hasta pulsar `Validar`. Una línea puede guardarse con cero unidades y queda marcada como pendiente local; una cantidad menor queda marcada como parcial. Solo la validación confirmada envía cantidades a Odoo, resuelve el backorder y bloquea la edición; cerrar el panel antes de validar conserva el borrador sin tocar Odoo.
+
+## Inventario LAB: errores parciales y reintentos
+
+El envío de un inventario validado registra el resultado por referencia tras cada intento. Si alguna falla, el inventario permanece validado, muestra la referencia y el error, y conserva los éxitos para no incluirlos en el siguiente envío. Solo una referencia fallida puede abrirse para reconteo; tras corregirla y revalidarla, «Enviar corregidas» selecciona únicamente esas referencias. El backend bloquea envíos simultáneos del mismo inventario y comprueba el permiso y `ODOO_WRITE_ENABLED=true` antes de cualquier acceso de escritura a Odoo.
+
+Un error de red o una interrupción después de una escritura externa puede dejar el resultado indeterminado: antes de reintentar hay que contrastar el stock en Odoo. La cancelación de un inventario en borrador o en curso borra solo el registro local de Dashboard y sus conteos; no cambia Odoo y no está disponible tras entrar en revisión.

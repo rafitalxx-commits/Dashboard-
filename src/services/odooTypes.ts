@@ -111,7 +111,7 @@ export type ProductInventory = {
   recountRevision?: number;
   finalizedAt?: string;
   sentAt?: string;
-  odooResults?: Array<{ productId: number; before: number; counted: number; changed: boolean; error?: string }>;
+  odooResults?: Array<{ productId: number; before: number; counted: number; changed: boolean; error?: string; attemptedAt?: string; retryRequired?: boolean }>;
 };
 export type InventoryOperator = { id: string; code: string; name: string };
 export type InventoryCount = { id: string; productId: number; locationCode: string; quantity: number; operator: InventoryOperator; countedAt: string; revision: number };

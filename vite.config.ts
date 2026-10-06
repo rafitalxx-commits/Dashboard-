@@ -509,6 +509,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
           }));
         },
       });
+      const activeInventorySends = new Set<string>();
       registerQzSigningRoutes(server, auth, env);
       registerPublicTrackingRoutes(server, env);
       registerGeneiRoutes(server, auth, env);
@@ -794,6 +795,11 @@ function odooReadOnlyApi(env: Record<string, string>) {
               sendJson(response, 200, productInventories.start(parts[0], (await readJsonBody(request)).operator));
               return;
             }
+            if (request.method === "DELETE" && parts.length === 1 && parts[0]) {
+              productInventories.discard(parts[0]);
+              sendJson(response, 200, { ok: true });
+              return;
+            }
             if (request.method === "POST" && parts.length === 2 && parts[1] === "counts") {
               sendJson(response, 200, productInventories.count(parts[0], await readJsonBody(request)));
               return;
@@ -811,38 +817,61 @@ function odooReadOnlyApi(env: Record<string, string>) {
               const inventory = productInventories.find(parts[0]);
               if (inventory.status !== "validated") throw new Error("Primero valida el inventario");
               if (!payload.operator?.name?.trim()) throw new Error("Indica el operario que envía a Odoo");
-              const config = getOdooConfig(env); const uid = await authenticate(config);
-              const call = (model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) => rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
-              const stockLocations = await call("stock.location", "search_read", [[['complete_name', '=', 'ALM/Stock']]], { fields: ['id'], limit: 1 });
-              const locationId = stockLocations[0]?.id; if (!locationId) throw new Error("No se encontró ALM/Stock en Odoo");
-              const effectiveCounts = new Map<string, typeof inventory.counts[number]>();
-              for (const count of inventory.counts) {
-                const key = `${count.productId}:${count.locationCode}`;
-                if (!effectiveCounts.has(key) || (effectiveCounts.get(key)?.revision || 1) <= (count.revision || 1)) effectiveCounts.set(key, count);
-              }
-              // A partial inventory replaces only its own locations. Odoo must
-              // receive the accumulated total from every zone already counted,
-              // not just the lines in this particular inventory.
-              const inventoryCounts = [...effectiveCounts.values()].map((count) => ({ productId: count.productId, locationCode: count.locationCode, quantity: count.quantity }));
-              const accumulatedTotals = productLocations.inventoryTotalsAfterReplace(inventoryCounts);
-              const results = [] as Array<{ productId: number; before: number; counted: number; changed: boolean; error?: string }>;
-              for (const productId of inventory.plannedProductIds) {
-                const entries = [...effectiveCounts.values()].filter((count) => count.productId === productId);
-                if (!entries.length) continue;
-                const counted = accumulatedTotals[productId];
-                try {
-                  const quants = await call("stock.quant", "search_read", [[['product_id', '=', productId], ['location_id', '=', locationId]]], { fields: ['id', 'quantity'], limit: 1 });
-                  const before = Number(quants[0]?.quantity || 0);
-                  if (before !== counted) {
-                    const quantId = quants[0]?.id || await call("stock.quant", "create", [{ product_id: productId, location_id: locationId, inventory_quantity: counted }], { context: { inventory_mode: true } });
-                    if (quants[0]?.id) await call("stock.quant", "write", [[quantId], { inventory_quantity: counted }], { context: { inventory_mode: true } });
-                    await call("stock.quant", "action_apply_inventory", [[quantId]], { context: { inventory_mode: true } });
+              if (!user.permissions.includes("odooWrite")) throw new Error("Sin permiso para escribir en Odoo");
+              if (env.ODOO_WRITE_ENABLED !== "true") throw new Error("Escritura en Odoo desactivada en este entorno de pruebas");
+              if (activeInventorySends.has(parts[0])) throw new Error("Este inventario ya se está enviando. Espera a que termine.");
+              activeInventorySends.add(parts[0]);
+              try {
+                const config = getOdooConfig(env); const uid = await authenticate(config);
+                const call = (model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) => rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
+                const stockLocations = await call("stock.location", "search_read", [[['complete_name', '=', 'ALM/Stock']]], { fields: ['id'], limit: 1 });
+                const locationId = stockLocations[0]?.id; if (!locationId) throw new Error("No se encontró ALM/Stock en Odoo");
+                const effectiveCounts = new Map<string, typeof inventory.counts[number]>();
+                for (const count of inventory.counts) {
+                  const key = `${count.productId}:${count.locationCode}`;
+                  if (!effectiveCounts.has(key) || (effectiveCounts.get(key)?.revision || 1) <= (count.revision || 1)) effectiveCounts.set(key, count);
+                }
+                // A partial inventory replaces only its own locations. Odoo must
+                // receive the accumulated total from every zone already counted.
+                const inventoryCounts = [...effectiveCounts.values()].map((count) => ({ productId: count.productId, locationCode: count.locationCode, quantity: count.quantity }));
+                const accumulatedTotals = productLocations.inventoryTotalsAfterReplace(inventoryCounts);
+                const priorResults = inventory.odooResults || [];
+                const retryIds = priorResults.filter((result) => result.retryRequired).map((result) => result.productId);
+                if (!retryIds.length && priorResults.some((result) => result.error)) {
+                  throw new Error("Corrige y revalida las referencias fallidas antes de volver a enviarlas");
+                }
+                const previouslySucceeded = new Set(priorResults.filter((result) => !result.error && !result.retryRequired).map((result) => result.productId));
+                const targetIds = retryIds.length
+                  ? retryIds
+                  : inventory.plannedProductIds.filter((productId) => !previouslySucceeded.has(productId));
+                const results = [...priorResults];
+                for (const productId of targetIds) {
+                  const entries = [...effectiveCounts.values()].filter((count) => count.productId === productId);
+                  if (!entries.length) continue;
+                  const counted = accumulatedTotals[productId];
+                  let before = 0;
+                  let result: NonNullable<typeof inventory.odooResults>[number];
+                  try {
+                    const quants = await call("stock.quant", "search_read", [[['product_id', '=', productId], ['location_id', '=', locationId]]], { fields: ['id', 'quantity'], limit: 1 });
+                    before = Number(quants[0]?.quantity || 0);
+                    if (before !== counted) {
+                      const quantId = quants[0]?.id || await call("stock.quant", "create", [{ product_id: productId, location_id: locationId, inventory_quantity: counted }], { context: { inventory_mode: true } });
+                      if (quants[0]?.id) await call("stock.quant", "write", [[quantId], { inventory_quantity: counted }], { context: { inventory_mode: true } });
+                      await call("stock.quant", "action_apply_inventory", [[quantId]], { context: { inventory_mode: true } });
+                    }
+                    productLocations.replaceFromInventory(entries.map((entry) => ({ productId, locationCode: entry.locationCode, quantity: entry.quantity })));
+                    result = { productId, before, counted, changed: before !== counted, attemptedAt: new Date().toISOString() };
+                  } catch (error) {
+                    result = { productId, before, counted, changed: false, error: error instanceof Error ? error.message : "Error Odoo", attemptedAt: new Date().toISOString() };
                   }
-                  results.push({ productId, before, counted, changed: before !== counted });
-                } catch (error) { results.push({ productId, before: 0, counted, changed: false, error: error instanceof Error ? error.message : "Error Odoo" }); }
+                  productInventories.recordOdooResult(parts[0], result);
+                  const index = results.findIndex((item) => item.productId === productId);
+                  if (index >= 0) results[index] = result; else results.push(result);
+                }
+                sendJson(response, 200, productInventories.finalize(parts[0], payload.operator, results));
+              } finally {
+                activeInventorySends.delete(parts[0]);
               }
-              if (!results.some((result) => result.error)) productLocations.replaceFromInventory(inventoryCounts);
-              sendJson(response, 200, productInventories.finalize(parts[0], payload.operator, results));
               return;
             }
             if (request.method === "POST") {

@@ -101,7 +101,7 @@ async function readJson<T = any>(response: Response): Promise<T> {
 const productsApi = (path = "") =>
   `/api/odoo/products${path}`;
 const inventoriesApi = () =>
-  "/api/odoo/inventories";
+  `${dashboardBasePath}/api/odoo/inventories`;
 type DashboardCalendarEvent = {
   id: string;
   source: CalendarAccountId;
@@ -352,6 +352,11 @@ export const odooClient = {
     const payload = (await readJson(response)) as import("./odooTypes").ProductInventory & { message?: string };
     if (!response.ok) throw new Error(payload.message ?? "No se pudo leer el inventario");
     return payload;
+  },
+  async discardProductInventory(id: string) {
+    const response = await fetch(`${inventoriesApi()}/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const payload = (await readJson(response)) as { ok?: boolean; message?: string };
+    if (!response.ok || !payload.ok) throw new Error(payload.message ?? "No se pudo cancelar el inventario");
   },
   async inventoryAction(id: string, action: "start" | "review" | "validate", body: Record<string, unknown> = {}) {
     const response = await fetch(`${inventoriesApi()}/${encodeURIComponent(id)}/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
