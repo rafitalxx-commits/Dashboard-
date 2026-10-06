@@ -12,12 +12,58 @@ export type DocumentStatus =
 export type DocumentSource = "email" | "manual" | "web" | "desconocido";
 
 export interface PdfExtractedLine {
+  /** product.product real cuando se importó desde un pedido confirmado. */
+  productId?: number | null;
   description: string;
   reference: string | null;
   quantity: number | null;
   priceUnit: number | null;
   discount: number | null;
+  /** Descuentos adicionales sucesivos; no se suman al porcentaje comercial. */
+  discountExtra?: number | null;
+  promptPaymentDiscount?: number | null;
+  /** Pedido que aportó esta línea cuando se asoció manualmente. */
+  sourcePurchaseOrderName?: string | null;
+  sourcePurchaseOrderId?: number | null;
+  /** Excepción explícita: servicio/consumible existente elegido y confirmado por el operario. */
+  genericProductConfirmed?: boolean;
+  /** Cantidades de compra de sólo lectura: permiten cotejar recepción y factura. */
+  qtyOrdered?: number | null;
+  qtyReceived?: number | null;
+  qtyInvoiced?: number | null;
+  qtyPending?: number | null;
+  /** Precio/descuento del pedido en Odoo al importar la línea; no se pisa al editar la factura. */
+  odooPurchasePriceUnit?: number | null;
+  odooPurchaseDiscount?: number | null;
+  /** Precio del PDF cotejado de forma inequívoca o confirmado por un operario. */
+  pdfPriceVerified?: boolean;
+  /** Candidatos explicables; nunca equivalen a una identidad confirmada. */
+  matchCandidates?: Array<{
+    purchaseOrderId: number;
+    purchaseOrderName: string;
+    purchaseLineId: number | null;
+    productId: number;
+    productName: string;
+    score: number;
+    identityLevel: "exact" | "probable" | "ambiguous";
+    evidence: string[];
+    discrepancies: string[];
+  }>;
+  /** Propuestas de Raskibot: nunca equivalen a una selección humana. */
+  aiProductCandidateId?: number | null;
+  aiPurchaseOrderCandidateId?: number | null;
+  aiCandidateReason?: string | null;
   taxNames: string[];
+  /** Impuesto elegido localmente desde account.tax de Odoo (solo lectura). */
+  taxId?: number | null;
+  taxRate?: number | null;
+  /** Cuenta contable local elegida desde account.account de Odoo. */
+  accountId?: number | null;
+  accountName?: string | null;
+  /** Cuota de impuesto editable. Si se indica, prevalece sobre taxRate. */
+  taxAmount?: number | null;
+  /** Total final editable de la línea (base neta + cuota). */
+  totalWithTax?: number | null;
   total: number | null;
   confidence: number; // 0-100 heuristico
 }
@@ -67,8 +113,19 @@ export interface DocumentMatch {
   excludedReason?: string | null;
 }
 
+export interface InvoiceReviewChatMessage {
+  at: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+}
+
 export interface InboxDocument {
   driveFileId: string;
+  /** Elección humana persistente; nunca inferida por la extracción. */
+  confirmedOdooPartnerId?: number | null;
+  invoiceBranch?: "goods" | "services" | null;
+  /** Aceptación humana de las líneas leídas del PDF cuando no existe pedido. */
+  pdfLinesAccepted?: boolean;
   driveFolderId: string | null;
   name: string;
   size: number | null;
@@ -94,12 +151,26 @@ export interface InboxDocument {
   // Drive definitivo (preparado para fase 3)
   targetFolderPath: string | null; // ej. /2026/NOX2/T3
   movedTo: string | null; // folder id destino si se moviera
+  /** Reconciliación con la carpeta origen de Drive. Los ausentes se conservan para auditoría pero no se muestran. */
+  sourcePresent?: boolean;
+  sourceRemovedAt?: string | null;
   /** Fase 3: borrador de factura creado en Odoo (id + nombre + estado). */
   odooDraftMoveId: number | null;
   odooDraftName: string | null;
   odooDraftState: string | null;
   /** Multi-pedido (Fase 2): pedidos de compra que componen esta factura. */
   assignedPurchaseOrderIds: number[] | null;
+  /** Conversación local y auditable de revisión; nunca es un canal de escritura Odoo. */
+  reviewChat?: InvoiceReviewChatMessage[];
+  /** Última propuesta del agente, separada de los datos confirmados del borrador. */
+  reviewProposal?: {
+    at: string;
+    fields: Partial<Pick<PdfExtractedData, "supplier" | "supplierVat" | "country" | "billingAddress" | "currency" | "invoiceNumber" | "invoiceDate" | "dueDate" | "base" | "taxes" | "total">>;
+    lines: PdfExtractedLine[];
+    unresolved: string[];
+  } | null;
+  /** Líneas originalmente leídas del PDF, antes de importar líneas de pedidos. */
+  pdfSourceLines?: PdfExtractedLine[];
   // Interno
   pdfCached: boolean;
   processedAt: string | null;
@@ -122,6 +193,8 @@ export interface PurchaseOrderRecord {
   id: number;
   name: string;
   state: string;
+  /** Estado actual de facturación informado por purchase.order.invoice_status. */
+  invoiceStatus?: string | null;
   partnerId: number;
   partnerName: string;
   partnerCountry: string | null;
@@ -130,7 +203,10 @@ export interface PurchaseOrderRecord {
   dateOrder: string | null;
   buyer: string | null;
   origin: string | null;
+  /** Número de pedido del proveedor en purchase.order.partner_ref (no es origin). */
+  supplierRef?: string | null;
   amountTotal: number;
+  amountUntaxed?: number;
   // Recepciones
   pickings: { id: number; name: string; state: string; dateDone: string | null }[];
   receivedQty: number | null; // total qty_received lineas
@@ -146,6 +222,7 @@ export interface PurchaseOrderRecord {
   billedPct: number | null;
   billingSplit: boolean; // una factura cubre varios pedidos (no repartible)
   lines: {
+    id?: number;
     productId: number | null;
     productName: string | null;
     qtyOrdered: number;
@@ -153,7 +230,9 @@ export interface PurchaseOrderRecord {
     qtyInvoiced: number;
     qtyPending: number;
     priceUnit: number;
+    discount: number;
     subtotal: number;
+    taxIds?: number[];
   }[];
   status: "SIN_FACTURA" | "FACTURACION_PARCIAL" | "FACTURADO" | "INCIDENCIA" | "SIN_RECEPCION";
 }

@@ -3,8 +3,9 @@
 // para una fase posterior; aqui se usan heuristicas locales deterministas.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import pdfParse from "pdf-parse/lib/pdf-parse.js";
+const pdfParse = createRequire(import.meta.url)("pdf-parse") as typeof import("pdf-parse");
 import { DriveClient } from "./driveClient.ts";
 import type { SupplierInvoiceStore } from "./types.ts";
 import type {
@@ -15,6 +16,7 @@ import type {
   PdfExtractedData,
   PdfExtractedLine,
   InboxKpis,
+  UnbilledKpis,
   DocumentSource,
   DocumentType,
 } from "./phase2Types.ts";
@@ -42,6 +44,11 @@ export function parseMoney(s: string): number | null {
   const n = Number(t);
   return Number.isFinite(n) ? n : null;
 }
+
+const unitPrice3 = (value: string): number | null => {
+  const price = parseMoney(value);
+  return price == null ? null : Math.round(price * 1000) / 1000;
+};
 
 export function parseDate(s: string): string | null {
   // dd/mm/yyyy, dd-mm-yyyy, yyyy-mm-dd
@@ -100,7 +107,9 @@ export function detectDocType(text: string, name = ""): { docType: DocumentType;
   return { docType: "otro", label: "Otro documento" };
 }
 
-const VAT_RE = /\b[A-Z0-9]{1,2}\d{7,8}[A-Z0-9]?\b/;
+// Un identificador fiscal debe contener letras; si se permiten sólo dígitos,
+// números de factura/empleado como 05015781 acaban atribuyendo «Montador» como emisor.
+const VAT_RE = /\b(?=[A-Z0-9]{8,12}\b)(?=[A-Z0-9]*[A-Z])[A-Z0-9]{1,2}\d{7,8}[A-Z0-9]?\b/i;
 
 // ---------- Extraccion de texto plano ----------
 
@@ -128,9 +137,11 @@ function extractSupplier(lines: string[]): { supplier: string | null; vat: strin
     else if (prefix === "I") country = "Italia";
     // Razon social: linea anterior o la misma linea sin el VAT ni etiquetas
     const prev = lines[i - 1] ?? "";
-    const same = line.replace(candidate, " ").replace(/CIF|NIF|VAT|:|\s+/gi, " ").trim();
-    const nameFromSame = same.length >= 3 && /[A-Za-z]{3,}/.test(same) && !/todoelectrico/i.test(same) ? same : null;
-    const nameFromPrev = prev.length >= 3 && /[A-Za-z]{3,}/.test(prev) && !/CIF|NIF|VAT|Calle|C\/|Poligono/i.test(prev) && !/todoelectrico/i.test(prev) ? prev : null;
+    const same = line.replace(candidate, " ").replace(/\b(?:CIF|NIF|VAT|EMISOR|PROVEEDOR|ISSUER|SUPPLIER)\b\s*:?/gi, " ").replace(/:|\s+/g, " ").trim();
+    const roleOrAddress = /\b(?:customer\s*id|customer|buyer|cliente|montador|instalador|conductor|direcci[oó]n|address|c[oó]digo\s+postal|postal\s+code|cp|calle|c\/?|pol[ií]gono)\b/i;
+    const nameFromSame = same.length >= 3 && /[A-Za-z]{3,}/.test(same) && !/todoelectrico/i.test(same) && !roleOrAddress.test(same) ? same : null;
+    const previousName = prev.replace(/^\s*(?:EMISOR|PROVEEDOR|ISSUER|SUPPLIER)\s*:\s*/i, "").trim();
+    const nameFromPrev = previousName.length >= 3 && /[A-Za-z]{3,}/.test(previousName) && !/CIF|NIF|VAT/i.test(previousName) && !/todoelectrico/i.test(previousName) && !roleOrAddress.test(previousName) ? previousName : null;
     supplier = nameFromSame ?? nameFromPrev ?? null;
     break; // usar el primer VAT de emisor encontrado (cabecera de factura)
   }
@@ -200,8 +211,23 @@ function extractDates(text: string): { invoiceDate: string | null; dueDate: stri
   let dueDate: string | null = null;
   const mInvoice = text.match(/(?:fecha|date|emisi[oó]n|factura\s*:)?\s*:?\s*(\d{1,2}\/\d{1,2}\/\d{4})/i);
   if (mInvoice) invoiceDate = parseDate(mInvoice[1]);
-  const mVenc = text.match(/(?:vencimiento|due\s*date|vence|pago\s*:)?\s*:?\s*(\d{1,2}\/\d{1,2}\/\d{4})/i);
-  if (mVenc && mVenc[1] !== mInvoice?.[1]) dueDate = parseDate(mVenc[1]);
+  // Buscar el vencimiento junto a una etiqueta explícita. Algunos PDF extraen
+  // primero el importe+fecha y después la etiqueta «VENCIMIENTOS».
+  const rows = text.split(/\r?\n/);
+  const dueLabel = /\b(?:vencimientos?|fecha\s*(?:de\s*)?vencimiento|due\s*date|vence)\b/i;
+  for (let i = 0; i < rows.length && !dueDate; i++) {
+    if (!dueLabel.test(rows[i])) continue;
+    for (const offset of [0, 1, 2, -1, -2]) {
+      const row = rows[i + offset];
+      if (!row) continue;
+      const candidates = row.match(/\d{1,2}[/-]\d{1,2}[/-]\d{4}|\d{4}-\d{2}-\d{2}/g) ?? [];
+      for (const candidate of candidates) {
+        const date = parseDate(candidate);
+        if (date && date !== invoiceDate) { dueDate = date; break; }
+      }
+      if (dueDate) break;
+    }
+  }
   return { invoiceDate, dueDate };
 }
 
@@ -268,7 +294,7 @@ function extractLines(text: string): PdfExtractedLine[] {
         description: m[1].trim(),
         reference: null,
         quantity: parseMoney(m[2]),
-        priceUnit: parseMoney(m[3]),
+        priceUnit: unitPrice3(m[3]),
         discount: null,
         taxNames: [],
         total: m[4] ? parseMoney(m[4]) : null,
@@ -286,7 +312,7 @@ function extractLines(text: string): PdfExtractedLine[] {
           description: m[1].trim(),
           reference: null,
           quantity: parseMoney(m[2]),
-          priceUnit: parseMoney(m[3]),
+          priceUnit: unitPrice3(m[3]),
           discount: null,
           taxNames: [],
           total: parseMoney(m[4]),
@@ -339,6 +365,7 @@ export function extractPdfData(text: string, pages: number, name = ""): PdfExtra
 export interface PoIndex {
   id: number;
   name: string;
+  supplierRef?: string | null;
   partnerName: string;
   partnerVat: string | null;
   partnerCountry: string | null;
@@ -348,10 +375,11 @@ export interface PoIndex {
   lines: { productName: string | null; qtyOrdered: number; priceUnit: number }[];
 }
 
-export function buildPoIndex(orderStore: { orders: { id: number; name: string; partnerName: string; partnerVat: string | null; partnerCountry: string | null; currency: string | null; dateOrder: string | null; amountTotal: number; lines: { productName: string | null; qtyOrdered: number; priceUnit: number }[] }[] }): PoIndex[] {
+export function buildPoIndex(orderStore: { orders: { id: number; name: string; supplierRef?: string | null; partnerName: string; partnerVat: string | null; partnerCountry: string | null; currency: string | null; dateOrder: string | null; amountTotal: number; lines: { productName: string | null; qtyOrdered: number; priceUnit: number }[] }[] }): PoIndex[] {
   return orderStore.orders.map((o) => ({
     id: o.id,
     name: o.name,
+    supplierRef: o.supplierRef ?? null,
     partnerName: o.partnerName,
     partnerVat: o.partnerVat,
     partnerCountry: o.partnerCountry,
@@ -368,6 +396,86 @@ function tokensSimilar(a: string, b: string): boolean {
   if (!ta.length || !tb.length) return false;
   const hit = ta.filter((x) => tb.includes(x)).length;
   return hit / Math.min(ta.length, tb.length) >= 0.6;
+}
+
+export type PurchaseOrderReferenceEvidence = {
+  raw: string;
+  normalized: string;
+  source: "customer_order_column" | "supplier_order_column" | "labeled_text";
+  exactOdooHit: boolean;
+  start: number;
+  end: number;
+};
+
+/**
+ * Bare numbers are references only beside a purchase/order label. P/PO tokens
+ * outside the Odoo cache are retained only at a text boundary; concatenated
+ * table cells are split only when the prefix is an exact name in that cache.
+ */
+export function extractPurchaseOrderReferenceEvidence(ex: PdfExtractedData, knownOrderNames: string[] = []): PurchaseOrderReferenceEvidence[] {
+  const hay = ex.textPreview ?? "";
+  const known = knownOrderNames.map((name) => ({ name, digits: name.match(/^P0*(\d{4,7})$/i)?.[1] ?? "" })).filter((x) => x.digits);
+  const evidence: PurchaseOrderReferenceEvidence[] = [];
+  const byName = new Map<string, PurchaseOrderReferenceEvidence>();
+  const sourceAt = (start: number): PurchaseOrderReferenceEvidence["source"] => {
+    const context = hay.slice(Math.max(0, start - 48), start).toLowerCase();
+    const customerAt = Math.max(context.lastIndexOf("cliente"), context.lastIndexOf("customer"));
+    const supplierAt = Math.max(context.lastIndexOf("proveedor"), context.lastIndexOf("supplier"));
+    if (customerAt > supplierAt) return "customer_order_column";
+    if (supplierAt >= 0) return "supplier_order_column";
+    return "labeled_text";
+  };
+  const add = (raw: string, normalized: string, start: number, end: number, exactOdooHit: boolean, source = sourceAt(start)) => {
+    if (byName.has(normalized)) return;
+    const item = { raw, normalized, source, exactOdooHit, start, end };
+    byName.set(normalized, item);
+    evidence.push(item);
+  };
+
+  for (const found of hay.matchAll(/(PO|P)\s*(\d{4,8})(?:([,.])(\d{2}))?/gi)) {
+    const start = found.index ?? 0;
+    const end = start + found[0].length;
+    const tokenDigits = found[2].replace(/^0+/, "") || "0";
+    const exact = known.filter((item) => (item.digits.replace(/^0+/, "") || "0") === tokenDigits);
+    if (exact.length === 1) {
+      add(found[0], exact[0].name, start, end, true);
+      continue;
+    }
+    if (found[3]) {
+      const split = known.filter((item) => {
+        const digits = item.digits.replace(/^0+/, "") || "0";
+        return tokenDigits.startsWith(digits) && tokenDigits.slice(digits.length) === "0";
+      });
+      if (split.length === 1) {
+        add(found[0], split[0].name, start, end, true);
+        continue;
+      }
+    }
+    const left = hay[start - 1] ?? "";
+    const right = hay[end] ?? "";
+    const labeled = /(?:pedido|referencia|order|\bpo)\s*[:#-]?\s*$/i.test(hay.slice(Math.max(0, start - 48), start));
+    if ((!left || !/[A-Z0-9]/i.test(left)) && (!right || !/[A-Z0-9]/i.test(right))) {
+      add(found[0], `P${found[2].replace(/^0+/, "").padStart(5, "0")}`, start, end, false);
+    } else if (labeled && !found[3]) {
+      add(found[0], `P${found[2].replace(/^0+/, "").padStart(5, "0")}`, start, end, false);
+    }
+  }
+  const labelPattern = /\b(?:pedido(?:\s+(?:de\s+)?(?:compra|cliente))?|referencia\s+(?:de\s+)?(?:pedido|cliente)|ref\.?\s*(?:pedido|cliente)?)\s*[:#-]?\s*0*(\d{4,7})\b/gi;
+  for (const found of hay.matchAll(labelPattern)) {
+    const start = found.index ?? 0;
+    const end = start + found[0].length;
+    const digits = found[1].replace(/^0+/, "") || "0";
+    const matches = known.filter((item) => (item.digits.replace(/^0+/, "") || "0") === digits);
+    const normalized = matches.length === 1 ? matches[0].name : `P${digits.padStart(5, "0")}`;
+    const label = found[0].slice(0, found[0].length - found[1].length);
+    const source = /cliente/i.test(label) ? "customer_order_column" : /proveedor|compra/i.test(label) ? "supplier_order_column" : "labeled_text";
+    add(found[0], normalized, start, end, matches.length === 1, source);
+  }
+  return evidence.sort((a, b) => a.start - b.start);
+}
+
+export function extractPurchaseOrderReferences(ex: PdfExtractedData, knownOrderNames: string[] = []): string[] {
+  return extractPurchaseOrderReferenceEvidence(ex, knownOrderNames).map((item) => item.normalized);
 }
 
 export function matchDocument(
@@ -399,24 +507,59 @@ export function matchDocument(
   const criteria: DocumentMatchCriterion[] = [];
   let score = 0;
 
+  // 0) Referencia explícita del pedido dentro del PDF. Tiene prioridad sobre
+  // heurísticas de proveedor/importe: es la referencia que el proveedor ha
+  // usado para identificar nuestra compra.
+  const explicitRefs = extractPurchaseOrderReferences(ex, poIndex.map((order) => order.name));
+  const hay = ex.textPreview ?? "";
+  const explicitOrders = poIndex.filter((po) => explicitRefs.includes(po.name.toUpperCase()));
+  const supplierRefOrders = poIndex.filter((po) => {
+    const ref = (po.supplierRef ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    return Boolean(ref && ref.length >= 5 && new RegExp(`(?<![A-Z0-9])${ref}(?![A-Z0-9])`, "i").test(hay));
+  });
+  const explicitPo = explicitOrders.length === 1 ? explicitOrders[0] : null;
+  const supplierRefPo = supplierRefOrders.length === 1 ? supplierRefOrders[0] : null;
+  const referenceConflict = Boolean(explicitPo && supplierRefPo && explicitPo.id !== supplierRefPo.id);
+
   // 1) Proveedor (40 pts): nombre normalizado o VAT
   const exName = normalizeSupplierName(ex.supplier);
-  const exVat = (ex.supplierVat ?? "").toUpperCase().replace(/\s/g, "");
+  // Odoo puede guardar ESB28960987 y el PDF B28960987: son el mismo NIF.
+  const normalVat = (value: string | null | undefined) => {
+    const raw = (value ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    return raw.length > 9 && /^[A-Z]{2}/.test(raw) ? raw.slice(2) : raw;
+  };
+  const exVat = normalVat(ex.supplierVat);
   let bestPo: PoIndex | null = null;
   let bestPoScore = -1;
   for (const po of poIndex) {
     let s = 0;
-    if (exVat && po.partnerVat && po.partnerVat.toUpperCase().replace(/\s/g, "") === exVat) s += 40;
+    if (exVat && po.partnerVat && normalVat(po.partnerVat) === exVat) s += 40;
     else if (exName && tokensSimilar(po.partnerName, exName)) s += 35;
     if (s > bestPoScore) {
       bestPoScore = s;
       bestPo = po;
     }
   }
-  // Sin coincidencia real de proveedor (VAT/nombre) no hay candidato: banda "sin".
-  if (bestPoScore < 20) bestPo = null;
-  if (bestPo) {
-    score += bestPoScore;
+  const supplierPo = bestPoScore >= 20 ? bestPo : null;
+  if (referenceConflict || explicitOrders.length > 1 || supplierRefOrders.length > 1) {
+    bestPo = null;
+    criteria.push({ key: "purchaseReference", label: "Referencias ambiguas", ok: false, detail: "Hay varios pedidos posibles; requiere revisión manual." });
+  } else if (supplierRefPo || explicitPo) {
+    bestPo = supplierRefPo ?? explicitPo;
+    score += 60;
+    criteria.push({ key: "purchaseReference", label: supplierRefPo ? "Referencia del proveedor en PDF" : "Pedido de compra en PDF", ok: true, detail: supplierRefPo ? `${supplierRefPo.supplierRef} → ${supplierRefPo.name}` : `${explicitRefs.join(", ")} → ${explicitPo?.name}` });
+  } else if (!supplierPo) {
+    bestPo = null;
+  }
+  // Con una referencia explícita, el pedido elegido puede no ser el primer
+  // pedido de ese proveedor. Evalúa el proveedor contra ESE pedido, no contra
+  // el primer candidato que tuvo el mismo NIF.
+  const selectedSupplierScore = bestPo
+    ? (exVat && bestPo.partnerVat && normalVat(bestPo.partnerVat) === exVat ? 40
+      : exName && tokensSimilar(bestPo.partnerName, exName) ? 35 : 0)
+    : 0;
+  if (bestPo && selectedSupplierScore > 0) {
+    score += selectedSupplierScore;
     criteria.push({
       key: "supplier",
       label: "Proveedor coincide",
@@ -435,7 +578,9 @@ export function matchDocument(
     else if (pct <= 0.15) { score += 12; criteria.push({ key: "total", label: "Total aproximado", ok: true, detail: `Diferencia ${diff >= 0 ? "+" : ""}${diff.toFixed(2)} €` }); }
     else criteria.push({ key: "total", label: "Total difiere", ok: false, detail: `Diferencia ${diff >= 0 ? "+" : ""}${diff.toFixed(2)} €` });
   } else if (bestPo) {
-    criteria.push({ key: "total", label: "Total sin comparar", ok: false, detail: "Importe PDF no detectado" });
+    // Ausencia de total extraíble no es un error del proveedor ni invalida una
+    // referencia de pedido/líneas inequívoca: se informa sin una X roja.
+    criteria.push({ key: "total", label: "Total pendiente de extraer", ok: true, detail: "Importe PDF no detectado; no bloquea la asociación" });
   }
 
   // 3) Fecha (10 pts): emision PDF dentro de +-90 dias del pedido
@@ -463,6 +608,7 @@ export function matchDocument(
 
   // Banda alta exige, ademas del score >=80, importe exacto ("Total coincide", dif <=2%).
   // Un total aproximado (dif hasta 15%) o que difiere no puede ser "alta".
+  score = Math.min(100, score);
   const totalCriterio = criteria.find((c) => c.key === "total");
   const totalExacto = totalCriterio != null && totalCriterio.label === "Total coincide";
   const band = score >= 80 && totalExacto ? "alta" : score >= 50 ? "media" : score >= 30 ? "baja" : "sin";
@@ -553,24 +699,39 @@ export class DocumentInboxService {
     invoices: SupplierInvoiceStore["invoices"],
     poIndex: PoIndex[],
     detectedBy: string,
-  ): Promise<{ scanned: number; added: number; matched: number; errors: string[]; skippedKnown: number; addedIds: { driveFileId: string; name: string }[] }> {
+  ): Promise<{ scanned: number; added: number; matched: number; removed: number; errors: string[]; skippedKnown: number; addedIds: { driveFileId: string; name: string }[] }> {
     const client = new DriveClient(env);
     const err = client.configError();
     if (err) throw new Error(err);
     const files = await client.listFiles();
+    const visibleIds = new Set(files.map((file) => file.id));
+    const removedAt = new Date().toISOString();
+    let removed = 0;
+    for (const doc of this.store.documents) {
+      if (!visibleIds.has(doc.driveFileId) && doc.sourcePresent !== false) {
+        doc.sourcePresent = false;
+        doc.sourceRemovedAt = removedAt;
+        removed += 1;
+      }
+    }
     let added = 0, matched = 0, errors: string[] = [], skippedKnown = 0;
     const addedIds: { driveFileId: string; name: string }[] = [];
     for (const file of files) {
       const existing = this.getDocument(file.id);
-      if (existing && existing.pdfCached) {
+      if (existing) {
+        existing.sourcePresent = true;
+        existing.sourceRemovedAt = null;
+        existing.driveFolderId = file.parents?.[0] ?? existing.driveFolderId;
+        existing.name = file.name;
+        existing.size = file.size;
+        existing.modifiedTime = file.modifiedTime;
+        existing.webViewLink = file.webViewLink;
+      }
+      if (existing) {
         skippedKnown += 1;
         continue;
       }
       try {
-        const localPath = await client.download(file.id, this.cacheDir);
-        const buf = readFileSync(localPath);
-        const parsed = await pdfParse(buf);
-        const extracted = extractPdfData(parsed.text ?? "", parsed.numpages ?? 0, file.name);
         const base: InboxDocument = {
           driveFileId: file.id,
           driveFolderId: file.parents?.[0] ?? null,
@@ -582,29 +743,25 @@ export class DocumentInboxService {
           sourceEmail: env.SUPPLIER_INVOICES_DRIVE_SOURCE_EMAIL ?? null,
           detectedAt: new Date().toISOString(),
           detectedBy,
-          extracted,
-          ocrStatus: extracted.needsOcr ? "needs_ocr" : "ok",
+          extracted: null,
+          ocrStatus: "pendiente",
           aiStatus: "no_aplicado",
-          confidence: extracted.needsOcr ? null : heuristicConfidence(extracted),
+          confidence: null,
           match: null,
           status: "SIN_REVISAR",
           validationUser: null,
           validationAt: null,
-          notes: extracted.warnings.length ? extracted.warnings.join("; ") : null,
+          notes: null,
           targetFolderPath: null,
           movedTo: null,
+          sourcePresent: true,
+          sourceRemovedAt: null,
           odooDraftMoveId: null,
           odooDraftName: null,
           odooDraftState: null,
-          pdfCached: true,
-          processedAt: new Date().toISOString(),
+          pdfCached: false,
+          processedAt: null,
         };
-        const match = matchDocument(base, invoices, poIndex);
-        if (match) {
-          base.match = match;
-          base.status = match.band === "alta" ? "PENDIENTE_VALIDAR" : match.band === "media" ? "PENDIENTE_COTEJO" : "PENDIENTE_COTEJO";
-          matched += 1;
-        }
         this.store.documents.push(base);
         added += 1;
         addedIds.push({ driveFileId: file.id, name: file.name });
@@ -613,11 +770,45 @@ export class DocumentInboxService {
       }
     }
     this.store.meta.lastScanAt = new Date().toISOString();
-    this.store.meta.lastScanResult = `${added} añadidos, ${skippedKnown} ya conocidos, ${errors.length} errores`;
-    this.store.meta.totalDocuments = this.store.documents.length;
+    this.store.meta.lastScanResult = `${added} añadidos, ${skippedKnown} ya conocidos, ${removed} ausentes en origen, ${errors.length} errores`;
+    this.store.meta.totalDocuments = this.store.documents.filter((doc) => doc.sourcePresent !== false).length;
     this.store.meta.driveFolderId = client.getAccount() ? env.SUPPLIER_INVOICES_DRIVE_FOLDER_ID ?? null : null;
     this.save();
-    return { scanned: files.length, added, matched, errors, skippedKnown, addedIds };
+    return { scanned: files.length, added, matched, removed, errors, skippedKnown, addedIds };
+  }
+
+  /** Descarga y extrae sólo el PDF elegido para revisión; nunca procesa el resto de la bandeja. */
+  async prepareForReview(
+    driveFileId: string,
+    env: Record<string, string | undefined>,
+    invoices: SupplierInvoiceStore["invoices"],
+    poIndex: PoIndex[],
+  ): Promise<InboxDocument> {
+    const doc = this.getDocument(driveFileId);
+    if (!doc || doc.sourcePresent === false) throw new Error("Documento no disponible en la bandeja de Drive");
+    const cachedPath = `${this.cacheDir}/${doc.driveFileId}.pdf`;
+    if (doc.pdfCached && doc.extracted && existsSync(cachedPath)) {
+      if (readFileSync(cachedPath).subarray(0, 5).toString() === "%PDF-") return doc;
+    }
+    const client = new DriveClient(env);
+    const pdfPath = await client.download(doc.driveFileId, this.cacheDir);
+    const buf = readFileSync(pdfPath);
+    if (buf.subarray(0, 5).toString() !== "%PDF-") throw new Error("El archivo de Drive no es un PDF válido");
+    const parsed = await pdfParse(buf);
+    const extracted = extractPdfData(parsed.text ?? "", parsed.numpages ?? 0, doc.name);
+    doc.extracted = extracted;
+    doc.ocrStatus = extracted.needsOcr ? "needs_ocr" : "ok";
+    doc.confidence = extracted.needsOcr ? null : heuristicConfidence(extracted);
+    doc.match = matchDocument(doc, invoices, poIndex);
+    // Un nuevo análisis no puede desvalidar una factura ya enviada a Odoo.
+    if (doc.match && !doc.odooDraftMoveId && doc.status !== "VALIDADA" && doc.status !== "INCIDENCIA") {
+      doc.status = doc.match.band === "alta" ? "PENDIENTE_VALIDAR" : "PENDIENTE_COTEJO";
+    }
+    doc.notes = extracted.warnings.length ? extracted.warnings.join("; ") : doc.notes;
+    doc.pdfCached = true;
+    doc.processedAt = new Date().toISOString();
+    this.save();
+    return doc;
   }
 
   /** Reclasifica documentos usando el PDF cacheado completo.
@@ -675,6 +866,9 @@ export class DocumentInboxService {
   setStatus(driveFileId: string, status: InboxDocument["status"], user: string, notes?: string): InboxDocument | null {
     const doc = this.getDocument(driveFileId);
     if (!doc) return null;
+    // Un recotejo posterior no puede ocultar el archivo de Drive ni desvalidar
+    // un documento que ya tiene borrador creado en Odoo.
+    if (doc.odooDraftMoveId && status !== "VALIDADA") return doc;
     doc.status = status;
     doc.validationUser = user;
     doc.validationAt = new Date().toISOString();
@@ -696,13 +890,14 @@ export class DocumentInboxService {
     return doc;
   }
 
-  computeKpis(): InboxKpis {
+  computeKpis(unbilled?: UnbilledKpis): InboxKpis {
     const now = new Date();
     const month = now.getMonth();
     const year = now.getFullYear();
     let sinRevisar = 0, pendientesCotejo = 0, importePendienteCotejo = 0, sinCoincidenciaOdoo = 0;
     let validadasMes = 0, incidencias = 0, borradoresListosOdoo = 0;
     for (const d of this.store.documents) {
+      if (d.sourcePresent === false) continue;
       if (d.status === "SIN_REVISAR") sinRevisar += 1;
       if (d.status === "PENDIENTE_COTEJO" || d.status === "PENDIENTE_VALIDAR") {
         pendientesCotejo += 1;
@@ -721,11 +916,11 @@ export class DocumentInboxService {
     return {
       sinRevisar,
       pendientesCotejo,
-      pedidosSinFacturar: 0,
-      importePedidosSinFacturar: 0,
+      pedidosSinFacturar: unbilled?.ordersWithoutInvoice.count ?? 0,
+      importePedidosSinFacturar: unbilled?.ordersWithoutInvoice.total ?? 0,
       importePendienteCotejo,
       sinCoincidenciaOdoo,
-      facturacionParcial: 0,
+      facturacionParcial: unbilled?.partialBilling.count ?? 0,
       validadasMes,
       incidencias,
       borradoresListosOdoo,

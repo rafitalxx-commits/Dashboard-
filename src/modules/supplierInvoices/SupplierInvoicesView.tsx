@@ -122,7 +122,7 @@ export function SupplierInvoicesView({
     [selected, setSelected] = useState<I | null>(null),
     [sort, setSort] = useState("invoiceDate"),
     [dir, setDir] = useState("desc"),
-    [tab, setTab] = useState<"hist" | "inbox" | "unbilled">("hist");
+    [tab, setTab] = useState<"hist" | "inbox" | "unbilled">(analyticsOnly ? "hist" : "inbox");
   const qs = useMemo(() => {
     const q = new URLSearchParams();
     Object.entries(filters).forEach(([k, v]) => v && q.set(k, v));

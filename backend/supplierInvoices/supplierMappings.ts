@@ -12,6 +12,11 @@ export interface SupplierMapping {
   supplierVat: string | null;
   country: string | null;
   billingAddress: string | null;
+  odooPartnerId?: number | null;
+  defaultTaxId?: number | null;
+  defaultTaxName?: string | null;
+  defaultAccountId?: number | null;
+  defaultAccountName?: string | null;
   updatedAt: string;
   updatedBy: string;
   samples: number;
@@ -19,6 +24,13 @@ export interface SupplierMapping {
 
 interface SupplierMappingsFile {
   mappings: Record<string, SupplierMapping>;
+  products?: Record<string, { productId: number; concept: string; reference: string | null; updatedAt: string; updatedBy: string; sourceDocumentId: string }>;
+}
+
+export function productMappingKey(supplier: string | null, vat: string | null, concept: string, reference: string | null): string {
+  const normalizedConcept = normalizeSupplierName(concept);
+  const normalizedReference = normalizeSupplierName(reference);
+  return `${mappingKey(supplier, vat)}|${normalizedConcept}|${normalizedReference}`;
 }
 
 /** Clave del mapeo: el VAT manda (inequivoco); sin VAT, nombre normalizado.
@@ -71,7 +83,7 @@ export class SupplierMappingStore {
   }
 
   /** Aprende/actualiza el mapeo canonico de un proveedor con lo corregido por el usuario. */
-  upsert(input: { supplier: string | null; vat: string | null; country: string | null; billingAddress: string | null }, user: string): SupplierMapping {
+  upsert(input: { supplier: string | null; vat: string | null; country: string | null; billingAddress: string | null; odooPartnerId?: number | null }, user: string): SupplierMapping {
     const key = mappingKey(input.supplier, input.vat);
     const prev = this.data.mappings[key];
     const next: SupplierMapping = {
@@ -79,6 +91,12 @@ export class SupplierMappingStore {
       supplierVat: input.vat ? input.vat.trim().toUpperCase() : prev?.supplierVat ?? null,
       country: input.country ?? prev?.country ?? null,
       billingAddress: input.billingAddress ?? prev?.billingAddress ?? null,
+      odooPartnerId: input.odooPartnerId === undefined ? prev?.odooPartnerId ?? null
+        : typeof input.odooPartnerId === "number" && Number.isInteger(input.odooPartnerId) && input.odooPartnerId > 0 ? input.odooPartnerId : null,
+      defaultTaxId: prev?.defaultTaxId ?? null,
+      defaultTaxName: prev?.defaultTaxName ?? null,
+      defaultAccountId: prev?.defaultAccountId ?? null,
+      defaultAccountName: prev?.defaultAccountName ?? null,
       updatedAt: new Date().toISOString(),
       updatedBy: user,
       samples: (prev?.samples ?? 0) + 1,
@@ -88,11 +106,51 @@ export class SupplierMappingStore {
     return next;
   }
 
+  /** Aprende únicamente una decisión humana ya aplicada a las líneas locales. */
+  setFiscalDefaults(supplier: string | null, vat: string | null, input: { taxId?: number | null; taxName?: string | null; accountId?: number | null; accountName?: string | null }, user: string): SupplierMapping | null {
+    const current = this.get(supplier, vat);
+    if (!current) return null;
+    const next: SupplierMapping = {
+      ...current,
+      defaultTaxId: input.taxId ?? current.defaultTaxId ?? null,
+      defaultTaxName: input.taxName ?? current.defaultTaxName ?? null,
+      defaultAccountId: input.accountId ?? current.defaultAccountId ?? null,
+      defaultAccountName: input.accountName ?? current.defaultAccountName ?? null,
+      updatedAt: new Date().toISOString(),
+      updatedBy: user,
+    };
+    this.data.mappings[mappingKey(supplier, vat)] = next;
+    this.save();
+    return next;
+  }
+
+  /** Conserva el identificador impreso en el PDF como alias del proveedor Odoo. */
+  learnAlias(supplier: string | null, vat: string | null, canonical: SupplierMapping): void {
+    const key = mappingKey(supplier, vat);
+    if (key === "name:" || key === mappingKey(canonical.supplierName, canonical.supplierVat)) return;
+    this.data.mappings[key] = { ...canonical, samples: Math.max(1, canonical.samples) };
+    this.save();
+  }
+
   list(): SupplierMapping[] {
     return Object.values(this.data.mappings);
   }
 
   size(): number {
     return Object.keys(this.data.mappings).length;
+  }
+
+  productSuggestion(supplier: string | null, vat: string | null, concept: string, reference: string | null) {
+    return this.data.products?.[productMappingKey(supplier, vat, concept, reference)] ?? null;
+  }
+
+  learnProduct(input: { supplier: string | null; vat: string | null; concept: string; reference: string | null; productId: number; sourceDocumentId: string }, user: string): void {
+    if (!input.concept.trim() || !Number.isInteger(input.productId) || input.productId <= 0) return;
+    this.data.products ??= {};
+    this.data.products[productMappingKey(input.supplier, input.vat, input.concept, input.reference)] = {
+      productId: input.productId, concept: input.concept.slice(0, 200), reference: input.reference?.slice(0, 60) ?? null,
+      updatedAt: new Date().toISOString(), updatedBy: user, sourceDocumentId: input.sourceDocumentId,
+    };
+    this.save();
   }
 }

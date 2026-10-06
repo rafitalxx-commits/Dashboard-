@@ -18,13 +18,13 @@ function arrIds(v: unknown): number[] {
 }
 
 const ORDER_FIELDS = [
-  "id", "name", "state", "partner_id", "currency_id", "date_order", "user_id", "origin",
+  "id", "name", "state", "invoice_status", "partner_id", "currency_id", "date_order", "user_id", "origin", "partner_ref",
   "amount_total", "amount_untaxed", "picking_ids", "order_line",
 ] as const;
 
 const LINE_FIELDS = [
   "id", "order_id", "product_id", "name", "product_qty", "qty_received", "qty_invoiced",
-  "price_unit", "price_subtotal", "price_total", "discount",
+  "price_unit", "price_subtotal", "price_total", "discount", "taxes_id",
 ] as const;
 
 const PICKING_FIELDS = ["id", "name", "state", "scheduled_date", "date_done"] as const;
@@ -68,6 +68,127 @@ export class PurchaseOrdersLedger {
   }
 
   getStore(): UnbilledStore { return this.store; }
+
+  // Lectura puntual: la sincronización masiva puede preceder a una recepción.
+  // No cambia Odoo; actualiza únicamente la copia local del pedido consultado.
+  async refreshOrderByName(env: Record<string, string | undefined>, name: string): Promise<PurchaseOrderRecord | null> {
+    if (!/^P\d{5,7}$/i.test(name)) return null;
+    const config = getOdooConfig(env);
+    if (!hasOdooConfig(config)) throw new Error("Falta la conexión de lectura con Odoo");
+    const uid = await authenticate(config);
+    const [order] = (await searchRead(config, uid, "purchase.order", [["name", "=", name.toUpperCase()], ["state", "in", ["purchase", "done"]]], [...ORDER_FIELDS], { limit: 1 })) as RawRow[];
+    if (!order) {
+      const cached = this.store.orders.find((row) => row.name.toUpperCase() === name.toUpperCase());
+      if (cached) {
+        this.store.orders = this.store.orders.filter((row) => row.id !== cached.id);
+        this.store.meta.totalOrders = this.store.orders.length;
+        this.save();
+      }
+      return null;
+    }
+    const [partner] = (await readRows(config, uid, "res.partner", [Number(two(order.partner_id)?.[0] ?? 0)], [...PARTNER_FIELDS])) as RawRow[];
+    const lineRows = (await readRows(config, uid, "purchase.order.line", arrIds(order.order_line), [...LINE_FIELDS])) as RawRow[];
+    const pickingRows = (await readRows(config, uid, "stock.picking", arrIds(order.picking_ids), [...PICKING_FIELDS])) as RawRow[];
+    const lines = lineRows.map((line) => {
+      const product = two(line.product_id);
+      const qtyOrdered = num(line.product_qty), qtyReceived = num(line.qty_received), qtyInvoiced = num(line.qty_invoiced);
+      return {
+        id: Number(line.id ?? 0) || undefined, productId: product ? product[0] : null, productName: product ? product[1] : str(line.name),
+        qtyOrdered, qtyReceived, qtyInvoiced,
+        qtyPending: Math.max(0, (qtyReceived > 0 ? qtyReceived : qtyOrdered) - qtyInvoiced),
+        priceUnit: num(line.price_unit), discount: num(line.discount), subtotal: num(line.price_subtotal), taxIds: arrIds(line.taxes_id),
+      };
+    });
+    const pickings = pickingRows.map((row) => ({ id: Number(row.id), name: str(row.name) ?? "", state: str(row.state) ?? "", dateDone: str(row.date_done) ?? str(row.scheduled_date) }));
+    const doneDates = pickings.filter((row) => row.state === "done" && row.dateDone).map((row) => row.dateDone!).sort();
+    const lastReceptionAt = doneDates.at(-1) ?? null;
+    const previous = this.store.orders.find((row) => row.id === Number(order.id));
+    const record: PurchaseOrderRecord = {
+      id: Number(order.id), name: str(order.name) ?? name, state: str(order.state) ?? "purchase",
+      invoiceStatus: str(order.invoice_status),
+      partnerId: Number(two(order.partner_id)?.[0] ?? 0), partnerName: str(partner?.name) ?? two(order.partner_id)?.[1] ?? "",
+      partnerCountry: two(partner?.country_id)?.[1] ?? null, partnerVat: str(partner?.vat),
+      currency: two(order.currency_id)?.[1] ?? null, dateOrder: str(order.date_order)?.slice(0, 10) ?? null,
+      buyer: previous?.buyer ?? null, origin: str(order.origin), supplierRef: str(order.partner_ref), amountTotal: num(order.amount_total), amountUntaxed: num(order.amount_untaxed),
+      pickings, orderedQty: lines.reduce((sum, line) => sum + line.qtyOrdered, 0), receivedQty: lines.reduce((sum, line) => sum + line.qtyReceived, 0),
+      allReceived: lines.every((line) => line.qtyOrdered <= 0 || line.qtyReceived >= line.qtyOrdered - 1e-6),
+      lastReceptionAt, daysSinceReception: lastReceptionAt ? Math.max(0, Math.floor((Date.now() - new Date(lastReceptionAt).getTime()) / 86400000)) : null,
+      linkedInvoiceIds: previous?.linkedInvoiceIds ?? [], linkedInvoiceNames: previous?.linkedInvoiceNames ?? [],
+      billedAmount: previous?.billedAmount ?? 0, pendingAmount: previous?.pendingAmount ?? num(order.amount_total), billedPct: previous?.billedPct ?? 0,
+      billingSplit: previous?.billingSplit ?? false, lines, status: previous?.status ?? "SIN_RECEPCION",
+    };
+    this.store.orders = [record, ...this.store.orders.filter((row) => row.id !== record.id)];
+    this.store.meta.totalOrders = this.store.orders.length;
+    this.save();
+    return record;
+  }
+
+  /** Fresh candidate list for a human-confirmed supplier; reads Odoo only. */
+  async refreshPendingOrdersForPartner(env: Record<string, string | undefined>, partnerId: number): Promise<PurchaseOrderRecord[]> {
+    if (!Number.isInteger(partnerId) || partnerId <= 0) throw new Error("Proveedor Odoo no válido");
+    const config = getOdooConfig(env);
+    if (!hasOdooConfig(config)) throw new Error("Falta la conexión de lectura con Odoo");
+    const uid = await authenticate(config);
+    const ids = await searchIds(config, uid, "purchase.order", [
+      ["partner_id", "=", partnerId], ["state", "in", ["purchase", "done"]], ["invoice_status", "=", "to invoice"],
+    ], { order: "date_order desc, id desc" });
+    const orders = await paginatedRead(config, uid, "purchase.order", ids, [...ORDER_FIELDS]) as RawRow[];
+    const partnerRows = await readRows(config, uid, "res.partner", [partnerId], [...PARTNER_FIELDS]) as RawRow[];
+    const partner = partnerRows[0];
+    const lineIds = [...new Set(orders.flatMap((order) => arrIds(order.order_line)))];
+    const lineRows = await paginatedRead(config, uid, "purchase.order.line", lineIds, [...LINE_FIELDS]) as RawRow[];
+    const linesByOrder = new Map<number, RawRow[]>();
+    for (const row of lineRows) {
+      const orderId = Number(two(row.order_id)?.[0] ?? 0);
+      if (!orderId) continue;
+      const rows = linesByOrder.get(orderId) ?? [];
+      rows.push(row);
+      linesByOrder.set(orderId, rows);
+    }
+    const pickingIds = [...new Set(orders.flatMap((order) => arrIds(order.picking_ids)))];
+    const pickingRows = await paginatedRead(config, uid, "stock.picking", pickingIds, [...PICKING_FIELDS]) as RawRow[];
+    const now = Date.now();
+    const fresh: PurchaseOrderRecord[] = orders.map((order) => {
+      const id = Number(order.id);
+      const previous = this.store.orders.find((row) => row.id === id);
+      const rawLines = (linesByOrder.get(id) ?? []).slice().sort((a, b) => Number(a.id) - Number(b.id));
+      const lines = rawLines.map((line) => {
+        const product = two(line.product_id);
+        const qtyOrdered = num(line.product_qty), qtyReceived = num(line.qty_received), qtyInvoiced = num(line.qty_invoiced);
+        return {
+          id: Number(line.id ?? 0) || undefined, productId: product ? product[0] : null, productName: product ? product[1] : str(line.name),
+          qtyOrdered, qtyReceived, qtyInvoiced,
+          qtyPending: Math.max(0, (qtyReceived > 0 ? qtyReceived : qtyOrdered) - qtyInvoiced),
+          priceUnit: num(line.price_unit), discount: num(line.discount), subtotal: num(line.price_subtotal), taxIds: arrIds(line.taxes_id),
+        };
+      });
+      const orderPickings = pickingRows.filter((row) => arrIds(order.picking_ids).includes(Number(row.id))).map((row) => ({
+        id: Number(row.id), name: str(row.name) ?? "", state: str(row.state) ?? "", dateDone: str(row.date_done) ?? str(row.scheduled_date),
+      }));
+      const lastReceptionAt = orderPickings.filter((row) => row.state === "done" && row.dateDone).map((row) => row.dateDone!).sort().at(-1) ?? null;
+      const daysSinceReception = lastReceptionAt ? Math.max(0, Math.floor((now - new Date(lastReceptionAt).getTime()) / 86400000)) : null;
+      return {
+        id, name: str(order.name) ?? "", state: str(order.state) ?? "", invoiceStatus: str(order.invoice_status),
+        partnerId, partnerName: str(partner?.name) ?? "", partnerCountry: two(partner?.country_id)?.[1] ?? null, partnerVat: str(partner?.vat),
+        currency: two(order.currency_id)?.[1] ?? null, dateOrder: str(order.date_order)?.slice(0, 10) ?? null,
+        buyer: previous?.buyer ?? null, origin: str(order.origin), supplierRef: str(order.partner_ref),
+        amountTotal: num(order.amount_total), amountUntaxed: num(order.amount_untaxed),
+        pickings: orderPickings, receivedQty: lines.reduce((sum, line) => sum + line.qtyReceived, 0),
+        orderedQty: lines.reduce((sum, line) => sum + line.qtyOrdered, 0),
+        allReceived: lines.every((line) => line.qtyOrdered <= 0 || line.qtyReceived >= line.qtyOrdered - 1e-6),
+        lastReceptionAt, daysSinceReception, linkedInvoiceIds: previous?.linkedInvoiceIds ?? [],
+        linkedInvoiceNames: previous?.linkedInvoiceNames ?? [], billedAmount: previous?.billedAmount ?? 0,
+        pendingAmount: previous?.pendingAmount ?? num(order.amount_total), billedPct: previous?.billedPct ?? 0,
+        billingSplit: previous?.billingSplit ?? false, lines,
+        status: previous?.status ?? "SIN_RECEPCION",
+      };
+    });
+    const freshIds = new Set(fresh.map((order) => order.id));
+    this.store.orders = [...fresh, ...this.store.orders.filter((order) => order.partnerId !== partnerId && !freshIds.has(order.id))];
+    this.store.meta.totalOrders = this.store.orders.length;
+    this.save();
+    return fresh;
+  }
 
   async syncFromOdoo(env: Record<string, string | undefined>): Promise<UnbilledStore["meta"]> {
     const config = getOdooConfig(env);
@@ -123,14 +244,20 @@ export class PurchaseOrdersLedger {
       const lines = rawLines.map((l) => {
         const prod = two(l.product_id);
         return {
+          id: Number(l.id ?? 0) || undefined,
           productId: prod ? prod[0] : null,
           productName: prod ? prod[1] : str(l.name),
           qtyOrdered: num(l.product_qty),
           qtyReceived: num(l.qty_received),
           qtyInvoiced: num(l.qty_invoiced),
-          qtyPending: Math.max(0, num(l.qty_received) - num(l.qty_invoiced)),
+          // Una factura puede llegar antes de la recepción. En ese caso la cantidad
+          // pendiente es ordered-invoiced; cuando ya hay recepción se usa
+          // received-invoiced para no facturar por encima de lo realmente recibido.
+          qtyPending: Math.max(0, (num(l.qty_received) > 0 ? num(l.qty_received) : num(l.product_qty)) - num(l.qty_invoiced)),
           priceUnit: num(l.price_unit),
+          discount: num(l.discount),
           subtotal: num(l.price_subtotal),
+          taxIds: arrIds(l.taxes_id),
         };
       });
       const pickingsRaw = pickingsByOrder.get(id) ?? [];
@@ -151,6 +278,7 @@ export class PurchaseOrdersLedger {
         id,
         name: str(o.name) ?? "/",
         state: str(o.state) ?? "",
+        invoiceStatus: str(o.invoice_status),
         partnerId: Number(two(o.partner_id)?.[0] ?? 0),
         partnerName: partner.name,
         partnerCountry: partner.country,
@@ -159,7 +287,9 @@ export class PurchaseOrdersLedger {
         dateOrder: str(o.date_order)?.slice(0, 10) ?? null,
         buyer: Number(two(o.user_id)?.[0] ?? 0) ? userName.get(Number(two(o.user_id)![0])) ?? null : null,
         origin: str(o.origin),
+        supplierRef: str(o.partner_ref),
         amountTotal: num(o.amount_total),
+        amountUntaxed: num(o.amount_untaxed),
         pickings,
         receivedQty,
         orderedQty,
@@ -256,7 +386,7 @@ export function filterOrders(orders: PurchaseOrderRecord[], f: {
     if (f.over15 && (o.daysSinceReception ?? 9999) <= 15) return false;
     if (f.text) {
       const q = f.text.toLowerCase();
-      const hay = [o.name, o.partnerName, o.origin, ...o.linkedInvoiceNames].filter(Boolean).join(" ").toLowerCase();
+      const hay = [o.name, o.partnerName, o.origin, o.supplierRef, ...o.linkedInvoiceNames].filter(Boolean).join(" ").toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;

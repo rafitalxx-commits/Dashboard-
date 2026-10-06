@@ -3,9 +3,10 @@
 // entrada de archivo (Gemini, OCR incluido). Solo lectura del PDF cacheado del LAB.
 
 import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
-import pdfParse from "pdf-parse/lib/pdf-parse.js";
-import { normalizeRate } from "./documentInbox.ts";
+const pdfParse = createRequire(import.meta.url)("pdf-parse") as typeof import("pdf-parse");
+import { normalizeRate, normalizeSupplierName } from "./documentInbox.ts";
 import type { PdfExtractedData, PdfExtractedLine } from "./phase2Types.ts";
 
 type Env = Record<string, string | undefined>;
@@ -63,14 +64,17 @@ const SYSTEM_PROMPT = [
   "Respondes SOLO con un objeto JSON valido, sin markdown ni texto alrededor.",
   "Reglas:",
   "- Nunca inventes datos: si algo no aparece con certeza usa null.",
+  "- supplier es la razón social del EMISOR, no comprador/cliente, dirección, vehículo, empleado, instalador/montador ni etiqueta de campo.",
+  "- Identifica emisor por el bloque de cabecera y su NIF/CIF/VAT etiquetado; no uses el primer número fiscal del documento si está junto al cliente. Si emisor o NIF no son inequívocos, usa null y añade warning.",
   "- Fechas SIEMPRE en ISO yyyy-mm-dd (convierte dd/mm/yyyy si hace falta).",
   "- Importes como numero con punto decimal, sin simbolos ni separadores. base = sin impuestos, taxes = impuestos, total = total a pagar.",
   "- currency: codigo ISO (EUR, USD, GBP...).",
   "- supplierVat: NIF/CIF/VAT tal cual aparece, con prefijo de pais si lo tiene.",
   "- lines: solo conceptos de factura (nunca subtotales ni lineas de IVA), maximo 60.",
+  "- Distingue descuentos sucesivos explícitos: discount=comercial, discountExtra=adicional y promptPaymentDiscount=pronto pago. No los sumes; usa null si no constan en el PDF.",
   "- confidence: 0-100 segun lo claro que era el documento.",
   "- warnings: avisos en espanol sobre ambiguedades.",
-  'Esquema: {"supplier":string|null,"supplierVat":string|null,"country":string|null,"invoiceNumber":string|null,"invoiceDate":string|null,"dueDate":string|null,"currency":string|null,"base":number|null,"taxes":number|null,"total":number|null,"lines":[{"description":string,"reference":string|null,"quantity":number|null,"priceUnit":number|null,"discount":number|null,"taxNames":[string],"total":number|null}],"confidence":number,"warnings":[string]}',
+  'Esquema: {"supplier":string|null,"supplierVat":string|null,"country":string|null,"invoiceNumber":string|null,"invoiceDate":string|null,"dueDate":string|null,"currency":string|null,"base":number|null,"taxes":number|null,"total":number|null,"lines":[{"description":string,"reference":string|null,"quantity":number|null,"priceUnit":number|null,"discount":number|null,"discountExtra":number|null,"promptPaymentDiscount":number|null,"taxNames":[string],"total":number|null}],"confidence":number,"warnings":[string]}',
 ].join("\n");
 
 function parseJsonLoose(raw: string): Record<string, unknown> {
@@ -111,6 +115,16 @@ function num2(v: unknown): number | null {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
 }
 
+function unitPrice3(v: unknown): number | null {
+  const n = typeof v === "string" ? Number(v.replace(/\s/g, "").replace(",", ".")) : typeof v === "number" ? v : NaN;
+  return Number.isFinite(n) ? Math.round(n * 1000) / 1000 : null;
+}
+
+function percent(v: unknown): number | null {
+  const n = num2(v);
+  return n != null && n >= 0 && n <= 100 ? n : null;
+}
+
 function str(v: unknown, max = 80): string | null {
   if (typeof v !== "string") return null;
   const s = v.trim();
@@ -125,8 +139,10 @@ function sanitizeFields(parsed: Record<string, unknown>): AiInvoiceFields {
       description: str(l.description, 200) ?? "(concepto)",
       reference: str(l.reference, 60),
       quantity: num2(l.quantity),
-      priceUnit: num2(l.priceUnit),
-      discount: num2(l.discount),
+      priceUnit: unitPrice3(l.priceUnit),
+      discount: percent(l.discount),
+      discountExtra: percent(l.discountExtra),
+      promptPaymentDiscount: percent(l.promptPaymentDiscount),
       taxNames: Array.isArray(l.taxNames)
         ? l.taxNames.filter((t): t is string => typeof t === "string").slice(0, 4)
         : [],
@@ -238,9 +254,20 @@ export function mergeExtracted(
   const warnings = b.warnings.filter((w) => !w.includes("OCR pendiente") && !w.includes("fase posterior"));
   warnings.push(note);
   warnings.push(...ai.warnings.slice(0, 3));
+  const normalizeVat = (value: string | null) => (value ?? "").replace(/[^A-Z0-9]/gi, "").toUpperCase().replace(/^[A-Z]{2}/, "");
+  const baseVat = normalizeVat(b.supplierVat);
+  const aiVat = normalizeVat(ai.supplierVat);
+  const conflictingFiscalEvidence = Boolean(baseVat && aiVat && baseVat !== aiVat);
+  const aiNameConflictsWithKnownVat = Boolean(
+    b.supplier && ai.supplier && baseVat &&
+    normalizeSupplierName(b.supplier) !== normalizeSupplierName(ai.supplier) &&
+    (!aiVat || conflictingFiscalEvidence),
+  );
+  const preserveBaseSupplier = conflictingFiscalEvidence || aiNameConflictsWithKnownVat;
+  if (preserveBaseSupplier) warnings.push("La IA discrepa del emisor/NIF detectado localmente; se conserva el dato local y requiere revisión humana.");
   return {
-    supplier: ai.supplier ?? b.supplier,
-    supplierVat: ai.supplierVat ?? b.supplierVat,
+    supplier: preserveBaseSupplier ? b.supplier : ai.supplier ?? b.supplier,
+    supplierVat: preserveBaseSupplier ? b.supplierVat : ai.supplierVat ?? b.supplierVat,
     country: ai.country ?? b.country,
     invoiceNumber: ai.invoiceNumber ?? b.invoiceNumber,
     invoiceDate: ai.invoiceDate ?? b.invoiceDate,

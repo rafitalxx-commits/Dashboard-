@@ -21,6 +21,7 @@ type ClientSecretFile = { web?: { client_id?: string; client_secret?: string; to
 
 export class DriveClient {
   private folderId: string;
+  private archiveFolderId: string;
   private account: string;
   private tokensPath: string;
   private clientSecretPath: string;
@@ -28,6 +29,7 @@ export class DriveClient {
 
   constructor(env: Record<string, string | undefined>) {
     this.folderId = env.SUPPLIER_INVOICES_DRIVE_FOLDER_ID ?? "";
+    this.archiveFolderId = env.SUPPLIER_INVOICES_DRIVE_ARCHIVE_FOLDER_ID ?? "";
     this.account = env.SUPPLIER_INVOICES_DRIVE_ACCOUNT ?? "";
     this.tokensPath = env.SUPPLIER_INVOICES_DRIVE_TOKENS_PATH ?? "/root/.openclaw/secrets/gog-tokens.json";
     this.clientSecretPath = env.SUPPLIER_INVOICES_DRIVE_CLIENT_SECRET_PATH ?? "/root/.openclaw/secrets/gog-client-secret.json";
@@ -93,9 +95,16 @@ export class DriveClient {
 
   async listFiles(): Promise<DriveFileMeta[]> {
     const query = encodeURIComponent(`'${this.folderId}' in parents and trashed = false`);
-    const url = `/files?q=${query}&fields=files(id,name,mimeType,size,modifiedTime,parents,webViewLink)&pageSize=500&includeItemsFromAllDrives=true&supportsAllDrives=true&orderBy=modifiedTime desc`;
-    const data = await this.request<{ files?: DriveFileMeta[] }>(url);
-    return (data.files ?? []).filter((f) => f.mimeType === "application/pdf" || /pdf$/i.test(f.name));
+    const files: DriveFileMeta[] = [];
+    let pageToken: string | undefined;
+    do {
+      const token = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
+      const url = `/files?q=${query}&fields=nextPageToken,files(id,name,mimeType,size,modifiedTime,parents,webViewLink)&pageSize=500&includeItemsFromAllDrives=true&supportsAllDrives=true&orderBy=modifiedTime desc${token}`;
+      const data = await this.request<{ files?: DriveFileMeta[]; nextPageToken?: string }>(url);
+      files.push(...(data.files ?? []));
+      pageToken = data.nextPageToken;
+    } while (pageToken);
+    return files.filter((f) => f.mimeType === "application/pdf" || /\.pdf$/i.test(f.name));
   }
 
   async download(fileId: string, cacheDir: string): Promise<string> {
@@ -158,9 +167,41 @@ export class DriveClient {
     const parent = parentId || this.folderId;
     if (!parent) throw new Error("Falta SUPPLIER_INVOICES_DRIVE_FOLDER_ID");
     const query = encodeURIComponent(`'${parent}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
-    const url = `/files?q=${query}&fields=files(id,name,mimeType,parents)&pageSize=200&includeItemsFromAllDrives=true&supportsAllDrives=true&orderBy=name`;
-    const data = await this.request<{ files?: DriveFileMeta[] }>(url);
-    return (data.files ?? []).sort((a, b) => a.name.localeCompare(b.name, "es", { numeric: true }));
+    const folders: DriveFileMeta[] = [];
+    let pageToken: string | undefined;
+    do {
+      const token = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
+      const url = `/files?q=${query}&fields=nextPageToken,files(id,name,mimeType,parents)&pageSize=200&includeItemsFromAllDrives=true&supportsAllDrives=true&orderBy=name${token}`;
+      const data = await this.request<{ files?: DriveFileMeta[]; nextPageToken?: string }>(url);
+      folders.push(...(data.files ?? []));
+      pageToken = data.nextPageToken;
+    } while (pageToken);
+    return folders.sort((a, b) => a.name.localeCompare(b.name, "es", { numeric: true }));
+  }
+
+  getArchiveFolderId(): string {
+    if (!this.archiveFolderId) throw new Error("Falta SUPPLIER_INVOICES_DRIVE_ARCHIVE_FOLDER_ID");
+    return this.archiveFolderId;
+  }
+
+  /** Devuelve la ruta comprobada por Drive; nunca acepta una ruta escrita por el navegador. */
+  async archivePath(folderId: string): Promise<string> {
+    const root = this.getArchiveFolderId();
+    const names: string[] = [];
+    const visited = new Set<string>();
+    let current = folderId;
+    for (let depth = 0; depth < 30; depth++) {
+      if (current === root) return `/FACTURAS${names.length ? `/${names.reverse().join("/")}` : ""}`;
+      if (!current || visited.has(current)) break;
+      visited.add(current);
+      const meta = await this.request<{ id?: string; name?: string; mimeType?: string; parents?: string[]; trashed?: boolean }>(
+        `/files/${encodeURIComponent(current)}?fields=id,name,mimeType,parents,trashed&supportsAllDrives=true`,
+      );
+      if (meta.trashed || meta.mimeType !== "application/vnd.google-apps.folder" || !meta.parents?.length) break;
+      names.push(meta.name ?? "Carpeta");
+      current = meta.parents[0];
+    }
+    throw new Error("El destino no pertenece a la carpeta FACTURAS");
   }
 
   /** Crea la carpeta si no existe (idempotente) y devuelve su id. */
@@ -182,7 +223,8 @@ export class DriveClient {
     const previousParents = (meta.parents ?? []).join(",");
     const qs = new URLSearchParams({ addParents: newParentId, fields: "id,parents", supportsAllDrives: "true" });
     if (previousParents) qs.set("removeParents", previousParents);
-    await this.request(`/files/${fileId}?${qs.toString()}`, { method: "PATCH" });
+    const moved = await this.request<{ parents?: string[] }>(`/files/${encodeURIComponent(fileId)}?${qs.toString()}`, { method: "PATCH" });
+    if (!moved.parents?.includes(newParentId)) throw new Error("Drive no confirmó la carpeta de destino");
   }
 
   getRootFolderId(): string {

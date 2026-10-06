@@ -478,6 +478,17 @@ export default defineConfig(({ mode }) => {
   // The service owns this safety switch. Vite's loadEnv only reads files, so
   // preserve an explicitly configured service value for the Odoo write routes.
   env.ODOO_WRITE_ENABLED = process.env.ODOO_WRITE_ENABLED ?? env.ODOO_WRITE_ENABLED;
+  // Keep supplier-invoice write gates under systemd control even if a stale
+  // local env file contains different values.
+  for (const key of [
+    "SUPPLIER_INVOICES_ODOO_WRITE_ENABLED",
+    "SUPPLIER_INVOICES_ODOO_ALLOWED_FILE_ID",
+    "SUPPLIER_INVOICES_DRIVE_WRITE_ENABLED",
+    "SUPPLIER_INVOICES_DRIVE_ALLOWED_FILE_ID",
+    "SUPPLIER_INVOICES_SUPPLIER_PRICE_WRITE_ENABLED",
+  ]) {
+    env[key] = process.env[key] ?? env[key];
+  }
 
   return {
     cacheDir: process.env.VITE_CACHE_DIR || "node_modules/.vite",
