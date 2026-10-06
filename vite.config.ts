@@ -23,6 +23,8 @@ import { registerDhlRoutes } from "./backend/dhl/routes";
 import { registerShippingRulesRoutes } from "./backend/shippingRules/routes";
 import { registerPrestashopRoutes } from "./backend/prestashop/routes";
 import { registerPublicTrackingRoutes } from "./backend/publicTracking/routes";
+import { registerSupplierInvoicesRoutes } from "./backend/supplierInvoices/routes";
+import { registerSupplierInvoicesPhase2Routes } from "./backend/supplierInvoices/phase2Routes";
 import { registerWarehouseWorkersRoutes } from "./backend/warehouseWorkers/routes";
 import { registerExpeditionDestinationOverridesRoutes } from "./backend/expeditionDestinationOverrides/routes";
 import { isDeliveryIncidentStillPending, isServiceOnlyOrder } from "./backend/odooDeliveryIncidentRules";
@@ -464,7 +466,18 @@ const readOnlyMethods = new Set([
 ]);
 
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, process.cwd(), "");
+  const loadedEnv = loadEnv(mode, process.cwd(), "");
+  // Los interruptores de escritura del servicio tienen prioridad sobre los
+  // ficheros locales; así systemd puede mantener el LAB bloqueado de forma
+  // verificable aunque exista una configuración antigua en el worktree.
+  const env = {
+    ...loadedEnv,
+    SUPPLIER_INVOICES_ODOO_WRITE_ENABLED: process.env.SUPPLIER_INVOICES_ODOO_WRITE_ENABLED ?? loadedEnv.SUPPLIER_INVOICES_ODOO_WRITE_ENABLED,
+    SUPPLIER_INVOICES_ODOO_ALLOWED_FILE_ID: process.env.SUPPLIER_INVOICES_ODOO_ALLOWED_FILE_ID ?? loadedEnv.SUPPLIER_INVOICES_ODOO_ALLOWED_FILE_ID,
+    SUPPLIER_INVOICES_DRIVE_WRITE_ENABLED: process.env.SUPPLIER_INVOICES_DRIVE_WRITE_ENABLED ?? loadedEnv.SUPPLIER_INVOICES_DRIVE_WRITE_ENABLED,
+    SUPPLIER_INVOICES_DRIVE_ALLOWED_FILE_ID: process.env.SUPPLIER_INVOICES_DRIVE_ALLOWED_FILE_ID ?? loadedEnv.SUPPLIER_INVOICES_DRIVE_ALLOWED_FILE_ID,
+    SUPPLIER_INVOICES_SUPPLIER_PRICE_WRITE_ENABLED: process.env.SUPPLIER_INVOICES_SUPPLIER_PRICE_WRITE_ENABLED ?? loadedEnv.SUPPLIER_INVOICES_SUPPLIER_PRICE_WRITE_ENABLED,
+  };
 
   return {
     cacheDir: process.env.VITE_CACHE_DIR || "node_modules/.vite",
@@ -528,6 +541,15 @@ function odooReadOnlyApi(env: Record<string, string>) {
         dataDir: env.DASHBOARD_DATA_DIR,
       });
       registerPrestashopRoutes(server, auth, env);
+      // Fase 2 primero: prefijos especificos (/inbox, /unbilled) deben ganar al catch-all de Fase 1.
+      registerSupplierInvoicesPhase2Routes(server, auth, {
+        env,
+        dataDir: env.DASHBOARD_DATA_DIR || ".dashboard-data",
+      });
+      registerSupplierInvoicesRoutes(server, auth, {
+        env,
+        dataDir: env.DASHBOARD_DATA_DIR || ".dashboard-data",
+      });
       registerAmazonMessagesRoutes(server, auth, {
         dataDir: env.DASHBOARD_DATA_DIR,
       });

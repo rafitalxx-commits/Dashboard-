@@ -46,6 +46,7 @@ import { ProductLocationsView } from "./modules/products/ProductLocationsView";
 import { InventoryView } from "./modules/products/InventoryView";
 import { InventoryReceptionsView } from "./modules/receptions/InventoryReceptionsView";
 import { PendingPurchasesView } from "./modules/receptions/ReceptionsView";
+import { SupplierInvoicesView } from "./modules/supplierInvoices/SupplierInvoicesView";
 import { odooClient } from "./services/odooClient";
 import type {
   InvoiceAnalytics,
@@ -111,6 +112,7 @@ const navItems = [
     icon: FileText,
     view: "supplierInvoices",
     permission: "supplierBilling",
+    navGroup: "purchases",
   },
   {
     label: "Compras",
@@ -123,6 +125,13 @@ const navItems = [
     icon: ClipboardList,
     view: "pendingPurchases",
     permission: "purchases",
+    navGroup: "purchases",
+  },
+  {
+    label: "Analítica compras",
+    icon: BarChart3,
+    view: "purchaseAnalytics",
+    permission: "supplierBilling",
     navGroup: "purchases",
   },
   {
@@ -219,6 +228,7 @@ const viewRoutes: Record<ActiveView, string> = {
   warehouseStatistics: "estadisticas",
   customerInvoices: "facturacion",
   supplierInvoices: "facturas-proveedor",
+  purchaseAnalytics: "compras/analitica",
   purchases: "compras",
   pendingPurchases: "compras-pendientes",
   products: "productos",
@@ -1222,7 +1232,7 @@ function App() {
     activeView === "receptions" ||
     activeView.startsWith("productsInventory");
   const isPurchasesView =
-    activeView === "purchases" || activeView === "pendingPurchases";
+    activeView === "purchases" || activeView === "pendingPurchases" || activeView === "supplierInvoices" || activeView === "purchaseAnalytics";
   const showOrderRange =
     isDashboardView || isOrdersView || activeView === "customerInvoices";
   const refreshOrders = async () => {
@@ -1617,6 +1627,8 @@ function App() {
                 ? "Inventario · Odoo real"
                 : activeView === "pendingPurchases"
                   ? "Compras · Odoo real"
+                  : activeView === "supplierInvoices" || activeView === "purchaseAnalytics"
+                    ? "Compras · Odoo real · solo lectura"
                   : `Pedidos de venta · ${
                       isV2View
                         ? "Laboratorio V2"
@@ -1658,9 +1670,9 @@ function App() {
                 {ordersSyncLoading ? "Sincronizando" : "Actualizar"}
               </button>
             )}
-            <div className={`connection-pill ${activeView === "receptions" || activeView === "pendingPurchases" ? "live" : dataMode}`}>
+            <div className={`connection-pill ${activeView === "receptions" || activeView === "pendingPurchases" || activeView === "supplierInvoices" || activeView === "purchaseAnalytics" ? "live" : dataMode}`}>
               <span />
-              {activeView === "receptions" || activeView === "pendingPurchases"
+              {activeView === "receptions" || activeView === "pendingPurchases" || activeView === "supplierInvoices" || activeView === "purchaseAnalytics"
                 ? "Odoo real · solo lectura"
                 : connectionMessage}
             </div>
@@ -1831,6 +1843,10 @@ function App() {
             range={dateRange}
             sort={invoiceSort}
           />
+        ) : activeView === "supplierInvoices" ? (
+          <SupplierInvoicesView />
+        ) : activeView === "purchaseAnalytics" ? (
+          <SupplierInvoicesView analyticsOnly />
         ) : activeView === "settings" ? (
           <SettingsView
             currentUser={authUser}
