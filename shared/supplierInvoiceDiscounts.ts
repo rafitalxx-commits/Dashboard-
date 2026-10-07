@@ -22,17 +22,23 @@ export function taxFromBase(base: number, rate: number): number {
 export function calculateWebAdjustment(
   declared: { base: number | null; taxes: number | null; total: number | null },
   lines: { productId?: number | null; quantity?: number | null; priceUnit?: number | null; discount?: number | null; discountExtra?: number | null; promptPaymentDiscount?: number | null; total?: number | null; taxAmount?: number | null; taxId?: number | null }[],
-): { amount: number; productsBase: number; taxTotal: number; taxDifference: number } {
+): { amount: number; productsBase: number; taxTotal: number | null; taxDifference: number | null } {
   const { base, taxes, total } = declared;
   if (base == null || taxes == null || total == null || ![base, taxes, total].every(Number.isFinite)) throw new Error("Completa Base, Impuestos y Total antes del ajuste.");
   if (Math.abs(Math.round((base + taxes - total) * 100)) > 1) throw new Error("Base + Impuestos no coincide con el Total declarado.");
   const products = lines.filter((line) => !isWebAdjustmentProductId(line.productId));
   if (!products.length) throw new Error("Añade primero los productos de la factura.");
-  if (products.some((line) => line.quantity == null || line.quantity <= 0 || !Number.isFinite(line.quantity) || line.priceUnit == null || !Number.isFinite(line.priceUnit))) throw new Error("Completa cantidad y precio de todos los productos antes del ajuste.");
-  if (products.some((line) => line.taxAmount == null || !Number.isFinite(line.taxAmount))) throw new Error("Confirma las cuotas de IVA de los productos antes del ajuste.");
+  if (products.some((line) => (line.quantity == null || line.quantity <= 0 || !Number.isFinite(line.quantity) || line.priceUnit == null || !Number.isFinite(line.priceUnit)) && (line.total == null || !Number.isFinite(line.total)))) throw new Error("Completa el importe neto o la cantidad y el precio de cada producto antes del ajuste.");
   if (lines.some((line) => isWebAdjustmentProductId(line.productId) && (line.taxId || line.taxAmount))) throw new Error("El Ajuste Web existente lleva IVA; revísalo antes de sustituirlo.");
-  const productsBase = Math.round(products.reduce((sum, line) => sum + discountedBase(line.quantity!, line.priceUnit!, line.discount, line.discountExtra, line.promptPaymentDiscount), 0) * 100) / 100;
-  if (products.some((line) => line.total != null && Math.abs(line.total - discountedBase(line.quantity!, line.priceUnit!, line.discount, line.discountExtra, line.promptPaymentDiscount)) > 0.01)) throw new Error("Hay un importe de línea editado que no coincide con cantidad, precio y descuentos. Revísalo antes del ajuste.");
-  const taxTotal = Math.round(products.reduce((sum, line) => sum + line.taxAmount!, 0) * 100) / 100;
-  return { amount: Math.round((base - productsBase) * 100) / 100, productsBase, taxTotal, taxDifference: Math.round((taxes - taxTotal) * 100) / 100 };
+  const productsBase = Math.round(products.reduce((sum, line) => sum + (
+    line.quantity != null && line.quantity > 0 && Number.isFinite(line.quantity) && line.priceUnit != null && Number.isFinite(line.priceUnit)
+      ? discountedBase(line.quantity, line.priceUnit, line.discount, line.discountExtra, line.promptPaymentDiscount)
+      : line.total!
+  ), 0) * 100) / 100;
+  if (products.some((line) => line.total != null && line.quantity != null && line.quantity > 0 && line.priceUnit != null &&
+      Math.abs(Math.round(line.total * 100) - Math.round(discountedBase(line.quantity, line.priceUnit, line.discount, line.discountExtra, line.promptPaymentDiscount) * 100)) > 1))
+    throw new Error("Hay un importe de línea editado que no coincide con cantidad, precio y descuentos. Revísalo antes del ajuste.");
+  const taxTotal = products.every((line) => line.taxAmount != null && Number.isFinite(line.taxAmount))
+    ? Math.round(products.reduce((sum, line) => sum + line.taxAmount!, 0) * 100) / 100 : null;
+  return { amount: Math.round((base - productsBase) * 100) / 100, productsBase, taxTotal, taxDifference: taxTotal == null ? null : Math.round((taxes - taxTotal) * 100) / 100 };
 }

@@ -981,7 +981,7 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
       const index = prev.findIndex((line) => isWebAdjustmentProductId(line.productId));
       return index < 0 ? [...prev, adjustment] : prev.map((line, i) => i === index ? adjustment : line);
     });
-    setSaveMsg(`Producto AJUSTEWEB preparado por ${money(amount, ex?.currency ?? "EUR")}, sin IVA. ${preview.taxDifference ? `Queda una diferencia de IVA de ${money(preview.taxDifference, ex?.currency ?? "EUR")}; revísala y usa «Cuadrar IVA con PDF» antes de guardar.` : "El IVA ya coincide con el PDF."}`);
+    setSaveMsg(`Producto AJUSTEWEB preparado por ${money(amount, ex?.currency ?? "EUR")}, sin IVA. ${preview.taxDifference == null ? "Faltan cuotas de IVA en alguna línea; complétalas y revísalas antes de validar." : preview.taxDifference !== 0 ? `Queda una diferencia de IVA de ${money(preview.taxDifference, ex?.currency ?? "EUR")}; revísala y usa «Cuadrar IVA con PDF» antes de guardar.` : "El IVA ya coincide con el PDF."}`);
   };
 
   const applyFiscalDefaults = () => {
@@ -1726,8 +1726,8 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
                 <button className="si-editor-add" onClick={applyWebAdjustment} disabled={!webAdjustmentPreview || webAdjustmentPreview.amount === 0 || !!doc.odooDraftMoveId} type="button">
                   <Plus size={14} /> Añadir Ajuste Web sin IVA {webAdjustmentPreview && webAdjustmentPreview.amount !== 0 ? `(${money(webAdjustmentPreview.amount, ex?.currency ?? "EUR")})` : ""}
                 </button>
-                {webAdjustmentPreview ? <p className="si-note" role="status">Propuesta de ajuste basada en la extracción IA del PDF: PDF {money(Number(fields.base), ex?.currency ?? "EUR")} − productos {money(webAdjustmentPreview.productsBase, ex?.currency ?? "EUR")} = Ajuste Web {money(webAdjustmentPreview.amount, ex?.currency ?? "EUR")}. Revísala y añádela solo si corresponde. IVA pendiente de cotejo: {money(webAdjustmentPreview.taxDifference, ex?.currency ?? "EUR")}.</p> : <p className="si-note">{webAdjustmentError}</p>}
-                {webAdjustmentPreview && webAdjustmentPreview.taxDifference !== 0 && lines.some((line) => isWebAdjustmentProductId(line.productId)) && <button className="si-editor-add" type="button" disabled={!!doc.odooDraftMoveId} onClick={() => applyTaxTotal(fields.taxes)}><Plus size={14} /> Cuadrar IVA con PDF ({money(webAdjustmentPreview.taxDifference, ex?.currency ?? "EUR")})</button>}
+                {webAdjustmentPreview ? <p className="si-note" role="status">Propuesta de ajuste basada en los importes del editor: PDF {money(Number(fields.base), ex?.currency ?? "EUR")} − productos {money(webAdjustmentPreview.productsBase, ex?.currency ?? "EUR")} = Ajuste Web {money(webAdjustmentPreview.amount, ex?.currency ?? "EUR")}. Revísala y añádela solo si corresponde. {webAdjustmentPreview.taxDifference == null ? "IVA pendiente de cotejo: faltan cuotas en alguna línea." : `IVA pendiente de cotejo: ${money(webAdjustmentPreview.taxDifference, ex?.currency ?? "EUR")}.`}</p> : <p className="si-note">{webAdjustmentError}</p>}
+                {webAdjustmentPreview && webAdjustmentPreview.taxDifference != null && webAdjustmentPreview.taxDifference !== 0 && lines.some((line) => isWebAdjustmentProductId(line.productId)) && <button className="si-editor-add" type="button" disabled={!!doc.odooDraftMoveId} onClick={() => applyTaxTotal(fields.taxes)}><Plus size={14} /> Cuadrar IVA con PDF ({money(webAdjustmentPreview.taxDifference, ex?.currency ?? "EUR")})</button>}
                 <p className="si-note">El ajuste usa el producto Odoo AJUSTEWEB sin IVA. Si queda diferencia de IVA, revisa las cuotas antes de pulsar «Cuadrar IVA con PDF»; esta acción la aplica a las líneas gravadas y muestra el resultado para guardar y validar.</p>
                 <div className="si-fiscal-bulk" aria-label="Descuentos sucesivos de la factura">
                   <b>Descuentos sucesivos sobre las líneas (después del DTO principal)</b>
@@ -1836,7 +1836,7 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
                     {saving ? <RefreshCw className="spin" size={14} /> : <CheckCircle2 size={14} />} {saving ? "Guardando líneas…" : "Guardar líneas"}
                   </button>
                 )}
-                {saveMsg && <p className={saveMsg.startsWith("Líneas") || saveMsg.startsWith("Descuentos sucesivos") || saveMsg.startsWith("Ajuste Web sin impuestos preparado") ? "si-msg" : "error"} role="status">{saveMsg}</p>}
+                {saveMsg && <p className={saveMsg.startsWith("Líneas") || saveMsg.startsWith("Descuentos sucesivos") || saveMsg.startsWith("Producto AJUSTEWEB preparado") ? "si-msg" : "error"} role="status">{saveMsg}</p>}
                 {optionError && <p className="error" role="alert">{optionError}</p>}
                 <p className="si-note">«Guardar líneas» solo guarda en el LAB. «Validar y revisar borrador Odoo» abre la confirmación; el borrador se crea solo si después pulsas «Aceptar y crear borrador».</p>
               </div>

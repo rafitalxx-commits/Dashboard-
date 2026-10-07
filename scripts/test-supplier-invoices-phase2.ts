@@ -281,6 +281,11 @@ function testWebAdjustmentAfterDiscounts() {
   assert.deepEqual(calculateWebAdjustment(declared, [product]), { amount: -1, productsBase: 51.21, taxTotal: 10.75, taxDifference: 0 });
   assert.equal(validateAmounts(50.21, 10.75, 60.96, [product, { productId: 44149, quantity: 1, priceUnit: -1, discount: 0, total: -1, taxAmount: 0 }], []).ok, true);
   assert.deepEqual(calculateWebAdjustment({ base: 50.21, taxes: 10.54, total: 60.75 }, [product]), { amount: -1, productsBase: 51.21, taxTotal: 10.75, taxDifference: -0.21 });
+  assert.deepEqual(calculateWebAdjustment({ base: 51.20, taxes: 10.75, total: 61.95 }, [{ ...product, total: 51.20, taxAmount: null }]),
+    { amount: -0.01, productsBase: 51.21, taxTotal: null, taxDifference: null }, "un céntimo de redondeo no bloquea el Ajuste Web aunque falte IVA");
+  assert.deepEqual(calculateWebAdjustment({ base: 51.20, taxes: 10.75, total: 61.95 }, [{ ...product, quantity: null, priceUnit: null, total: 51.21, taxAmount: null }]),
+    { amount: -0.01, productsBase: 51.21, taxTotal: null, taxDifference: null }, "el importe neto visible permite preparar el ajuste antes de completar cantidad y precio");
+  assert.throws(() => calculateWebAdjustment({ base: 51.20, taxes: 10.75, total: 61.95 }, [{ ...product, quantity: null, priceUnit: null, total: null }]), /importe neto/, "no inventar una base sin importe");
   assert.throws(() => calculateWebAdjustment({ base: 50.21, taxes: 10.75, total: 60.94 }, [product]), /Base \+ Impuestos/);
   assert.throws(() => calculateWebAdjustment(declared, [{ ...product, total: 50.21 }]), /importe de línea editado/);
   assert.throws(() => calculateWebAdjustment(declared, [product, { productId: 48275, taxId: 4, taxAmount: 0 }]), /lleva IVA/);
