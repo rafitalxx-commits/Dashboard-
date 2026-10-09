@@ -49,6 +49,7 @@ type Store = {
   locations: ProductLocation[];
   locationCatalog: LocationCatalogEntry[];
   changes: ProductLocationChange[];
+  processedReceptionIds?: number[];
   odooMovementSync?: {
     baselineAt: string;
     lastSyncedAt: string;
@@ -103,6 +104,7 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
         locations,
         locationCatalog: [...catalogByCode.values()],
         changes: stored.changes || [],
+        processedReceptionIds: stored.processedReceptionIds || [],
         odooMovementSync: stored.odooMovementSync,
       };
     }
@@ -230,6 +232,45 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     if (!store.odooMovementSync) store.odooMovementSync = { baselineAt, lastSyncedAt: baselineAt, processedMoveIds: [] };
     write(store); return { locations: store.locations, baselineAt: store.odooMovementSync.baselineAt };
   };
+  const validateReceptionAllocations = (allocations: Array<{ productId: number; code: string; quantity: number }>) => {
+    const store = read();
+    for (const allocation of allocations) {
+      if (!Number.isInteger(allocation.productId) || allocation.productId <= 0 || !Number.isFinite(allocation.quantity) || allocation.quantity <= 0) throw new Error("Reparto de recepción inválido");
+      const location = parseLocationCode(allocation.code);
+      requireActive(store, location.code, "physical");
+    }
+  };
+  const applyValidatedReception = (input: { receptionId: number; allocations: Array<{ productId: number; code: string; quantity: number }>; moveIds: number[] }) => {
+    if (!Number.isInteger(input.receptionId) || input.receptionId <= 0 || !input.moveIds.every((id) => Number.isInteger(id) && id > 0)) throw new Error("Recepción validada inválida");
+    const store = read();
+    if (store.processedReceptionIds?.includes(input.receptionId)) return { applied: false, locations: store.locations };
+    validateReceptionAllocations(input.allocations);
+    if (input.moveIds.some((id) => store.odooMovementSync?.processedMoveIds.includes(id))) throw new Error("La sincronización ya registró este movimiento de Odoo. Revisa las ubicaciones antes de volver a aplicarlo");
+    const now = new Date().toISOString();
+    const combined = new Map<string, { productId: number; code: string; quantity: number }>();
+    for (const allocation of input.allocations) {
+      const code = parseLocationCode(allocation.code).code;
+      const key = `${allocation.productId}:${code}`;
+      const previous = combined.get(key);
+      combined.set(key, { productId: allocation.productId, code, quantity: (previous?.quantity || 0) + allocation.quantity });
+    }
+    for (const allocation of combined.values()) {
+      const parsed = parseLocationCode(allocation.code);
+      const index = store.locations.findIndex((item) => item.productId === allocation.productId && item.code === parsed.code);
+      const previous = index >= 0 ? store.locations[index] : undefined;
+      const quantity = (previous?.quantity || 0) + allocation.quantity;
+      const value: ProductLocation = previous
+        ? { ...previous, quantity, updatedAt: now }
+        : { productId: allocation.productId, ...parsed, quantity, preferred: !store.locations.some((item) => item.productId === allocation.productId && item.preferred), createdAt: now, updatedAt: now };
+      if (index >= 0) store.locations[index] = value; else store.locations.push(value);
+      store.changes.unshift({ id: `reception-${input.receptionId}-${allocation.productId}-${parsed.code}`, productId: allocation.productId, code: parsed.code, previousQuantity: previous?.quantity || 0, quantity, reason: "odoo_movement", createdAt: now });
+    }
+    store.processedReceptionIds = [...(store.processedReceptionIds || []), input.receptionId];
+    if (!store.odooMovementSync) store.odooMovementSync = { baselineAt: now, lastSyncedAt: now, processedMoveIds: [] };
+    store.odooMovementSync.processedMoveIds = [...new Set([...store.odooMovementSync.processedMoveIds, ...input.moveIds])].slice(-50000);
+    write(store);
+    return { applied: true, locations: store.locations };
+  };
   const applyOdooMovements = (input: { moves: Array<{ id: number; productId: number; quantity: number; direction: "in" | "out" }>; syncedAt?: string }): OdooMovementSyncResult => {
     const store = read(); const state = store.odooMovementSync;
     if (!state) throw new Error("Primero finaliza un inventario para crear la base de ubicaciones");
@@ -275,6 +316,8 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     transfer,
     inventoryTotalsAfterReplace,
     replaceFromInventory,
+    validateReceptionAllocations,
+    applyValidatedReception,
     applyOdooMovements,
     summary: () => read(),
   };

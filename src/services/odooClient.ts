@@ -950,13 +950,13 @@ export const odooClient = {
   async validateInventoryReception(input: {
     receptionId: string;
     createBackorder: boolean;
-    lines: Array<{ lineId: string; productId?: string; quantity: number }>;
+    lines: Array<{ lineId: string; productId?: string; quantity: number; allocations: Array<{ location: string; quantity: number }> }>;
   }) {
     const response = await fetch(receptionsApiPath("/api/odoo/inventory-receptions/validate"), {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
     });
-    const payload = await readJson<{ ok?: boolean; receptionRef?: string; state?: string; dateDone?: string; pendingReception?: { id: string; ref?: string; state?: string }; message?: string }>(response);
-    if (!response.ok || !payload.ok) throw new Error(payload.message ?? "No se pudo validar la recepción en Odoo");
+    const payload = await readJson<{ ok?: boolean; locationRecorded?: boolean; receptionRef?: string; state?: string; dateDone?: string; pendingReception?: { id: string; ref?: string; state?: string }; message?: string }>(response);
+    if (!response.ok || !payload.ok || !payload.locationRecorded) throw new Error(payload.message ?? "La recepción no confirmó las ubicaciones en Dashboard");
     return payload;
   },
   async cancelInventoryReception(receptionId: string, reason: string) {
