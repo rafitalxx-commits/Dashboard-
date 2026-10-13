@@ -478,6 +478,7 @@ export default defineConfig(({ mode }) => {
   // The service owns this safety switch. Vite's loadEnv only reads files, so
   // preserve an explicitly configured service value for the Odoo write routes.
   env.ODOO_WRITE_ENABLED = process.env.ODOO_WRITE_ENABLED ?? env.ODOO_WRITE_ENABLED;
+  env.DASHBOARD_AUTO_LOCATION_MOVEMENTS = process.env.DASHBOARD_AUTO_LOCATION_MOVEMENTS ?? env.DASHBOARD_AUTO_LOCATION_MOVEMENTS;
   // Keep supplier-invoice write gates under systemd control even if a stale
   // local env file contains different values.
   for (const key of [
@@ -516,6 +517,63 @@ function odooReadOnlyApi(env: Record<string, string>) {
       const productLocations = createProductLocations({
         dataDir: env.DASHBOARD_DATA_DIR,
       });
+      let movementSyncInFlight: Promise<unknown> | null = null;
+      const syncOdooMovements = (automatic = false) => {
+        if (movementSyncInFlight) return movementSyncInFlight.then(() => syncOdooMovements(automatic));
+        const work = (async () => {
+          const state = productLocations.summary().odooMovementSync;
+          if (!state) throw new Error("Primero finaliza un inventario para crear la base de ubicaciones");
+          const config = getOdooConfig(env); const uid = await authenticate(config);
+          const call = (model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) => rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
+          const roots = await call("stock.location", "search_read", [[["complete_name", "=", "ALM/Stock"]]], { fields: ["id"], limit: 1 });
+          const rootId = roots[0]?.id;
+          if (!rootId) throw new Error("No se encontró ALM/Stock en Odoo");
+          const warehouseLocations: Array<{ id?: number }> = [];
+          for (let offset = 0; ; offset += 1000) {
+            const page = await call("stock.location", "search_read", [[["id", "child_of", rootId]]], { fields: ["id"], limit: 1000, offset });
+            warehouseLocations.push(...page);
+            if (page.length < 1000) break;
+          }
+          const warehouseIds = new Set<number>(warehouseLocations.map((location: { id?: number }) => Number(location.id)).filter(Number.isInteger));
+          const since = new Date(automatic ? state.automaticLastSyncedAt || state.automaticStartedAt || state.lastSyncedAt : state.lastSyncedAt).toISOString().slice(0, 19).replace("T", " ");
+          const syncedAt = new Date().toISOString();
+          const until = syncedAt.slice(0, 19).replace("T", " ");
+          const dateField = automatic ? "write_date" : "date";
+          const domain = automatic
+            ? ["&", "&", "&", "&", ["state", "=", "done"], [dateField, ">=", since], [dateField, "<=", until], ["location_id", "child_of", rootId], ["location_dest_id.usage", "=", "customer"]]
+            : ["&", ["state", "=", "done"], "&", "&", [dateField, ">=", since], [dateField, "<=", until], "|", ["location_id", "child_of", rootId], ["location_dest_id", "child_of", rootId]];
+          const moves: any[] = [];
+          for (let offset = 0; ; offset += 1000) {
+            const page = await call("stock.move", "search_read", [domain], { fields: ["id", "product_id", "quantity", "product_uom_qty", "location_id", "location_dest_id", "date", "write_date"], order: `${dateField} asc, id asc`, limit: 1000, offset });
+            moves.push(...page);
+            if (page.length < 1000) break;
+          }
+          const mapped = moves.flatMap((move: any) => {
+            const sourceId = Array.isArray(move.location_id) ? Number(move.location_id[0]) : 0;
+            const destinationId = Array.isArray(move.location_dest_id) ? Number(move.location_dest_id[0]) : 0;
+            const sourceIn = warehouseIds.has(sourceId); const destinationIn = warehouseIds.has(destinationId);
+            if (sourceIn === destinationIn) return [];
+            const productId = Array.isArray(move.product_id) ? Number(move.product_id[0]) : 0;
+            const quantity = Number(move.quantity ?? move.product_uom_qty ?? 0);
+            if (!Number.isInteger(move.id) || !Number.isInteger(productId) || !Number.isFinite(quantity) || quantity <= 0) return [];
+            return [{ id: move.id, productId, quantity, direction: destinationIn ? "in" as const : "out" as const }];
+          });
+          return productLocations.applyOdooMovements({ moves: mapped, syncedAt, automatic });
+        })();
+        movementSyncInFlight = work;
+        void work.finally(() => { movementSyncInFlight = null; }).catch(() => {});
+        return work;
+      };
+      // Odoo and Dashboard deliveries both finish as Odoo stock moves. The
+      // same read-only poll picks up either source without a second decrement.
+      if (env.DASHBOARD_AUTO_LOCATION_MOVEMENTS === "true") {
+        try {
+          productLocations.startAutomaticOdooMovements();
+          const timer = setInterval(() => { void syncOdooMovements(true).catch((error) => console.error("Automatic location movement sync failed:", error)); }, 60_000);
+          timer.unref();
+          server.httpServer?.once("close", () => clearInterval(timer));
+        } catch (error) { console.error("Automatic location movement sync not started:", error); }
+      }
       // Keep the operational Home isolated from the old page's per-card reads.
       let homeKpiCache: { expiresAt: number; value: unknown } | null = null;
       let homeKpiInflight: Promise<unknown> | null = null;
@@ -682,32 +740,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
               return;
             }
             if (request.method === "POST" && url.pathname === "/locations/sync-odoo") {
-              const summary = productLocations.summary();
-              const syncState = summary.odooMovementSync;
-              if (!syncState) throw new Error("Primero finaliza un inventario para crear la base de ubicaciones");
-              const config = getOdooConfig(env); const uid = await authenticate(config);
-              const call = (model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) => rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
-              const roots = await call("stock.location", "search_read", [[["complete_name", "=", "ALM/Stock"]]], { fields: ["id"], limit: 1 });
-              const rootId = roots[0]?.id;
-              if (!rootId) throw new Error("No se encontró ALM/Stock en Odoo");
-              const warehouseLocations = await call("stock.location", "search_read", [[["id", "child_of", rootId]]], { fields: ["id"], limit: 2000 });
-              const warehouseIds = new Set<number>(warehouseLocations.map((location: { id?: number }) => Number(location.id)).filter(Number.isInteger));
-              const since = new Date(syncState.lastSyncedAt).toISOString().slice(0, 19).replace("T", " ");
-              const moves = await call("stock.move", "search_read", [[
-                "&", ["state", "=", "done"], "&", ["date", ">=", since],
-                "|", ["location_id", "child_of", rootId], ["location_dest_id", "child_of", rootId],
-              ]], { fields: ["id", "product_id", "quantity", "product_uom_qty", "location_id", "location_dest_id", "date"], order: "date asc, id asc", limit: 10000 });
-              const mapped = moves.flatMap((move: any) => {
-                const sourceId = Array.isArray(move.location_id) ? Number(move.location_id[0]) : 0;
-                const destinationId = Array.isArray(move.location_dest_id) ? Number(move.location_dest_id[0]) : 0;
-                const sourceIn = warehouseIds.has(sourceId); const destinationIn = warehouseIds.has(destinationId);
-                if (sourceIn === destinationIn) return [];
-                const productId = Array.isArray(move.product_id) ? Number(move.product_id[0]) : 0;
-                const quantity = Number(move.quantity ?? move.product_uom_qty ?? 0);
-                if (!Number.isInteger(move.id) || !Number.isInteger(productId) || !Number.isFinite(quantity) || quantity <= 0) return [];
-                return [{ id: move.id, productId, quantity, direction: destinationIn ? "in" as const : "out" as const }];
-              });
-              sendJson(response, 200, productLocations.applyOdooMovements({ moves: mapped, syncedAt: new Date().toISOString() }));
+              sendJson(response, 200, await syncOdooMovements());
               return;
             }
             if (request.method === "POST" && url.pathname === "/barcode") {

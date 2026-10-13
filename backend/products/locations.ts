@@ -54,6 +54,8 @@ type Store = {
     baselineAt: string;
     lastSyncedAt: string;
     processedMoveIds: number[];
+    automaticStartedAt?: string;
+    automaticLastSyncedAt?: string;
   };
 };
 const empty = (): Store => ({ version: 3, locations: [], locationCatalog: [], changes: [] });
@@ -271,7 +273,7 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     write(store);
     return { applied: true, locations: store.locations };
   };
-  const applyOdooMovements = (input: { moves: Array<{ id: number; productId: number; quantity: number; direction: "in" | "out" }>; syncedAt?: string }): OdooMovementSyncResult => {
+  const applyOdooMovements = (input: { moves: Array<{ id: number; productId: number; quantity: number; direction: "in" | "out" }>; syncedAt?: string; automatic?: boolean }): OdooMovementSyncResult => {
     const store = read(); const state = store.odooMovementSync;
     if (!state) throw new Error("Primero finaliza un inventario para crear la base de ubicaciones");
     const known = new Set(state.processedMoveIds); const warnings: string[] = []; let processed = 0; let applied = 0; let skipped = 0; const now = new Date().toISOString();
@@ -289,19 +291,34 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
         store.changes.unshift({ id: `odoo-${move.id}`, productId: preferred.productId, code: preferred.code, previousQuantity: preferred.quantity - quantity, quantity: preferred.quantity, reason: "odoo_movement", createdAt: now }); applied += 1;
         continue;
       }
-      let pending = quantity;
-      const sources = [preferred, ...locations.filter((item) => item.code !== preferred.code).sort((a, b) => a.code.localeCompare(b.code))];
-      for (const source of sources) {
-        if (!pending) break;
-        const used = Math.min(source.quantity, pending); if (!used) continue;
-        const before = source.quantity; source.quantity -= used; source.updatedAt = now; pending -= used;
-        store.changes.unshift({ id: `odoo-${move.id}-${source.code}`, productId: source.productId, code: source.code, previousQuantity: before, quantity: source.quantity, reason: "odoo_movement", createdAt: now });
-      }
-      if (pending > 0) warnings.push(`Movimiento ${move.id}: faltan ${pending} uds. por ubicar; revisa el reparto físico.`);
+      // A delivered unit always leaves the preferred Dashboard location. Its
+      // quantity is a replenishment balance and may be negative until an
+      // explicit transfer from a non-preferred location settles it.
+      const before = preferred.quantity;
+      preferred.quantity -= quantity;
+      preferred.updatedAt = now;
+      store.changes.unshift({ id: `odoo-${move.id}-${preferred.code}`, productId: preferred.productId, code: preferred.code, previousQuantity: before, quantity: preferred.quantity, reason: "odoo_movement", createdAt: now });
       applied += 1;
     }
-    state.processedMoveIds = [...known].slice(-50000); state.lastSyncedAt = input.syncedAt || now; write(store);
+    state.processedMoveIds = [...known].slice(-50000);
+    if (input.automatic) state.automaticLastSyncedAt = input.syncedAt || now;
+    else state.lastSyncedAt = input.syncedAt || now;
+    write(store);
     return { processed, applied, skipped, warnings, baselineAt: state.baselineAt, lastSyncedAt: state.lastSyncedAt };
+  };
+  const startAutomaticOdooMovements = (startedAt = new Date().toISOString()) => {
+    const store = read();
+    const state = store.odooMovementSync;
+    if (!state) throw new Error("Primero finaliza un inventario para crear la base de ubicaciones");
+    if (!state.automaticStartedAt) {
+      // Historical gaps need an audited, separate reconciliation. A fresh
+      // cutover prevents old manual adjustments being replayed as deliveries.
+      state.automaticStartedAt = startedAt;
+      state.automaticLastSyncedAt = startedAt;
+      state.lastSyncedAt = startedAt;
+      write(store);
+    }
+    return state.automaticStartedAt;
   };
   return {
     forProduct,
@@ -319,6 +336,7 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     validateReceptionAllocations,
     applyValidatedReception,
     applyOdooMovements,
+    startAutomaticOdooMovements,
     summary: () => read(),
   };
 }
