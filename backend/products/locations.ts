@@ -267,10 +267,11 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
       requireActive(store, location.code, "physical");
     }
   };
-  const applyValidatedReception = (input: { receptionId: number; allocations: Array<{ productId: number; code: string; quantity: number }>; moveIds: number[] }) => {
+  const applyValidatedReception = (input: { receptionId: number; allocations: Array<{ productId: number; code: string; quantity: number }>; moveIds: number[]; initialStockByProduct?: Record<number, number> }) => {
     if (!Number.isInteger(input.receptionId) || input.receptionId <= 0 || !input.moveIds.every((id) => Number.isInteger(id) && id > 0)) throw new Error("Recepción validada inválida");
     const store = read();
     if (store.processedReceptionIds?.includes(input.receptionId)) return { applied: false, locations: store.locations };
+    const previouslyLocated = new Set(store.locations.map((item) => item.productId));
     validateReceptionAllocations(input.allocations);
     if (input.moveIds.some((id) => store.odooMovementSync?.processedMoveIds.includes(id))) throw new Error("La sincronización ya registró este movimiento de Odoo. Revisa las ubicaciones antes de volver a aplicarlo");
     const now = new Date().toISOString();
@@ -291,6 +292,23 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
         : { productId: allocation.productId, ...parsed, quantity, preferred: !store.locations.some((item) => item.productId === allocation.productId && item.preferred), createdAt: now, updatedAt: now };
       if (index >= 0) store.locations[index] = value; else store.locations.push(value);
       store.changes.unshift({ id: `reception-${input.receptionId}-${allocation.productId}-${parsed.code}`, productId: allocation.productId, code: parsed.code, previousQuantity: previous?.quantity || 0, quantity, reason: "odoo_movement", createdAt: now });
+    }
+    for (const [id, stock] of Object.entries(input.initialStockByProduct || {})) {
+      const productId = Number(id);
+      if (!Number.isInteger(productId) || !Number.isFinite(stock)) throw new Error("Stock Odoo de recepción inválido");
+      const firstCode = [...combined.values()].find((item) => item.productId === productId)?.code;
+      if (!firstCode) continue;
+      // Never reconcile an already located product: its physical distribution is curated.
+      if (previouslyLocated.has(productId)) continue;
+      const locations = store.locations.filter((item) => item.productId === productId);
+      const preferred = locations.find((item) => item.code === firstCode);
+      if (!preferred) continue;
+      const others = locations.filter((item) => item !== preferred).reduce((total, item) => total + item.quantity, 0);
+      const previousQuantity = preferred.quantity;
+      preferred.quantity = stock - others;
+      preferred.preferred = true;
+      preferred.updatedAt = now;
+      if (previousQuantity !== preferred.quantity) store.changes.unshift({ id: `reception-${input.receptionId}-${productId}-reconcile`, productId, code: preferred.code, previousQuantity, quantity: preferred.quantity, reason: "inventory", createdAt: now });
     }
     store.processedReceptionIds = [...(store.processedReceptionIds || []), input.receptionId];
     if (!store.odooMovementSync) store.odooMovementSync = { baselineAt: now, lastSyncedAt: now, processedMoveIds: [] };

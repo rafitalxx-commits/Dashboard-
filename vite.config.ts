@@ -6561,6 +6561,14 @@ async function validateOdooInventoryReception(env: Record<string, string>, raw: 
     return allocations.map((allocation) => ({ productId: Number(line.productId), code: allocation.location, quantity: allocation.quantity }));
   });
   productLocations.validateReceptionAllocations(planned.filter((allocation) => allocation.code !== "PENDIENTE_ENVIO"));
+  const physical = planned.filter((allocation) => allocation.code !== "PENDIENTE_ENVIO");
+  const newLocationIds = [...new Set(physical.map((item) => item.productId))].filter((id) => productLocations.forProduct(id).length === 0);
+  let stockLocationId: number | undefined;
+  if (newLocationIds.length) {
+    const [stockLocation] = (await executeKw(config, uid, "stock.location", "search_read", [[["complete_name", "=", "ALM/Stock"]]], { fields: ["id"], limit: 1 })) as Array<{ id: number }>;
+    if (!stockLocation) throw new Error("No se encontró ALM/Stock para cotejar las ubicaciones de la recepción");
+    stockLocationId = stockLocation.id;
+  }
 
   const existingMoves = (await executeKw(config, uid, "stock.move", "read", [[...existingIds]], {
     fields: ["id", "product_id", "product_uom_qty", "product_uom", "state"],
@@ -6618,7 +6626,17 @@ async function validateOdooInventoryReception(env: Record<string, string>, raw: 
   const plannedTotals = new Map<number, number>();
   for (const allocation of planned) plannedTotals.set(allocation.productId, (plannedTotals.get(allocation.productId) || 0) + allocation.quantity);
   if (actual.size !== plannedTotals.size || [...actual].some(([productId, quantity]) => Math.abs(quantity - (plannedTotals.get(productId) || 0)) > 0.0001)) throw new Error("Odoo validó la recepción, pero las cantidades no coinciden con el reparto de Dashboard. No repitas la recepción; revisa las ubicaciones.");
-  const recorded = productLocations.applyValidatedReception({ receptionId: pickingId, allocations: planned.filter((allocation) => allocation.code !== "PENDIENTE_ENVIO"), moveIds: completedMoves.filter((item) => item.state === "done").map((item) => item.id) });
+  const initialStockByProduct: Record<number, number> = {};
+  if (newLocationIds.length) {
+    const stocks = (await executeKw(config, uid, "product.product", "read", [newLocationIds], { fields: ["id", "qty_available"], context: { location: stockLocationId } })) as Array<{ id: number; qty_available: number }>;
+    for (const id of newLocationIds) {
+      const onHand = Number(stocks.find((item) => item.id === id)?.qty_available);
+      if (!Number.isFinite(onHand)) throw new Error(`Odoo validó la recepción, pero no se pudo cotejar el stock del producto ${id}. No repitas la recepción; revisa las ubicaciones.`);
+      const pendingDispatch = planned.filter((item) => item.productId === id && item.code === "PENDIENTE_ENVIO").reduce((sum, item) => sum + item.quantity, 0);
+      initialStockByProduct[id] = onHand - pendingDispatch;
+    }
+  }
+  const recorded = productLocations.applyValidatedReception({ receptionId: pickingId, allocations: physical, moveIds: completedMoves.filter((item) => item.state === "done").map((item) => item.id), initialStockByProduct });
   const backorders = createBackorder ? (await executeKw(config, uid, "stock.picking", "search_read", [[["backorder_id", "=", pickingId], ["state", "not in", ["done", "cancel"]]]], { fields: ["id", "name", "state"], order: "id desc", limit: 1 })) as OdooPickingRecord[] : [];
   return { ok: true, idempotent: alreadyDone || !recorded.applied, locationRecorded: true, receptionRef: finished.name, state: finished.state, dateDone: finished.date_done, pendingReception: backorders[0] ? { id: String(backorders[0].id), ref: backorders[0].name, state: backorders[0].state } : undefined };
 }
