@@ -27,7 +27,8 @@ import { registerSupplierInvoicesRoutes } from "./backend/supplierInvoices/route
 import { registerSupplierInvoicesPhase2Routes } from "./backend/supplierInvoices/phase2Routes";
 import { registerWarehouseWorkersRoutes } from "./backend/warehouseWorkers/routes";
 import { registerExpeditionDestinationOverridesRoutes } from "./backend/expeditionDestinationOverrides/routes";
-import { isDeliveryIncidentStillPending, isServiceOnlyOrder } from "./backend/odooDeliveryIncidentRules";
+import { isDeliveryIncidentStillPending, isReportableDeliveryIncidentReason, isServiceOnlyOrder } from "./backend/odooDeliveryIncidentRules";
+import { isDeliveryStatusEligible, isRecordedDashboardLabel } from "./backend/odooDeliveryStatus";
 import {
   buildExactExpeditionOrderDomain,
   isCompleteExpeditionOrderReference,
@@ -5616,7 +5617,7 @@ async function runAutomaticDeliveryValidation(
   const candidates = orders.filter(
     (order) =>
       order.odooDeliveryValidation?.status === "ready" &&
-      Boolean(order.sendcloud?.trackingNumber),
+      Boolean(order.sendcloud?.shipmentCode || order.sendcloud?.trackingNumber),
   );
   if (candidates.length === 0) {
     return {
@@ -5765,6 +5766,7 @@ async function reconcileDeliveryIncidents(env: Record<string, string>) {
     });
     const incidents = store.incidents.filter((incident) => {
       if (incident.resolvedAt) return true;
+      if (!isReportableDeliveryIncidentReason(incident.reason)) return false;
       const pickingState = stateByPickingId.get(Number(incident.pickingId));
       const hasPicking = Number.isInteger(Number(incident.pickingId)) && Number(incident.pickingId) > 0;
       return isDeliveryIncidentStillPending(
@@ -5788,8 +5790,11 @@ function mergeDeliveryIncidents(
   current: DeliveryValidationIncident[],
   incoming: DeliveryValidationIncident[],
 ) {
-  const rows = new Map(current.map((incident) => [incident.id, incident]));
+  const rows = new Map(current
+    .filter((incident) => isReportableDeliveryIncidentReason(incident.reason))
+    .map((incident) => [incident.id, incident]));
   incoming.forEach((incident) => {
+    if (!isReportableDeliveryIncidentReason(incident.reason)) return;
     const previous = rows.get(incident.id);
     rows.set(incident.id, {
       ...previous,
@@ -8212,8 +8217,8 @@ async function validateOdooDeliveries(
       ),
     ),
   );
-  // La etiqueta debe existir en el registro local y ser de un transportista
-  // gestionado por Dashboard antes de permitir una escritura automática en Odoo.
+  // El flujo Dashboard exige una etiqueta generada y vinculada al pedido;
+  // ni el nombre del transportista ni el tracking condicionan la escritura Odoo.
   const dashboardLabelsByOrderId = options.source === "dashboard-label"
     ? getDashboardLabelStatuses(env, orders)
     : new Map<number, SendcloudStatus>();
@@ -8253,7 +8258,7 @@ async function validateOdooDeliveries(
     const idempotencyKey = createDeliveryValidationIdempotencyKey(
       `#${order.id}`,
       precheck.pickingId,
-      sendcloud?.trackingNumber,
+      sendcloud?.shipmentCode || sendcloud?.trackingNumber,
     );
     if (seenIdempotencyKeys.has(idempotencyKey)) {
       incidents.push(incidentDetails("Validacion duplicada ignorada por idempotencia."));
@@ -8993,12 +8998,15 @@ function getDashboardLabelStatuses(env: Record<string, string>, orders: OdooReco
   const file = join(env.DASHBOARD_DATA_DIR || join(process.cwd(), ".dashboard-data"), "genei-shipping-labels.json");
   if (!existsSync(file)) return new Map<number, SendcloudStatus>();
   try {
-    const labels = (JSON.parse(readFileSync(file, "utf8")) as { labels?: Array<{ orderRefs?: string[]; odooOrderRef?: string; externalOrderRef?: string; tracking?: string; trackingUrl?: string; shipper?: string; carrierStatus?: string }> }).labels ?? [];
-    const eligibleLabels = labels.filter(
-      (label) => isDashboardDeliveryCarrier(label.shipper) && Boolean(cleanText(label.tracking)),
-    );
+    const labels = (JSON.parse(readFileSync(file, "utf8")) as { labels?: Array<{ orderRefs?: string[]; odooOrderRef?: string; externalOrderRef?: string; shipmentCode?: string; source?: string; tracking?: string; trackingUrl?: string; shipper?: string; carrierStatus?: string; reissuedAt?: string }> }).labels ?? [];
+    const eligibleLabels = labels.filter(isRecordedDashboardLabel);
     const byRef = new Map<string, (typeof labels)[number]>();
-    eligibleLabels.forEach((label) => [label.odooOrderRef, label.externalOrderRef, ...(label.orderRefs ?? [])].map(cleanText).filter(Boolean).forEach((ref) => byRef.set(ref.toUpperCase(), label)));
+    eligibleLabels.forEach((label) => (cleanText(label.odooOrderRef)
+      ? [label.odooOrderRef]
+      : [label.externalOrderRef, ...(label.orderRefs ?? [])]).map(cleanText).filter(Boolean).forEach((ref) => {
+      const key = ref.toUpperCase();
+      if (!byRef.has(key)) byRef.set(key, label);
+    }));
     return new Map(orders.flatMap((order) => {
       const cachedOrder = order as OdooRecord & { odooRef?: string; externalRef?: string };
       const orderId = typeof order.id === "number"
@@ -9011,19 +9019,11 @@ function getDashboardLabelStatuses(env: Record<string, string>, orders: OdooReco
         cachedOrder.odooRef,
         cachedOrder.externalRef,
       ].map(cleanText).map((ref) => byRef.get(ref.toUpperCase())).find(Boolean);
-      return label?.tracking && Number.isInteger(orderId) && orderId > 0
-        ? [[orderId, { reference: cleanText(label.externalOrderRef) || order.name || `#${orderId}`, status: "Etiqueta creada Dashboard", rawStatus: cleanText(label.carrierStatus) || "dashboard-label-created", trackingNumber: cleanText(label.tracking), trackingUrl: cleanText(label.trackingUrl), carrier: cleanText(label.shipper) || "Dashboard", hasTracking: true } satisfies SendcloudStatus] as const]
+      return label && Number.isInteger(orderId) && orderId > 0
+        ? [[orderId, { reference: cleanText(label.externalOrderRef) || order.name || `#${orderId}`, status: "Etiqueta creada Dashboard", rawStatus: "dashboard-shipment-recorded", shipmentCode: cleanText(label.shipmentCode), trackingNumber: cleanText(label.tracking), trackingUrl: cleanText(label.trackingUrl), carrier: cleanText(label.shipper) || "Dashboard", hasTracking: Boolean(cleanText(label.tracking)) } satisfies SendcloudStatus] as const]
         : [];
     }));
   } catch { return new Map<number, SendcloudStatus>(); }
-}
-
-function isDashboardDeliveryCarrier(value?: string) {
-  const carrier = cleanText(value)
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
-  return carrier === "mrw" || carrier === "dhl" || carrier === "genei" || carrier === "correos express";
 }
 
 async function authenticate(config: ReturnType<typeof getOdooConfig>) {
@@ -9239,7 +9239,7 @@ function buildOdooActionPreview(
   const hasPickings = pickings.length > 0;
   const pickingStates = pickings.map((picking) => picking?.state).filter(Boolean);
   const dashboardLabelReadyToValidate = Boolean(
-    sendcloud?.trackingNumber && isDashboardDeliveryCarrier(sendcloud.carrier),
+    isDeliveryStatusEligible(sendcloud?.rawStatus, sendcloud?.trackingNumber, sendcloud?.carrier, sendcloud?.shipmentCode),
   );
   const hasAssignedPicking = pickingStates.includes("assigned");
   const hasDonePicking = pickingStates.includes("done");
@@ -9308,7 +9308,7 @@ function buildOdooActionPreview(
     deliveryValidation = {
       status: "blocked",
       label: "Bloqueado",
-      reason: "La etiqueta no procede de MRW, DHL, Genei o Correos Express desde el dashboard.",
+      reason: "No hay una etiqueta generada y vinculada al pedido en Dashboard.",
     };
   } else if (!hasAssignedPicking) {
     deliveryValidation = {
@@ -9422,12 +9422,12 @@ function buildOdooDeliveryValidation(
     };
   }
 
-  if (!sendcloud.trackingNumber || !isDashboardDeliveryCarrier(sendcloud.carrier)) {
+  if (!isDeliveryStatusEligible(sendcloud.rawStatus, sendcloud.trackingNumber, sendcloud.carrier, sendcloud.shipmentCode)) {
     return {
       status: "pending" as const,
       tone: "neutral" as const,
       label: "Pendiente etiqueta",
-      reason: "La etiqueta no procede de MRW, DHL, Genei o Correos Express desde el dashboard.",
+      reason: "No hay una etiqueta generada y vinculada al pedido en Dashboard.",
       pickingId: String(firstPicking.id),
       canValidate: false,
     };

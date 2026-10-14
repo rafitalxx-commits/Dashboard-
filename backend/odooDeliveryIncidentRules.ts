@@ -6,6 +6,16 @@ export function isClosedOdooDelivery(state?: string) {
   return state === "done" || state === "cancel";
 }
 
+// A missing Dashboard label is a normal prerequisite, not a failed Odoo delivery.
+// Keep it visible on the order as "Sin etiqueta dashboard", but out of the
+// operational incident queue until a labelled delivery actually fails.
+export function isReportableDeliveryIncidentReason(reason: string) {
+  const normalized = reason.trim().toLowerCase();
+  return normalized !== "no hay una etiqueta válida creada desde el dashboard." &&
+    normalized !== "no hay una etiqueta de envío válida con seguimiento." &&
+    normalized !== "no hay una etiqueta generada y vinculada al pedido en dashboard.";
+}
+
 export function isDeliveryIncidentStillPending(
   pickingState: string | undefined,
   hasPicking: boolean,
