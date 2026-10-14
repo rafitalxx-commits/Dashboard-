@@ -69,6 +69,20 @@ const catalogName = (product: any) => {
 };
 export const formatCatalogProductName = (product: unknown) =>
   catalogName(product);
+export function catalogOnHand(
+  odooProduct: { qty_available?: unknown },
+  quantsOnHand: number,
+  boms: Array<{ type?: string }>,
+): number {
+  // A phantom BOM is an Odoo kit: its available quantity is computed from
+  // components, and cannot be inferred from the kit's own stock.quants.
+  const calculated = Number(odooProduct.qty_available);
+  return boms.some((bom) => bom.type === "phantom") &&
+    odooProduct.qty_available != null &&
+    Number.isFinite(calculated)
+    ? calculated
+    : quantsOnHand;
+}
 const relationId = (value: unknown) =>
   Array.isArray(value) && Number.isInteger(value[0])
     ? Number(value[0])
@@ -282,6 +296,33 @@ export function createProductCatalog(env: Record<string, string>) {
           const id = relationId(q.product_id);
           if (id) changedIds.add(id);
         });
+        // A component quant change does not update the kit's product write_date.
+        // Refresh dependent phantom kits during an incremental sync as well.
+        if (!full && changedIds.size) {
+          const bomLines = await kw("mrp.bom.line", "search_read", [
+            [["product_id", "in", [...changedIds]]],
+          ], { fields: ["bom_id"], limit: 20000 });
+          const bomIds = [...new Set(bomLines.map((line: any) => relationId(line.bom_id)).filter(Boolean))];
+          if (bomIds.length) {
+            const dependentBoms = await kw("mrp.bom", "search_read", [
+              [["id", "in", bomIds], ["active", "=", true], ["type", "=", "phantom"]],
+            ], { fields: ["product_id", "product_tmpl_id"], limit: 20000 });
+            const dependentTemplateIds = [...new Set(dependentBoms
+              .filter((bom: any) => !relationId(bom.product_id))
+              .map((bom: any) => relationId(bom.product_tmpl_id)).filter(Boolean))];
+            dependentBoms.forEach((bom: any) => {
+              const id = relationId(bom.product_id);
+              if (id) changedIds.add(id);
+            });
+            if (dependentTemplateIds.length) {
+              const dependentTemplates = await kw("product.template", "read", [dependentTemplateIds], {
+                fields: ["product_variant_ids"], context: { active_test: false },
+              });
+              dependentTemplates.forEach((template: any) =>
+                (template.product_variant_ids || []).forEach((id: number) => changedIds.add(id)));
+            }
+          }
+        }
         const products = full
           ? changedProducts
           : changedIds.size
@@ -372,7 +413,7 @@ export function createProductCatalog(env: Record<string, string>) {
                 ],
               ],
               {
-                fields: ["id", "product_tmpl_id", "product_id", "bom_line_ids"],
+                fields: ["id", "product_tmpl_id", "product_id", "bom_line_ids", "type"],
                 limit: 20000,
               },
             )
@@ -426,6 +467,8 @@ export function createProductCatalog(env: Record<string, string>) {
             const productBoms = templateId
               ? bomByTemplate.get(templateId) || []
               : [];
+            const applicableBoms = productBoms.filter((bom: any) =>
+              !relationId(bom.product_id) || relationId(bom.product_id) === p.id);
             const previous = previousById.get(p.id);
             return {
               id: p.id,
@@ -435,7 +478,7 @@ export function createProductCatalog(env: Record<string, string>) {
               barcode: clean(p.barcode),
               uom: relationName(p.uom_id),
               type: clean(p.type),
-              onHand: stock.onHand,
+              onHand: catalogOnHand(p, stock.onHand, applicableBoms),
               reserved: Number(p.outgoing_qty || stock.reserved || 0),
               incoming: Number(p.incoming_qty || 0),
               forecast: Number(p.virtual_available || 0),
