@@ -692,6 +692,17 @@ function odooReadOnlyApi(env: Record<string, string>) {
               });
               return;
             }
+            if (request.method === "GET" && url.pathname === "/locations/incidents") {
+              const productsById = new Map(productCatalog.list().products.map((product) => [product.id, product]));
+              sendJson(response, 200, {
+                incidents: (productLocations.summary().odooMovementSync?.pendingMovements || []).map((incident) => ({
+                  ...incident,
+                  reference: productsById.get(incident.productId)?.reference || "",
+                  name: productsById.get(incident.productId)?.name || "",
+                })),
+              });
+              return;
+            }
             if (request.method === "POST" && url.pathname === "/locations") {
               sendJson(
                 response,

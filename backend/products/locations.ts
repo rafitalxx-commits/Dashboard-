@@ -44,6 +44,15 @@ export type OdooMovementSyncResult = {
   lastSyncedAt?: string;
 };
 
+export type PendingLocationMovement = {
+  id: number;
+  productId: number;
+  quantity: number;
+  direction: "in" | "out";
+  firstSeenAt: string;
+  reason: "missing_preferred" | "invalid_quantity";
+};
+
 type Store = {
   version: 3;
   locations: ProductLocation[];
@@ -54,6 +63,7 @@ type Store = {
     baselineAt: string;
     lastSyncedAt: string;
     processedMoveIds: number[];
+    pendingMovements?: PendingLocationMovement[];
     automaticStartedAt?: string;
     automaticLastSyncedAt?: string;
   };
@@ -292,15 +302,23 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     const store = read(); const state = store.odooMovementSync;
     if (!state) throw new Error("Primero finaliza un inventario para crear la base de ubicaciones");
     const known = new Set(state.processedMoveIds); const warnings: string[] = []; let processed = 0; let applied = 0; let skipped = 0; const now = new Date().toISOString();
-    for (const move of input.moves) {
+    const pendingBefore = new Map((state.pendingMovements || []).map((move) => [move.id, move]));
+    const incoming = new Map<number, { id: number; productId: number; quantity: number; direction: "in" | "out" }>();
+    for (const move of state.pendingMovements || []) incoming.set(move.id, move);
+    for (const move of input.moves) incoming.set(move.id, move);
+    const pending: PendingLocationMovement[] = [];
+    for (const move of incoming.values()) {
       if (!Number.isInteger(move.id) || known.has(move.id)) { skipped += 1; continue; }
-      known.add(move.id); processed += 1;
       const quantity = Number(move.quantity);
       const locations = store.locations.filter((item) => item.productId === Number(move.productId));
       const preferred = locations.find((item) => item.preferred);
       if (!Number.isFinite(quantity) || quantity <= 0 || !preferred) {
-        warnings.push(`Movimiento ${move.id}: producto sin ubicación preferente o cantidad inválida.`); continue;
+        const reason = !Number.isFinite(quantity) || quantity <= 0 ? "invalid_quantity" : "missing_preferred";
+        pending.push({ id: move.id, productId: Number(move.productId), quantity: Number.isFinite(quantity) ? quantity : 0, direction: move.direction, firstSeenAt: pendingBefore.get(move.id)?.firstSeenAt || now, reason });
+        warnings.push(`Movimiento ${move.id}: ${reason === "missing_preferred" ? "producto sin ubicación preferente" : "cantidad inválida"}; stock no ajustado.`);
+        continue;
       }
+      known.add(move.id); processed += 1;
       if (move.direction === "in") {
         preferred.quantity += quantity; preferred.updatedAt = now;
         store.changes.unshift({ id: `odoo-${move.id}`, productId: preferred.productId, code: preferred.code, previousQuantity: preferred.quantity - quantity, quantity: preferred.quantity, reason: "odoo_movement", createdAt: now }); applied += 1;
@@ -316,6 +334,7 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
       applied += 1;
     }
     state.processedMoveIds = [...known].slice(-50000);
+    state.pendingMovements = pending;
     if (input.automatic) state.automaticLastSyncedAt = input.syncedAt || now;
     else state.lastSyncedAt = input.syncedAt || now;
     write(store);
