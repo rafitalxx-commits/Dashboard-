@@ -58,6 +58,7 @@ type Store = {
     automaticLastSyncedAt?: string;
   };
 };
+type LocationSaveInput = { productId: number; code: unknown; quantity?: unknown; preferred?: unknown; replenishmentMin?: unknown; reason?: "manual" | "replenishment" };
 const empty = (): Store => ({ version: 3, locations: [], locationCatalog: [], changes: [] });
 
 /** A101 means row A, shelf 1 and height 01.  P/V are not location concepts. */
@@ -160,7 +161,17 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     return { location: store.locationCatalog[index], locations: catalogFrom(store) };
   };
   const forProduct = (productId: number) => read().locations.filter((item) => item.productId === productId).sort((a, b) => Number(b.preferred) - Number(a.preferred) || a.code.localeCompare(b.code));
-  const save = (input: { productId: number; code: unknown; quantity?: unknown; preferred?: unknown; replenishmentMin?: unknown; reason?: "manual" | "replenishment" }) => {
+  const assertPreferredAfterSave = (store: Store, input: LocationSaveInput) => {
+    const productId = Number(input.productId);
+    const code = parseLocationCode(input.code).code;
+    const previous = store.locations.find((item) => item.productId === productId && item.code === code);
+    const preferred = input.preferred === undefined ? previous?.preferred ?? false : Boolean(input.preferred);
+    if (!preferred && !store.locations.some((item) => item.productId === productId && item.code !== code && item.preferred)) {
+      throw new Error("Selecciona una ubicación preferente antes de guardar el producto");
+    }
+  };
+  const validateSave = (input: LocationSaveInput) => assertPreferredAfterSave(read(), input);
+  const save = (input: LocationSaveInput) => {
     const productId = Number(input.productId);
     if (!Number.isInteger(productId) || productId <= 0) throw new Error("Producto inválido");
     const location = parseLocationCode(input.code);
@@ -168,7 +179,7 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     if (!Number.isFinite(quantity)) throw new Error("Cantidad inválida");
     const minimum = input.replenishmentMin === undefined || input.replenishmentMin === "" ? undefined : Number(input.replenishmentMin);
     if (minimum !== undefined && (!Number.isFinite(minimum) || minimum < 0)) throw new Error("Mínimo de reposición inválido");
-    const store = read(); requireActive(store, location.code, "physical"); const now = new Date().toISOString(); const index = store.locations.findIndex((item) => item.productId === productId && item.code === location.code);
+    const store = read(); requireActive(store, location.code, "physical"); assertPreferredAfterSave(store, input); const now = new Date().toISOString(); const index = store.locations.findIndex((item) => item.productId === productId && item.code === location.code);
     const previous = index >= 0 ? store.locations[index] : undefined;
     const preferred = input.preferred === undefined ? previous?.preferred ?? false : Boolean(input.preferred);
     if (preferred) store.locations = store.locations.map((item) => item.productId === productId ? { ...item, preferred: false, replenishmentMin: undefined } : item);
@@ -180,7 +191,11 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
   const remove = (productId: number, code: unknown) => {
     const parsed = parseLocationCode(code); const store = read(); const before = store.locations.length;
     store.locations = store.locations.filter((item) => !(item.productId === productId && item.code === parsed.code));
-    if (store.locations.length === before) throw new Error("Ubicación no encontrada"); write(store); return { locations: forProductFrom(store, productId) };
+    if (store.locations.length === before) throw new Error("Ubicación no encontrada");
+    if (store.locations.some((item) => item.productId === productId) && !store.locations.some((item) => item.productId === productId && item.preferred)) {
+      throw new Error("Selecciona otra ubicación preferente antes de eliminar esta");
+    }
+    write(store); return { locations: forProductFrom(store, productId) };
   };
   const transfer = (input: { productId: number; fromCode: unknown; toCode: unknown; quantity: unknown }) => {
     const productId = Number(input.productId); const from = parseLocationCode(input.fromCode); const to = parseLocationCode(input.toCode); const quantity = Number(input.quantity);
@@ -329,6 +344,7 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
       try { requireActive(read(), code, kind); return true; } catch { return false; }
     },
     save,
+    validateSave,
     remove,
     transfer,
     inventoryTotalsAfterReplace,

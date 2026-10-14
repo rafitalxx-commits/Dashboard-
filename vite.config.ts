@@ -706,6 +706,8 @@ function odooReadOnlyApi(env: Record<string, string>) {
               const targetQuantity = Number(input.quantity);
               if (!Number.isInteger(productId) || productId <= 0 || !Number.isFinite(targetQuantity) || targetQuantity < 0) throw new Error("Ajuste de ubicación inválido");
               parseLocationCode(code);
+              // Reject a missing preference before the optional Odoo stock write.
+              productLocations.validateSave(input);
               if (!productLocations.summary().odooMovementSync) throw new Error("Primero finaliza un inventario para crear la base de ubicaciones");
               const previousQuantity = productLocations.forProduct(productId).find((item) => item.code === code)?.quantity || 0;
               const delta = targetQuantity - previousQuantity;
