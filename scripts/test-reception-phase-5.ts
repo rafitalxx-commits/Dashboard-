@@ -4,6 +4,13 @@ import { readFileSync } from "node:fs";
 const vite = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
 const client = readFileSync(new URL("../src/services/odooClient.ts", import.meta.url), "utf8");
 const view = readFileSync(new URL("../src/modules/receptions/InventoryReceptionsView.tsx", import.meta.url), "utf8");
+const readOnlyModels = vite.match(/const readOnlyModels = new Set\(\[([\s\S]*?)\]\);/)?.[1] ?? "";
+const readOnlyMethods = vite.match(/const readOnlyMethods = new Set\(\[([\s\S]*?)\]\);/)?.[1] ?? "";
+
+assert.match(readOnlyModels, /[\"']stock\.location[\"']/);
+assert.match(readOnlyMethods, /[\"']search_read[\"']/);
+assert.doesNotMatch(readOnlyMethods, /[\"'](?:create|write|unlink|button_validate)[\"']/);
+assert.match(vite, /if \(!readOnlyModels\.has\(model\) \|\| !readOnlyMethods\.has\(method\)\)/);
 
 assert.match(vite, /url\.pathname === "\/validate"/);
 assert.match(vite, /url\.pathname === "\/cancel"/);

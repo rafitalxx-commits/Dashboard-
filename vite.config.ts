@@ -452,6 +452,7 @@ const readOnlyModels = new Set([
   "sale.order",
   "sale.order.line",
   "stock.picking",
+  "stock.location",
   "stock.move",
   "purchase.order",
   "purchase.order.line",
