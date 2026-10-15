@@ -696,12 +696,17 @@ function odooReadOnlyApi(env: Record<string, string>) {
             if (request.method === "GET" && url.pathname === "/locations/incidents") {
               const productsById = new Map(productCatalog.list().products.map((product) => [product.id, product]));
               sendJson(response, 200, {
-                incidents: (productLocations.summary().odooMovementSync?.pendingMovements || []).map((incident) => ({
+                incidents: productLocations.pendingMovementAlerts().map((incident) => ({
                   ...incident,
                   reference: productsById.get(incident.productId)?.reference || "",
                   name: productsById.get(incident.productId)?.name || "",
                 })),
               });
+              return;
+            }
+            if (request.method === "POST" && url.pathname === "/locations/incidents/dismiss") {
+              const input = await readJsonBody<{ moveIds?: unknown }>(request);
+              sendJson(response, 200, productLocations.dismissPendingMovementAlerts(input.moveIds));
               return;
             }
             if (request.method === "POST" && url.pathname === "/locations") {

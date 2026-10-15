@@ -64,6 +64,7 @@ type Store = {
     lastSyncedAt: string;
     processedMoveIds: number[];
     pendingMovements?: PendingLocationMovement[];
+    dismissedMovementAlertIds?: number[];
     automaticStartedAt?: string;
     automaticLastSyncedAt?: string;
   };
@@ -353,10 +354,37 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     }
     state.processedMoveIds = [...known].slice(-50000);
     state.pendingMovements = pending;
+    const pendingIds = new Set(pending.map((move) => move.id));
+    state.dismissedMovementAlertIds = (state.dismissedMovementAlertIds || []).filter((id) => pendingIds.has(id));
     if (input.automatic) state.automaticLastSyncedAt = input.syncedAt || now;
     else state.lastSyncedAt = input.syncedAt || now;
     write(store);
     return { processed, applied, skipped, warnings, baselineAt: state.baselineAt, lastSyncedAt: state.lastSyncedAt };
+  };
+  const pendingMovementAlerts = () => {
+    const state = read().odooMovementSync;
+    if (!state) return [] as PendingLocationMovement[];
+    const dismissed = new Set(state.dismissedMovementAlertIds || []);
+    return (state.pendingMovements || []).filter((move) => !dismissed.has(move.id));
+  };
+  const dismissPendingMovementAlerts = (moveIds: unknown) => {
+    if (!Array.isArray(moveIds) || moveIds.length === 0 || moveIds.some((id) => !Number.isSafeInteger(id) || Number(id) <= 0)) {
+      throw new Error("Indica uno o más ID de movimiento válidos");
+    }
+    const ids = [...new Set(moveIds as number[])];
+    const store = read();
+    const state = store.odooMovementSync;
+    if (!state) throw new Error("No hay movimientos pendientes de ubicación");
+    const pendingById = new Map((state.pendingMovements || []).map((move) => [move.id, move]));
+    const candidates = ids.map((id) => pendingById.get(id));
+    if (candidates.some((move) => !move || move.reason !== "missing_preferred")) {
+      throw new Error("Solo se pueden ocultar avisos de movimientos pendientes por falta de ubicación preferente");
+    }
+    const dismissed = new Set(state.dismissedMovementAlertIds || []);
+    ids.forEach((id) => dismissed.add(id));
+    state.dismissedMovementAlertIds = [...dismissed].slice(-50000);
+    write(store);
+    return { dismissed: ids, pending: (state.pendingMovements || []).length, alerts: pendingMovementAlerts().length };
   };
   const startAutomaticOdooMovements = (startedAt = new Date().toISOString()) => {
     const store = read();
@@ -389,6 +417,8 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     validateReceptionAllocations,
     applyValidatedReception,
     applyOdooMovements,
+    pendingMovementAlerts,
+    dismissPendingMovementAlerts,
     startAutomaticOdooMovements,
     summary: () => read(),
   };
