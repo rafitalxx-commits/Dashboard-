@@ -331,6 +331,12 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
       const quantity = Number(move.quantity);
       const locations = store.locations.filter((item) => item.productId === Number(move.productId));
       const preferred = locations.find((item) => item.preferred);
+      // Odoo's aggregate stock remains authoritative when a product has no
+      // Dashboard location. Consume completed outbound IDs without inventing
+      // a physical balance or replaying the delivery if a location is added later.
+      if (move.direction === "out" && locations.length === 0 && Number.isFinite(quantity) && quantity > 0) {
+        known.add(move.id); processed += 1; continue;
+      }
       if (!Number.isFinite(quantity) || quantity <= 0 || !preferred) {
         const reason = !Number.isFinite(quantity) || quantity <= 0 ? "invalid_quantity" : "missing_preferred";
         pending.push({ id: move.id, productId: Number(move.productId), quantity: Number.isFinite(quantity) ? quantity : 0, direction: move.direction, firstSeenAt: pendingBefore.get(move.id)?.firstSeenAt || now, reason });
