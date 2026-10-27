@@ -31,14 +31,17 @@
     "validate:amazon-gmail-draft-real": "node --experimental-strip-types scripts/validate-amazon-gmail-draft-real.ts",
     "test:tasks-api": "node --experimental-strip-types scripts/test-tasks-api.ts",
     "test:dhl-lab": "node --experimental-strip-types scripts/test-dhl-lab.ts",
+    "test:gls-lab": "node --experimental-strip-types scripts/test-gls-lab.ts",
     "test:dhl-preproduction": "node --experimental-strip-types scripts/test-dhl-preproduction.ts",
     "test:inventory-zone-sync": "node --experimental-strip-types scripts/test-inventory-zone-sync.ts",
     "test:inventory-discard": "node --experimental-strip-types scripts/test-inventory-discard.ts",
+    "test:reception-timestamps": "node --experimental-strip-types scripts/test-reception-timestamps.ts",
     "test:receptions": "node --experimental-strip-types scripts/test-reception-phase-2.ts && node --experimental-strip-types scripts/test-reception-phase-3.ts && node --experimental-strip-types scripts/test-reception-phase-4.ts && node --experimental-strip-types scripts/test-reception-phase-5.ts",
     "test:pending-purchases": "node --experimental-strip-types scripts/test-pending-purchases.ts",
     "test:supplier-invoices": "node --experimental-strip-types scripts/test-supplier-invoices.ts",
     "test:product-catalog-sync": "node --experimental-strip-types scripts/test-product-catalog-sync.ts",
-    "test:supplier-mappings": "node --experimental-strip-types scripts/test-supplier-mappings.ts"
+    "test:supplier-mappings": "node --experimental-strip-types scripts/test-supplier-mappings.ts",
+    "test:correos-express-labels": "node --experimental-strip-types scripts/test-correos-express-multiparcel-labels.ts"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.5.2",
@@ -48,7 +51,8 @@
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "typescript": "^5.8.3",
-    "vite": "^6.3.5"
+    "vite": "^6.3.5",
+    "pdf-lib": "^1.17.1"
   },
   "devDependencies": {
     "@types/node": "^25.9.2",

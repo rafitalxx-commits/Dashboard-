@@ -22,16 +22,22 @@ const doc = {
     unresolved: ["Confirmar pedido"] },
 };
 const freshDoc = { ...doc, driveFileId: "PDF-2", name: "nueva.pdf", reviewProposal: null, pdfCached: true,
-  extracted: { ...doc.extracted, supplier: "Proveedor Propuesto", lines: [{ productId: null, description: "Artículo", reference: null, quantity: 1, priceUnit: 100, discount: 45, taxNames: [], total: 55, confidence: 90 }], textPreview: "Nº PEDIDO P00045. Origen: SUP-REF-45. Emisor: Proveedor Con VAT\nNIF: ESB12524773. Producto EAN 8431234567890 [ART-123]. Ref adicional EXT-46, EXT-47. DTO 45%, extra 5%, pronto pago 2%." } };
+  extracted: { ...doc.extracted, supplier: "Proveedor Propuesto", dueDate: "2630-09-30", lines: [{ productId: null, description: "Artículo", reference: null, quantity: 1, priceUnit: 100, discount: 45, taxNames: [], total: 55, confidence: 90 }], textPreview: "Nº PEDIDO P00045. Origen: SUP-REF-45. Emisor: Proveedor Con VAT\nNIF: ESB12524773. Producto EAN 8431234567890 [ART-123]. Ref adicional EXT-46, EXT-47. DTO 45%, extra 5%, pronto pago 2%." } };
 const conflictDoc = { ...freshDoc, driveFileId: "PDF-3", name: "conflicto.pdf", reviewProposal: null,
   extracted: { ...freshDoc.extracted, supplierVat: "B00000000" } };
-writeFileSync(path, JSON.stringify({ meta: { version: 2, lastScanAt: null, lastScanResult: null, totalDocuments: 3, driveFolderId: null }, documents: [doc, freshDoc, conflictDoc] }));
+const legacyScanDoc = { ...freshDoc, driveFileId: "PDF-4", name: "reescaneo-legado.pdf", reviewProposal: null,
+  aiStatus: "no_aplicado", confidence: 15, reviewChat: [{ at: "2026-09-01T00:00:00Z", role: "assistant", content: "Escaneo antiguo sin cambios." }],
+  extracted: { ...freshDoc.extracted, supplier: "Proveedor Antiguo", lines: [{ productId: null, description: "Línea heurística", reference: null, quantity: 9, priceUnit: 3, discount: 0, taxNames: [], total: 27 }] } };
+const noTextDoc = { ...freshDoc, driveFileId: "PDF-5", name: "sin-texto.pdf", reviewProposal: null };
+writeFileSync(path, JSON.stringify({ meta: { version: 2, lastScanAt: null, lastScanResult: null, totalDocuments: 5, driveFolderId: null }, documents: [doc, freshDoc, conflictDoc, legacyScanDoc, noTextDoc] }));
 mkdirSync(join(dir, "inbox"));
-writeFileSync(join(dir, "inbox", "PDF-2.pdf"), "%PDF-1.4\n");
-writeFileSync(join(dir, "inbox", "PDF-3.pdf"), "%PDF-1.4\n");
+writeFileSync(join(dir, "inbox", "PDF-2.pdf"), Buffer.from("%PDF-1.4\nREADABLE"));
+writeFileSync(join(dir, "inbox", "PDF-3.pdf"), Buffer.from("%PDF-1.4\nREADABLE"));
+writeFileSync(join(dir, "inbox", "PDF-4.pdf"), Buffer.from("%PDF-1.4\nREADABLE"));
+writeFileSync(join(dir, "inbox", "PDF-5.pdf"), Buffer.from("%PDF-1.4\nNO_TEXT"));
 writeFileSync(join(root, "products-catalog.json"), JSON.stringify({ products: [{ id: 123, templateId: 12, name: "Artículo", reference: "ART-123", barcode: "8431234567890", supplierNames: ["Propuesto"], type: "consu" }] }));
 const fakeOpenclaw = join(root, "openclaw");
-writeFileSync(fakeOpenclaw, `#!/bin/sh\nprintf '%s\\n' "$@" > '${join(root, "agent-args.txt")}'\nprintf '%s\\n' '{"reply":"Lectura completada","proposal":{"fields":{"supplier":"Propuesto","invoiceNumber":"FAC-43"},"lines":[{"description":"Artículo","reference":"8431234567890 / ART-123","quantity":1,"priceUnit":100,"discount":45,"discountExtra":5,"promptPaymentDiscount":2,"total":51.21,"productCandidateId":123,"purchaseOrderCandidateId":45}]},"unresolved":[]}'\n`);
+writeFileSync(fakeOpenclaw, `#!/bin/sh\nprintf '%s\\n' "$@" > '${join(root, "agent-args.txt")}'\nprintf '%s\\n' '{"reply":"Lectura completada","confidence":88,"proposal":{"fields":{"supplier":"Propuesto","invoiceNumber":"FAC-43"},"lines":[{"description":"Artículo","reference":"8431234567890 / ART-123","quantity":1,"priceUnit":100,"discount":45,"discountExtra":5,"promptPaymentDiscount":2,"total":51.21,"productCandidateId":123,"purchaseOrderCandidateId":45}]},"unresolved":[]}'\n`);
 chmodSync(fakeOpenclaw, 0o755);
 const originalPath = process.env.PATH;
 process.env.PATH = `${root}:${originalPath ?? ""}`;
@@ -60,7 +66,8 @@ writeFileSync(join(dir, "purchase-orders.json"), JSON.stringify({ meta: { versio
 const handlers = new Map<string, (request: any, response: any) => void>();
 registerSupplierInvoicesPhase2Routes({ middlewares: { use: (route, handler) => handlers.set(route, handler) } },
   { getSessionUser: (cookie) => cookie === "session=ok" ? { id: "1", name: "Rafa", role: "admin", permissions: ["supplierBilling"] } : undefined },
-  { dataDir: root, env: { SUPPLIER_INVOICES_ODOO_WRITE_ENABLED: "false", SUPPLIER_INVOICES_DRIVE_WRITE_ENABLED: "false" } });
+  { dataDir: root, env: { SUPPLIER_INVOICES_ODOO_WRITE_ENABLED: "false", SUPPLIER_INVOICES_DRIVE_WRITE_ENABLED: "false" },
+    readPdfText: async (pdf) => ({ text: pdf.includes(Buffer.from("NO_TEXT")) ? "" : "Factura sintética. Pedido P00045. Origen SUP-REF-45. Emisor: Proveedor Con VAT NIF ESB12524773. Producto EAN 8431234567890 [ART-123]. Referencias EXT-46 y EXT-47. Total 121." }) });
 async function call(route: string, body: unknown, cookie = "session=ok") {
   const handler = handlers.get(route);
   assert.ok(handler, `ruta ${route}`);
@@ -73,12 +80,31 @@ async function call(route: string, body: unknown, cookie = "session=ok") {
     handler(request, response);
   });
 }
+async function get(route: string, query: string, cookie = "session=ok") {
+  const handler = handlers.get(route);
+  assert.ok(handler, `ruta ${route}`);
+  return await new Promise<{ status: number; body: any }>((resolve) => {
+    const request: any = { method: "GET", headers: { cookie }, url: `${route}?${query}` };
+    const response: any = { statusCode: 200, writableEnded: false, setHeader() {}, end(value: string) {
+      this.writableEnded = true; resolve({ status: this.statusCode, body: JSON.parse(value) });
+    } };
+    handler(request, response);
+  });
+}
 try {
+  const verificationRoute = "/api/odoo/supplier-invoices/inbox/verification";
+  assert.equal((await get(verificationRoute, "id=PDF-1", "")).status, 401, "verificación protegida por sesión");
+  const missingPdf = await get(verificationRoute, "id=PDF-1");
+  assert.equal(missingPdf.status, 200);
+  assert.equal(missingPdf.body.verification.ready, false, "sin PDF completo no autoriza Odoo ni Drive");
+  assert.match(missingPdf.body.verification.blockers.join(" "), /PDF completo/);
   const extract = "/api/odoo/supplier-invoices/inbox/raskibot-extract";
   const apply = "/api/odoo/supplier-invoices/inbox/raskibot-proposal/apply";
   const scanned = await call(extract, { ids: ["PDF-2"] });
-  assert.equal(scanned.status, 200, "escaneo aislado del documento elegido");
+  assert.equal(scanned.status, 200, `escaneo aislado del documento elegido: ${scanned.body.message ?? "sin mensaje"}`);
   assert.equal(scanned.body.document.extracted.supplier, "Propuesto", "rellena la lectura sin botón Aplicar");
+  assert.equal(scanned.body.document.extracted.dueDate, null, "descarta un vencimiento heurístico anterior cuando el PDF no lo acredita");
+  assert.equal(scanned.body.document.lastAiScan.status, "complete");
   assert.equal(scanned.body.document.extracted.lines[0].discountExtra, 5);
   assert.equal(scanned.body.document.extracted.lines[0].promptPaymentDiscount, 2);
   assert.equal(scanned.body.document.assignedPurchaseOrderIds, null, "el escaneo no confirma pedidos en Odoo");
@@ -88,7 +114,7 @@ try {
   assert.equal((await call("/api/odoo/supplier-invoices/inbox/product-candidate", { id: "PDF-2", productId: 999 })).status, 404, "el endpoint de revisión no acepta IDs fuera de la sugerencia de esta factura");
   const capturedArgs = readFileSync(join(root, "agent-args.txt"), "utf8").trim().split(/\n/);
   const capturedTask = JSON.parse(capturedArgs.at(-1)!);
-  assert.ok(capturedArgs.includes("agent:raskibot:invoice-review-v3-PDF-2"), "el análisis usa hilo limpio con las reglas actuales versionadas");
+  assert.ok(capturedArgs.includes("agent:facturas:invoice-review-v1-PDF-2"), "el análisis usa hilo limpio con las reglas actuales versionadas");
   const agentDoc = capturedTask.documents[0];
   assert.equal(agentDoc.candidateDiagnostics.purchaseOrderCandidates, 3, "el agente recibe candidatos por referencia literal y proveedor pendiente");
   const explicitPo = agentDoc.purchaseOrderCandidates.find((o: any) => o.id === 45);
@@ -96,10 +122,10 @@ try {
   assert.equal(explicitPo.explicitReferenceKind, "order-name-and-supplier-reference", "nombre interno y referencia externa identifican el mismo pedido");
   assert.equal(explicitPo.lines[0].reference, "ART-123", "referencias de catálogo quedan junto a la línea del pedido");
   assert.ok(agentDoc.catalogCandidates[0].matchedReferences.includes("8431234567890") && agentDoc.catalogCandidates[0].matchedReferences.includes("ART123"), "EAN y referencia del texto PDF encuentran producto aunque heurística no haya detectado reference");
-  assert.ok(capturedTask.rules.some((rule: string) => rule.includes("no digas que el catálogo está vacío")), "Raskibot debe respetar los candidatos literales del backend");
-  assert.ok(capturedTask.rules.some((rule: string) => rule.includes("proponer correcciones estructuradas del borrador local")), "Raskibot puede proponer correcciones estructuradas locales");
-  assert.ok(capturedTask.rules.some((rule: string) => rule.includes("no escribas directamente en el Dashboard, sus stores, Odoo ni Drive")), "Raskibot nunca escribe en Dashboard, Odoo ni Drive");
-  assert.ok(capturedTask.rules.some((rule: string) => rule.includes("Nunca confirmes proveedor, pedido o producto")), "las identidades externas requieren confirmación humana");
+  assert.ok(capturedTask.rules.some((rule: string) => rule.includes("no digas que el catálogo está vacío")), "Facturas debe respetar los candidatos literales del backend");
+  assert.ok(capturedTask.rules.some((rule: string) => rule.includes("borrador local del Dashboard")), "Facturas entrega su propuesta estructurada al backend para el borrador local");
+  assert.ok(capturedTask.rules.some((rule: string) => rule.includes("no escribas directamente en el Dashboard, sus stores, Odoo ni Drive")), "Facturas nunca escribe en Dashboard, Odoo ni Drive");
+  assert.ok(capturedTask.rules.some((rule: string) => rule.includes("No confirmes proveedor, pedido o producto")), "las identidades externas requieren confirmación humana");
   const fakeReply = readFileSync(fakeOpenclaw, "utf8").replace('"productCandidateId":123', '"productCandidateId":999').replace('"purchaseOrderCandidateId":45', '"purchaseOrderCandidateId":47');
   writeFileSync(fakeOpenclaw, fakeReply);
   const conflictScan = await call(extract, { ids: ["PDF-3"] });
@@ -115,7 +141,21 @@ try {
   assert.equal(issuerResolved.invoiceEligible, true, "un candidato pendiente vuelve a ser utilizable tras verificar proveedor en el PDF");
   assert.equal(explicitConflict.vatConflict, true, "referencia literal de otro proveedor sigue mostrando conflicto");
   assert.equal(explicitConflict.invoiceEligible, false, "el conflicto real sin resolver bloquea facturar el candidato");
-  assert.ok(capturedTask.rules.some((rule: string) => rule.includes("diferencias de cantidad o precio")), "las instrucciones separan identidad de discrepancias");
+  const staleScan = await call(extract, { ids: ["PDF-4"] });
+  assert.equal(staleScan.status, 200, "el historial de IA anterior no debe bloquear un escaneo nuevo");
+  assert.equal(staleScan.body.document.extracted.supplier, "Propuesto", "reemplaza cabecera heurística/IA antigua sin edición humana");
+  assert.equal(staleScan.body.document.extracted.lines[0].quantity, 1, "reemplaza líneas heurísticas antiguas sin selección humana");
+  assert.equal(staleScan.body.document.extracted.lines[0].priceUnit, 100);
+  const manuallyEdited = await call("/api/odoo/supplier-invoices/inbox/fields", { id: "PDF-4", fields: { invoiceNumber: "MANUAL-999", dueDate: "2026-10-30" } });
+  assert.equal(manuallyEdited.status, 200);
+  const humanProtectedScan = await call(extract, { ids: ["PDF-4"] });
+  assert.equal(humanProtectedScan.body.document.extracted.invoiceNumber, "MANUAL-999", "un reescaneo conserva el número editado por una persona");
+  assert.equal(humanProtectedScan.body.document.extracted.dueDate, "2026-10-30", "un reescaneo conserva el vencimiento editado por una persona");
+  assert.ok(humanProtectedScan.body.document.lastAiScan.fieldsPreserved.includes("invoiceNumber"), "deja constancia de un campo protegido");
+  const noTextScan = await call(extract, { ids: ["PDF-5"] });
+  assert.equal(noTextScan.status, 409, "un PDF sin capa de texto no produce un borrador aparentemente completo");
+  assert.match(noTextScan.body.message, /OCR/i);
+  assert.ok(capturedTask.rules.some((rule: string) => rule.includes("Cantidad/precio describen discrepancias, nunca identidad")), "las instrucciones separan identidad de discrepancias");
   assert.equal((await call("/api/odoo/supplier-invoices/inbox/no-po-lines", { id: "PDF-2" })).status, 409, "un pedido explícito impide usar la rama sin pedido");
   assert.equal((await call(extract, { ids: ["PDF-1", "PDF-2"] })).status, 400, "una respuesta no debe aplicarse a dos PDFs");
   assert.equal((await call(apply, { id: "PDF-1" }, "")).status, 401, "la propuesta requiere sesión");
@@ -131,7 +171,7 @@ try {
   assert.equal(remapped.body.document.extracted.lines[0].pdfPriceVerified, false, "el precio distinto sigue marcado para revisión");
   assert.equal(remapped.body.document.pdfSourceLines[0].productId, undefined, "el original PDF se mantiene separado de la identidad Odoo");
   const beforeRescan = remapped.body.document;
-  writeFileSync(fakeOpenclaw, `#!/bin/sh\nprintf '%s\\n' "$@" > '${join(root, "agent-args.txt")}'\nprintf '%s\\n' '{"reply":"Propuesta local","proposal":{"fields":{"supplier":"Proveedor Distinto","invoiceNumber":"FAC-99"},"lines":[{"description":"Artículo","reference":"ART-123","quantity":1,"priceUnit":100,"discount":45,"productCandidateId":123,"purchaseOrderCandidateId":45}]},"unresolved":[]}';\n`);
+  writeFileSync(fakeOpenclaw, `#!/bin/sh\nprintf '%s\\n' "$@" > '${join(root, "agent-args.txt")}'\nprintf '%s\\n' '{"reply":"Propuesta local","confidence":82,"proposal":{"fields":{"supplier":"Proveedor Distinto","invoiceNumber":"FAC-99"},"lines":[{"description":"Artículo","reference":"ART-123","quantity":1,"priceUnit":100,"discount":45,"productCandidateId":123,"purchaseOrderCandidateId":45}]},"unresolved":[]}';\n`);
   const rescanned = await call(extract, { ids: ["PDF-2"] });
   assert.equal(rescanned.status, 200, "rescan sobre factura con selección humana confirmada");
   assert.deepEqual(rescanned.body.document.assignedPurchaseOrderIds, beforeRescan.assignedPurchaseOrderIds, "rescan conserva el pedido confirmado");

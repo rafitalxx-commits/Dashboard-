@@ -2,7 +2,7 @@
 // y registro documental persistente. SOLO LECTURA de Drive/Odoo. La IA/OCR externa queda
 // para una fase posterior; aqui se usan heuristicas locales deterministas.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 const pdfParse = createRequire(import.meta.url)("pdf-parse") as typeof import("pdf-parse");
@@ -360,6 +360,26 @@ export function extractPdfData(text: string, pages: number, name = ""): PdfExtra
   };
 }
 
+/** Recovery refreshes PDF evidence without replacing values already edited in the local draft. */
+export function mergeRecoveredExtraction(existing: PdfExtractedData, fresh: PdfExtractedData): PdfExtractedData {
+  const staleAmountWarning = "No se han detectado importes de forma fiable.";
+  const warnings = [...new Set([
+    ...fresh.warnings,
+    ...existing.warnings.filter((warning) => !(warning === staleAmountWarning && (fresh.base != null || fresh.total != null))),
+  ])].slice(0, 12);
+  return {
+    ...fresh,
+    ...existing,
+    // Always refresh the text evidence and page/OCR state from the verified PDF.
+    textPreview: fresh.textPreview,
+    pdfPages: fresh.pdfPages,
+    needsOcr: fresh.needsOcr,
+    // Keep existing editor lines; recovery is not a request to overwrite review work.
+    lines: existing.lines.length ? existing.lines : fresh.lines,
+    warnings,
+  };
+}
+
 // ---------- Cotejo con Odoo (cache fase 1 + pedidos sincronizados) ----------
 
 export interface PoIndex {
@@ -675,14 +695,18 @@ export class DocumentInboxService {
     }
   }
 
-  save(): void {
-    if (!this.storePath) return;
+  save(): boolean {
+    if (!this.storePath) return false;
+    const temporaryPath = `${this.storePath}.tmp-${process.pid}-${Date.now()}`;
     try {
       // El store vive en <dataDir>/supplier-invoices/docInbox.json: crear el subdirectorio completo
       mkdirSync(dirname(this.storePath), { recursive: true });
-      writeFileSync(this.storePath, JSON.stringify(this.store), "utf8");
+      writeFileSync(temporaryPath, JSON.stringify(this.store), "utf8");
+      renameSync(temporaryPath, this.storePath);
+      return true;
     } catch {
-      // cache secundaria
+      try { if (existsSync(temporaryPath)) unlinkSync(temporaryPath); } catch { /* best-effort cleanup */ }
+      return false;
     }
   }
 
@@ -773,7 +797,7 @@ export class DocumentInboxService {
     this.store.meta.lastScanResult = `${added} añadidos, ${skippedKnown} ya conocidos, ${removed} ausentes en origen, ${errors.length} errores`;
     this.store.meta.totalDocuments = this.store.documents.filter((doc) => doc.sourcePresent !== false).length;
     this.store.meta.driveFolderId = client.getAccount() ? env.SUPPLIER_INVOICES_DRIVE_FOLDER_ID ?? null : null;
-    this.save();
+    if (!this.save()) throw new Error("Se actualizó la bandeja, pero no se pudo guardar el estado local en disco.");
     return { scanned: files.length, added, matched, removed, errors, skippedKnown, addedIds };
   }
 
@@ -796,18 +820,20 @@ export class DocumentInboxService {
     if (buf.subarray(0, 5).toString() !== "%PDF-") throw new Error("El archivo de Drive no es un PDF válido");
     const parsed = await pdfParse(buf);
     const extracted = extractPdfData(parsed.text ?? "", parsed.numpages ?? 0, doc.name);
-    doc.extracted = extracted;
+    const prior = doc.extracted;
+    doc.extracted = prior ? mergeRecoveredExtraction(prior, extracted) : extracted;
+    if (prior?.lines.length && !doc.pdfSourceLines?.length) doc.pdfSourceLines = prior.lines.map((line) => ({ ...line }));
     doc.ocrStatus = extracted.needsOcr ? "needs_ocr" : "ok";
-    doc.confidence = extracted.needsOcr ? null : heuristicConfidence(extracted);
+    if (!prior) doc.confidence = extracted.needsOcr ? null : heuristicConfidence(extracted);
     doc.match = matchDocument(doc, invoices, poIndex);
     // Un nuevo análisis no puede desvalidar una factura ya enviada a Odoo.
     if (doc.match && !doc.odooDraftMoveId && doc.status !== "VALIDADA" && doc.status !== "INCIDENCIA") {
       doc.status = doc.match.band === "alta" ? "PENDIENTE_VALIDAR" : "PENDIENTE_COTEJO";
     }
-    doc.notes = extracted.warnings.length ? extracted.warnings.join("; ") : doc.notes;
+    doc.notes = extracted.warnings.length ? [...new Set([doc.notes, ...extracted.warnings].filter(Boolean))].join("; ").slice(0, 400) : doc.notes;
     doc.pdfCached = true;
     doc.processedAt = new Date().toISOString();
-    this.save();
+    if (!this.save()) throw new Error("PDF leído, pero no se pudo guardar el borrador local del Dashboard.");
     return doc;
   }
 

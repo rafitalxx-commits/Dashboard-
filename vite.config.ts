@@ -20,6 +20,7 @@ import { registerGeneiRoutes } from "./backend/genei/routes";
 import { registerMrwRoutes } from "./backend/mrw/routes";
 import { registerCorreosExpressRoutes } from "./backend/correosExpress/routes";
 import { registerDhlRoutes } from "./backend/dhl/routes";
+import { registerGlsRoutes } from "./backend/gls/routes";
 import { registerShippingRulesRoutes } from "./backend/shippingRules/routes";
 import { registerPrestashopRoutes } from "./backend/prestashop/routes";
 import { registerPublicTrackingRoutes } from "./backend/publicTracking/routes";
@@ -34,11 +35,13 @@ import {
   isCompleteExpeditionOrderReference,
 } from "./backend/expeditionOrderReference";
 import { formatOdooMadrid } from "./backend/odooDateTime";
-import { groupShipmentLabels, hasOdooOutboundDelivery, isHomeOrderChannel, isHomeOrderUnprinted, isHomeOrderUnsent, labelReferences, periodBounds, type HomePeriod, type ShippingLabel } from "./backend/home/metrics";
+import { groupShipmentLabels, isHomeOrderUnprinted, isHomeOrderUnsent, labelReferences, periodBounds, selectHomeNoStockProducts, type HomePeriod, type ShippingLabel } from "./backend/home/metrics";
+import { buildHomeComparison, buildHomeComparisonRange, buildHomeComparisonRolling48h, comparisonBounds, comparisonChannel, parseOdooUtc, type SentSale } from "./backend/home/comparison";
 import {
   createProductCatalog,
   formatCatalogProductName,
 } from "./backend/products/catalog";
+import { withCatalogLocations } from "./backend/products/catalogLocations";
 import { createProductInventories } from "./backend/products/inventories";
 import { createProductLocations, parseLocationCode } from "./backend/products/locations";
 import { createPendingReceipts } from "./backend/receptions/pendingReceipts";
@@ -85,6 +88,7 @@ type OdooPickingRecord = {
   state?: string;
   printed?: boolean;
   scheduled_date?: string | false;
+  create_date?: string | false;
   origin?: string;
   date_done?: string | false;
   move_ids_without_package?: number[];
@@ -590,6 +594,8 @@ function odooReadOnlyApi(env: Record<string, string>) {
         return work;
       };
       const homeSalesCache = new Map<string, { expiresAt: number; value: unknown }>();
+      const homeComparisonCacheByRange = new Map<string, { expiresAt: number; value: unknown }>();
+      const homeComparisonPendingByRange = new Map<string, Promise<unknown>>();
       const receptionSessions = createReceptionSessions({
         dataDir: env.DASHBOARD_DATA_DIR,
       });
@@ -613,6 +619,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
       registerMrwRoutes(server, auth, env);
       registerCorreosExpressRoutes(server, auth, env);
       registerDhlRoutes(server, auth, env);
+      registerGlsRoutes(server, auth, env);
       registerExpeditionsSettingsRoutes(server, auth, {
         dataDir: env.DASHBOARD_DATA_DIR,
       });
@@ -821,31 +828,9 @@ function odooReadOnlyApi(env: Record<string, string>) {
               const rawCatalog = await productCatalog.sync(
                 url.searchParams.get("full") === "true",
               );
-              const locs = productLocations.summary().locations;
               sendJson(response, 200, {
                 ...rawCatalog,
-                products: rawCatalog.products.map((product: any) => {
-                  const productLocs = locs.filter(
-                    (loc: any) => loc.productId === product.id,
-                  );
-                  const preferred = productLocs.find(
-                    (loc: any) => loc.preferred,
-                  );
-                  return {
-                    ...product,
-                    physicalLocations: productLocs.map((loc: any) => loc.code),
-                    locationSummary: {
-                      preferredCode: preferred?.code,
-                      preferredQuantity: preferred?.quantity,
-                      replenishmentMin: preferred?.replenishmentMin,
-                      needsReplenishment: Boolean(
-                        preferred &&
-                        preferred.replenishmentMin !== undefined &&
-                        preferred.quantity <= preferred.replenishmentMin,
-                      ),
-                    },
-                  };
-                }),
+                products: withCatalogLocations(rawCatalog.products, productLocations.summary().locations),
               });
               return;
             }
@@ -857,28 +842,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
             const locations = productLocations.summary().locations;
             sendJson(response, 200, {
               ...catalog,
-              products: catalog.products.map((product) => {
-                const productLocations = locations.filter(
-                  (item) => item.productId === product.id,
-                );
-                const preferred = productLocations.find(
-                  (item) => item.preferred,
-                );
-                return {
-                  ...product,
-                  physicalLocations: productLocations.map((item) => item.code),
-                  locationSummary: {
-                    preferredCode: preferred?.code,
-                    preferredQuantity: preferred?.quantity,
-                    replenishmentMin: preferred?.replenishmentMin,
-                    needsReplenishment: Boolean(
-                      preferred &&
-                      preferred.replenishmentMin !== undefined &&
-                      preferred.quantity <= preferred.replenishmentMin,
-                    ),
-                  },
-                };
-              }),
+              products: withCatalogLocations(catalog.products, locations),
             });
           } catch (error) {
             sendJson(response, 500, {
@@ -937,6 +901,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
               const payload = await readJsonBody<{ operator?: { id: string; code: string; name: string } }>(request);
               const inventory = productInventories.find(parts[0]);
               if (inventory.status !== "validated") throw new Error("Primero valida el inventario");
+              productInventories.assertNoManufacturedCounts(parts[0]);
               if (!payload.operator?.name?.trim()) throw new Error("Indica el operario que envía a Odoo");
               const config = getOdooConfig(env); const uid = await authenticate(config);
               const call = (model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) => rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
@@ -1255,6 +1220,36 @@ function odooReadOnlyApi(env: Record<string, string>) {
               if (request.method !== "GET") { sendJson(response, 405, { message: "Método no permitido" }); return; }
               const period = parseHomePeriod(url.searchParams.get("period"));
               sendJson(response, 200, { period, ...groupShipmentLabels(readHomeShippingLabels(env), period), updatedAt: new Date().toISOString() });
+              return;
+            }
+            if (url.pathname === "/home/charts/comparison") {
+              if (request.method !== "GET") { sendJson(response, 405, { message: "Método no permitido" }); return; }
+              const refresh = url.searchParams.get("refresh") === "1";
+              const preset = url.searchParams.get("period") || "";
+              const from = url.searchParams.get("from") || "";
+              const to = url.searchParams.get("to") || "";
+              const rolling48h = preset === "48h";
+              const validDay = (value: string) => {
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+                const date = new Date(`${value}T00:00:00Z`);
+                return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+              };
+              const rangeDays = from && to ? (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1 : 0;
+              if ((preset && !rolling48h) || (rolling48h && (from || to)) || Boolean(from) !== Boolean(to) || (from && (!validDay(from) || !validDay(to) || from > to || rangeDays > 3660))) {
+                sendJson(response, 400, { message: "Selecciona un rango de fechas válido" }); return;
+              }
+              const cacheKey = rolling48h ? "48h" : from ? `${from}:${to}` : "default";
+              const cached = homeComparisonCacheByRange.get(cacheKey);
+              if (!refresh && cached && cached.expiresAt > Date.now()) { sendJson(response, 200, cached.value); return; }
+              if (!homeComparisonPendingByRange.has(cacheKey)) {
+                const pending = getOperationalHomeComparison(env, from || undefined, to || undefined, rolling48h).then((value) => {
+                  homeComparisonCacheByRange.set(cacheKey, { expiresAt: Date.now() + 45_000, value });
+                  if (homeComparisonCacheByRange.size > 64) homeComparisonCacheByRange.delete(homeComparisonCacheByRange.keys().next().value!);
+                  return value;
+                }).finally(() => { homeComparisonPendingByRange.delete(cacheKey); });
+                homeComparisonPendingByRange.set(cacheKey, pending);
+              }
+              sendJson(response, 200, await homeComparisonPendingByRange.get(cacheKey));
               return;
             }
             if (url.pathname === "/home/charts/sales") {
@@ -4237,9 +4232,12 @@ async function getOdooOrdersFull(
   );
   const products = productIds.length
     ? ((await executeKwProfiled(profiler, "images", config, uid, "product.product", "read", [productIds], {
-        fields: ["id", "product_tmpl_id", "image_128", "type"],
+        fields: ["id", "name", "display_name", "default_code", "product_tmpl_id", "image_128", "type"],
       })) as ProductRecord[])
     : [];
+  const productNamesById = new Map(
+    products.map((product) => [product.id, formatCatalogProductName(product)]),
+  );
   const productImagesById = new Map(
     products.map((product) => [product.id, formatProductImage(product.image_128)]),
   );
@@ -4307,9 +4305,12 @@ async function getOdooOrdersFull(
         "product.product",
         "read",
         [componentProductIds],
-        { fields: ["id", "image_128"] },
+        { fields: ["id", "name", "display_name", "default_code", "image_128"] },
       )) as ProductRecord[])
     : [];
+  const componentNamesById = new Map(
+    componentProducts.map((product) => [product.id, formatCatalogProductName(product)]),
+  );
   const componentImagesById = new Map(
     componentProducts.map((product) => [
       product.id,
@@ -4424,6 +4425,7 @@ async function getOdooOrdersFull(
               getRelationName(line.product_id) ||
               `Linea ${line.id}`,
             name:
+              productNamesById.get(productId ?? 0) ||
               line.name || getRelationName(line.product_id) || "Sin producto",
             quantity: orderQuantity,
             price: line.price_unit ?? line.price_subtotal ?? 0,
@@ -4437,6 +4439,7 @@ async function getOdooOrdersFull(
                     getRelationName(component.product_id) ||
                     `Componente ${component.id}`,
                   name:
+                    componentNamesById.get(getRelationId(component.product_id) ?? 0) ||
                     stripProductCode(getRelationName(component.product_id)) ||
                     getRelationName(component.product_id) ||
                     `Componente ${component.id}`,
@@ -4803,9 +4806,12 @@ async function getOdooOrdersBatchDemandContext(
   );
   const products = productIds.length
     ? ((await executeKwProfiled(profiler, "images", config, uid, "product.product", "read", [productIds], {
-        fields: ["id", "product_tmpl_id", "image_128", "type"],
+        fields: ["id", "name", "display_name", "default_code", "product_tmpl_id", "image_128", "type"],
       })) as ProductRecord[])
     : [];
+  const productNamesById = new Map(
+    products.map((product) => [product.id, formatCatalogProductName(product)]),
+  );
   const productImagesById = new Map(
     products.map((product) => [product.id, formatProductImage(product.image_128)]),
   );
@@ -4873,9 +4879,12 @@ async function getOdooOrdersBatchDemandContext(
         "product.product",
         "read",
         [componentProductIds],
-        { fields: ["id", "image_128"] },
+        { fields: ["id", "name", "display_name", "default_code", "image_128"] },
       )) as ProductRecord[])
     : [];
+  const componentNamesById = new Map(
+    componentProducts.map((product) => [product.id, formatCatalogProductName(product)]),
+  );
   const componentImagesById = new Map(
     componentProducts.map((product) => [
       product.id,
@@ -4985,6 +4994,7 @@ async function getOdooOrdersBatchDemandContext(
               getRelationName(line.product_id) ||
               `Linea ${line.id}`,
             name:
+              productNamesById.get(productId ?? 0) ||
               line.name || getRelationName(line.product_id) || "Sin producto",
             quantity: orderQuantity,
             price: line.price_unit ?? line.price_subtotal ?? 0,
@@ -4998,6 +5008,7 @@ async function getOdooOrdersBatchDemandContext(
                     getRelationName(component.product_id) ||
                     `Componente ${component.id}`,
                   name:
+                    componentNamesById.get(getRelationId(component.product_id) ?? 0) ||
                     stripProductCode(getRelationName(component.product_id)) ||
                     getRelationName(component.product_id) ||
                     `Componente ${component.id}`,
@@ -6163,6 +6174,90 @@ function parseHomeSalesChannel(value: string | null): HomeSalesChannel {
   return value === "fbm" || value === "fba" || value === "website" || value === "sales" ? value : "all";
 }
 
+async function getOperationalHomeComparison(env: Record<string, string>, from?: string, to?: string, rolling48h = false) {
+  const config = getOdooConfig(env);
+  if (!config.url || !config.database || !config.username || !config.apiKey) throw new Error("Falta la conexión con Odoo para el comparativo");
+  const uid = await authenticate(config);
+  const now = new Date();
+  const bounds = comparisonBounds(now);
+  const utcText = (date: Date) => date.toISOString().slice(0, 19).replace("T", " ");
+  let queryStart = rolling48h ? new Date(now.getTime() - 48 * 3_600_000) : bounds.start;
+  let queryEnd = now;
+  if (from && to) {
+    const valid = (value: string) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+      const date = new Date(`${value}T00:00:00Z`);
+      return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+    };
+    if (!valid(from) || !valid(to) || from > to) throw new Error("Selecciona un rango de fechas válido");
+    const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
+    if (days > 3660) throw new Error("El rango máximo es de 10 años");
+    const dayStart = (key: string) => {
+      const [year, month, day] = key.split("-").map(Number);
+      const midnight = Date.UTC(year, month - 1, day);
+      for (let offset = 3; offset >= -1; offset--) {
+        const candidate = new Date(midnight - offset * 3_600_000);
+        const local = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Madrid", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23" }).formatToParts(candidate);
+        const parts = Object.fromEntries(local.map((part) => [part.type, part.value]));
+        if (`${parts.year}-${parts.month}-${parts.day}` === key && parts.hour === "00") return candidate;
+      }
+      throw new Error(`No se pudo calcular el inicio del día ${key}`);
+    };
+    queryStart = dayStart(from);
+    const afterTo = new Date(Date.parse(`${to}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+    queryEnd = dayStart(afterTo);
+  }
+  const effectiveEnd = new Date(Math.min(queryEnd.getTime(), now.getTime()));
+  type Picking = { id: number; sale_id?: false | [number, string]; date_done?: string | false };
+  type Sale = { id: number; team_id?: false | [number, string]; amz_fulfillment_by?: string | false; amount_untaxed?: number; currency_id?: false | [number, string]; currency_rate?: number };
+  const recent: Picking[] = [];
+  const domain = [["state", "=", "done"], ["picking_type_code", "=", "outgoing"], ["date_done", ">=", utcText(queryStart)], ["date_done", "<", utcText(effectiveEnd)]];
+  for (let offset = 0; ; offset += 500) {
+    const page = await executeKw(config, uid, "stock.picking", "search_read", [domain], { fields: ["id", "sale_id", "date_done"], order: "date_done asc, id asc", limit: 500, offset }) as Picking[];
+    recent.push(...page);
+    if (page.length < 500) break;
+  }
+  const ids = [...new Set(recent.flatMap((picking) => Array.isArray(picking.sale_id) ? [picking.sale_id[0]] : []))];
+  if (!ids.length) return rolling48h ? buildHomeComparisonRolling48h([], now) : from && to ? buildHomeComparisonRange([], from, to, now) : buildHomeComparison([], now);
+  const allDone: Picking[] = [];
+  const sales: Sale[] = [];
+  for (let index = 0; index < ids.length; index += 200) {
+    const batch = ids.slice(index, index + 200);
+    const orders = await executeKw(config, uid, "sale.order", "read", [batch], { fields: ["id", "team_id", "amz_fulfillment_by", "amount_untaxed", "currency_id", "currency_rate"] }) as Sale[];
+    const pickingDomain = [["sale_id", "in", batch], ["state", "=", "done"], ["picking_type_code", "=", "outgoing"]];
+    const pageSize = 500;
+    for (let offset = 0; ; offset += pageSize) {
+      const page = await executeKw(config, uid, "stock.picking", "search_read", [pickingDomain], { fields: ["id", "sale_id", "date_done"], order: "date_done asc, id asc", limit: pageSize, offset }) as Picking[];
+      allDone.push(...page);
+      if (page.length < pageSize) break;
+    }
+    sales.push(...orders);
+  }
+  const firstDone = new Map<number, Date>();
+  for (const picking of allDone) {
+    if (!Array.isArray(picking.sale_id) || !picking.date_done) continue;
+    const date = parseOdooUtc(picking.date_done);
+    const id = picking.sale_id[0];
+    if (!firstDone.has(id) || date < firstDone.get(id)!) firstDone.set(id, date);
+  }
+  const events: SentSale[] = sales.flatMap((sale) => {
+    const date = firstDone.get(sale.id);
+    if (!date || date < queryStart || date >= queryEnd || date > now) return [];
+    const event = {
+      id: sale.id, dateDone: date.toISOString(), amountUntaxed: Number(sale.amount_untaxed || 0),
+      team: Array.isArray(sale.team_id) ? sale.team_id[1] : "", fulfillmentBy: typeof sale.amz_fulfillment_by === "string" ? sale.amz_fulfillment_by : "",
+    } satisfies SentSale;
+    if (comparisonChannel(event) && Array.isArray(sale.currency_id) && !["EUR", "Eu"].includes(sale.currency_id[1])) {
+      throw new Error(`Moneda de venta no convertible con seguridad para Inicio: ${sale.currency_id[1]}`);
+    }
+    if (comparisonChannel(event) && sale.currency_rate !== undefined && Math.abs(sale.currency_rate - 1) > 0.000001) {
+      throw new Error("Inicio encontró una venta con tipo de cambio distinto de EUR; revisar conversión antes de mostrarla");
+    }
+    return [event];
+  });
+  return rolling48h ? buildHomeComparisonRolling48h(events, now) : from && to ? buildHomeComparisonRange(events, from, to, now) : buildHomeComparison(events, now);
+}
+
 async function getOperationalHomeSales(env: Record<string, string>, period: HomePeriod, channel: HomeSalesChannel) {
   const config = getOdooConfig(env);
   if (!config.url || !config.database || !config.username || !config.apiKey) throw new Error("Falta la conexión con Odoo para ventas");
@@ -6228,36 +6323,34 @@ async function buildOperationalHomeKpis(
   const orders = filterCachedOrders(ordersStore.orders, range);
   const locationsStore = productLocations.summary();
   const physicalCodes = new Set(locationsStore.locationCatalog.filter((item) => item.kind === "physical").map((item) => item.code));
-  const located = new Map<number, number>();
-  locationsStore.locations.filter((item) => physicalCodes.has(item.code)).forEach((item) => {
-    located.set(item.productId, (located.get(item.productId) || 0) + item.quantity);
-  });
-  const mto = new Set(productCatalog.list().products.filter((item) => item.mto).map((item) => item.id));
-  // The destination catalog also treats a product with no physical-location
-  // row as zero stock. Build the same universe here so the KPI does not omit
-  // catalog products that have never been located.
+  const preferredZoneProductIds = locationsStore.locations
+    .filter((item) => item.preferred && physicalCodes.has(item.code))
+    .map((item) => item.productId);
   const catalogProducts = productCatalog.list().products;
-  const noStock = catalogProducts
-    .filter((product) => (located.get(product.id) ?? 0) <= 0 && !mto.has(product.id))
-    .map((product) => product.id);
+  const noStock = selectHomeNoStockProducts(catalogProducts, preferredZoneProductIds);
   const values: Record<string, { count?: number; ids?: string[]; error?: string }> = {
     noStock: { count: noStock.length, ids: noStock.map((id) => String(id)) },
   };
-  const [unsentResult, unprintedResult, receptions, alerts, purchases] = await Promise.allSettled([
-    getHomeOrdersWithoutOdooDelivery(env, orders),
+  const [ordersResult, receptions, alerts, purchases] = await Promise.allSettled([
     getHomeUnprintedOrders(env, range, orders),
     getOdooInventoryReceptions(env),
     getOdooSalesPurchaseAlerts(env),
     getOdooPurchaseReceptions(env),
   ]);
-  if (unsentResult.status === "fulfilled") {
-    const unsent = unsentResult.value;
-    values.unsent = { count: unsent.length, ids: unsent.map((order) => order.id) };
-  } else values.unsent = { error: String(unsentResult.reason) };
-  if (unprintedResult.status === "fulfilled") {
-    const unprinted = unprintedResult.value.filter(isHomeOrderUnprinted);
+  if (ordersResult.status === "fulfilled") {
+    const sharedOrders = ordersResult.value;
+    const unprinted = sharedOrders.filter(isHomeOrderUnprinted);
     values.unprinted = { count: unprinted.length, ids: unprinted.map((order) => order.id) };
-  } else values.unprinted = { error: String(unprintedResult.reason) };
+    try {
+      const unsent = sharedOrders.filter(isHomeOrderUnsent);
+      values.unsent = { count: unsent.length, ids: unsent.map((order) => order.id) };
+    } catch (error) {
+      values.unsent = { error: String(error) };
+    }
+  } else {
+    values.unprinted = { error: String(ordersResult.reason) };
+    values.unsent = { error: String(ordersResult.reason) };
+  }
   if (receptions.status === "fulfilled") {
     const rows = receptions.value.receptions.filter((item) => !item.isImportation && (item.status === "Pendiente" || item.status === "Esperando"));
     values.receptions = { count: rows.length, ids: rows.map((item) => item.id) };
@@ -6273,70 +6366,6 @@ async function buildOperationalHomeKpis(
   if (purchases.status === "fulfilled") values.pendingPurchases = { count: purchases.value.total, ids: purchases.value.receptions.map((item) => item.id) };
   else values.pendingPurchases = { error: String(purchases.reason) };
   return { updatedAt: new Date().toISOString(), range, source: ordersFastCacheEnabled(env) ? "dashboard-cache" : "odoo-live", values, cacheUpdatedAt: ordersStore.updatedAt };
-}
-
-/**
- * Authoritatively checks the delivery relation in Odoo for the cached Home
- * order set. A live read avoids relying on carrier allowlists or potentially
- * stale label/printing metadata in the Dashboard cache.
- */
-async function getHomeOrdersWithoutOdooDelivery(
-  env: Record<string, string>,
-  orders: OrdersCacheStore["orders"],
-) {
-  const candidates = orders.filter(isHomeOrderChannel);
-  if (!candidates.length) return [];
-
-  const idsByOrder = new Map<string, number>();
-  for (const order of candidates) {
-    const match = (order.odooRef || "").match(/^#(\d+)$/);
-    if (!match) throw new Error(`No se pudo identificar el pedido Odoo de ${order.id}`);
-    idsByOrder.set(order.id, Number(match[1]));
-  }
-
-  const config = getOdooConfig(env);
-  if (!config.url || !config.database || !config.username || !config.apiKey) {
-    throw new Error("Falta la conexión con Odoo para comprobar las entregas");
-  }
-  const uid = await authenticate(config);
-  const orderIds = [...new Set(idsByOrder.values())];
-  const saleOrders: Array<{ id: number; picking_ids?: number[] }> = [];
-  for (let offset = 0; offset < orderIds.length; offset += 500) {
-    const batch = orderIds.slice(offset, offset + 500);
-    const page = await executeKw(config, uid, "sale.order", "read", [batch], {
-      fields: ["id", "picking_ids"],
-    }) as Array<{ id: number; picking_ids?: number[] }>;
-    saleOrders.push(...page);
-  }
-  if (saleOrders.length !== orderIds.length) {
-    throw new Error("Odoo no devolvió todos los pedidos para comprobar las entregas");
-  }
-
-  const pickingIds = [...new Set(saleOrders.flatMap((order) => order.picking_ids ?? []))];
-  const pickings: Array<{ id: number; state?: string; picking_type_code?: string }> = [];
-  for (let offset = 0; offset < pickingIds.length; offset += 500) {
-    const batch = pickingIds.slice(offset, offset + 500);
-    const page = await executeKw(config, uid, "stock.picking", "read", [batch], {
-      fields: ["id", "state", "picking_type_code"],
-    }) as Array<{ id: number; state?: string; picking_type_code?: string }>;
-    pickings.push(...page);
-  }
-  if (pickings.length !== pickingIds.length) {
-    throw new Error("Odoo no devolvió todas las entregas para comprobar los pedidos");
-  }
-  const pickingById = new Map(pickings.map((picking) => [picking.id, picking]));
-  const saleOrderById = new Map(saleOrders.map((order) => [order.id, order]));
-
-  return candidates.filter((order) => {
-    const saleOrderId = idsByOrder.get(order.id)!;
-    const saleOrder = saleOrderById.get(saleOrderId);
-    if (!saleOrder) throw new Error(`Odoo no devolvió el pedido #${saleOrderId}`);
-    const linkedPickings = (saleOrder.picking_ids ?? [])
-      .map((id) => pickingById.get(id))
-      .filter((picking): picking is NonNullable<typeof picking> => Boolean(picking))
-      .map((picking) => ({ state: picking.state, pickingTypeCode: picking.picking_type_code }));
-    return isHomeOrderUnsent(order, hasOdooOutboundDelivery(linkedPickings));
-  });
 }
 
 async function getHomeUnprintedOrders(
@@ -6704,6 +6733,7 @@ async function getOdooInventoryReceptions(
         "purchase_id",
         "state",
         "scheduled_date",
+        "create_date",
         "location_dest_id",
         "backorder_id",
         "move_ids_without_package",
@@ -6822,14 +6852,17 @@ async function getOdooInventoryReceptions(
   );
   const purchaseReferences = purchaseIds.length
     ? (await executeKw(config, uid, "purchase.order", "read", [purchaseIds], {
-        fields: ["id", "partner_ref", "order_type"],
-      })) as Array<{ id: number; partner_ref?: string | false; order_type?: [number, string] | false }>
+        fields: ["id", "partner_ref", "order_type", "date_approve"],
+      })) as Array<{ id: number; partner_ref?: string | false; order_type?: [number, string] | false; date_approve?: string | false }>
     : [];
   const supplierRefsByPurchaseId = new Map(
     purchaseReferences.map((purchase) => [purchase.id, cleanText(purchase.partner_ref)]),
   );
   const orderTypesByPurchaseId = new Map(
     purchaseReferences.map((purchase) => [purchase.id, getRelationName(purchase.order_type)]),
+  );
+  const orderConfirmedAtByPurchaseId = new Map(
+    purchaseReferences.map((purchase) => [purchase.id, formatDate(cleanText(purchase.date_approve)) || undefined]),
   );
   const productIds = Array.from(
     new Set(
@@ -6929,6 +6962,10 @@ async function getOdooInventoryReceptions(
       orderType: orderType || undefined,
       isImportation,
       scheduledDate: cleanText(picking.scheduled_date),
+      orderConfirmedAt: orderConfirmedAtByPurchaseId.get(getRelationId(picking.purchase_id) ?? -1),
+      partialEntryCreatedAt: getRelationId(picking.backorder_id)
+        ? formatDate(cleanText(picking.create_date)) || undefined
+        : undefined,
       state,
       status,
       destination: getRelationName(picking.location_dest_id),
@@ -9057,6 +9094,14 @@ async function executeKw(
     throw new Error("Operacion Odoo bloqueada: solo lectura");
   }
 
+  const suppliedContext = kwargs.context;
+  const context = suppliedContext && typeof suppliedContext === "object" && !Array.isArray(suppliedContext)
+    ? suppliedContext as Record<string, unknown>
+    : {};
+  const effectiveKwargs = model === "product.product"
+    ? { ...kwargs, context: { ...context, lang: "es_ES" } }
+    : kwargs;
+
   return rpc(config.url, "object", "execute_kw", [
     config.database,
     uid,
@@ -9064,7 +9109,7 @@ async function executeKw(
     model,
     method,
     args,
-    kwargs,
+    effectiveKwargs,
   ]);
 }
 

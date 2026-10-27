@@ -28,7 +28,7 @@ import {
 } from "../backend/supplierInvoices/unbilled.ts";
 import type { SupplierInvoiceRecord } from "../backend/supplierInvoices/types.ts";
 import type { PoIndex } from "../backend/supplierInvoices/documentInbox.ts";
-import { validateAmounts, createSupplierDraft, serviceLineIdentityError, planTaxTotalCorrection, draftAmountCompletenessError } from "../backend/supplierInvoices/odooBridge.ts";
+import { validateAmounts, createSupplierDraft, serviceLineIdentityError, planTaxTotalCorrection, draftAmountCompletenessError, quantityMismatchConfirmationMatches, odooDraftCreationEnabled } from "../backend/supplierInvoices/odooBridge.ts";
 import { registerSupplierInvoicesPhase2Routes } from "../backend/supplierInvoices/phase2Routes.ts";
 import { calculateWebAdjustment, discountedBase, effectiveDiscount, taxFromBase } from "../shared/supplierInvoiceDiscounts.ts";
 import { supplierInvoiceAmountWarnings } from "../shared/supplierInvoiceAmountWarnings.ts";
@@ -298,6 +298,24 @@ function testWebAdjustmentAfterDiscounts() {
   console.log("✅ testWebAdjustmentAfterDiscounts passed");
 }
 
+function testQuantityMismatchConfirmation() {
+  assert.equal(odooDraftCreationEnabled({}), false, "los borradores deben quedar cerrados por defecto");
+  assert.equal(odooDraftCreationEnabled({ SUPPLIER_INVOICES_ODOO_DRAFT_CREATE_ENABLED: "true" }), true);
+  assert.equal(odooDraftCreationEnabled({ SUPPLIER_INVOICES_ODOO_WRITE_ENABLED: "true" }), false,
+    "el permiso acotado no abre contabilizar/descartar borradores");
+  const line = { productId: 35063, quantity: 48 };
+  const source = { qtyOrdered: 36, qtyReceived: 36, qtyInvoiced: 0 };
+  const confirmation = { purchaseOrderId: 5081, productId: 35063, invoiceQuantity: 48, qtyOrdered: 36,
+    qtyReceived: 36, qtyInvoiced: 0, confirmedBy: "Operario", confirmedAt: "2026-10-07T12:00:00.000Z",
+    scope: "quantity-discrepancy-not-receipt" as const };
+  assert.equal(quantityMismatchConfirmationMatches(confirmation, line, source, 5081), true);
+  assert.equal(quantityMismatchConfirmationMatches(undefined, line, source, 5081), false);
+  assert.equal(quantityMismatchConfirmationMatches(confirmation, { ...line, quantity: 47 }, source, 5081), false);
+  assert.equal(quantityMismatchConfirmationMatches(confirmation, line, { ...source, qtyReceived: 48 }, 5081), false);
+  assert.equal(quantityMismatchConfirmationMatches(confirmation, line, source, 5082), false);
+  console.log("✅ testQuantityMismatchConfirmation passed (sin alterar recepción)");
+}
+
 async function testLocalManualTaxSaveRoute() {
   const dataDir = mkdtempSync(join(tmpdir(), "supplier-tax-route-"));
   try {
@@ -563,6 +581,7 @@ async function main() {
   testTaxTotalCorrection();
   testSequentialSupplierDiscounts();
   testWebAdjustmentAfterDiscounts();
+  testQuantityMismatchConfirmation();
   await testLocalManualTaxSaveRoute();
   await testServiceDraftSelectionGates();
   await testInboxStoreRoundtrip();

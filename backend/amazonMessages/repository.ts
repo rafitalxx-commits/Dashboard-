@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { createAmazonMessagesSeedStore } from "./seed.ts";
@@ -18,6 +18,7 @@ import type {
   AmazonKnowledgeExampleRecord,
   AmazonManualSendMockRecord,
   AmazonManualSendMockStatus,
+  AmazonMessageTranslationRecord,
   AmazonMessagesActor,
   AmazonMessagesPermission,
   AmazonMessagesRole,
@@ -61,6 +62,15 @@ type RepositoryOptions = {
     env: Record<string, string>,
     input: ResolveOdooOrderContextInput,
   ) => Promise<ResolvedOdooOrderContext | undefined>;
+  translateMessage?: (input: {
+    text: string;
+    sourceLanguage?: string;
+    targetLanguage: "es";
+  }) => Promise<{
+    translatedText: string;
+    detectedLanguage?: string;
+    model?: string;
+  }>;
 };
 
 export type GmailRawImport = {
@@ -68,6 +78,7 @@ export type GmailRawImport = {
   gmailThreadId?: string;
   rawEmail: string;
   historyId?: string;
+  repairEncodingOnly?: boolean;
 };
 
 export type GmailSyncFinishInput = {
@@ -126,6 +137,7 @@ export function createAmazonMessagesRepository(options: RepositoryOptions = {}) 
     );
   const resolveOrderContext =
     options.resolveOrderContext ?? resolveOdooOrderContext;
+  const translateMessage = options.translateMessage ?? generateJuanitoTranslation;
 
   function ensureStore() {
     if (existsSync(storePath)) return;
@@ -142,7 +154,9 @@ export function createAmazonMessagesRepository(options: RepositoryOptions = {}) 
 
   function writeStore(store: AmazonMessagesStore) {
     mkdirSync(dirname(storePath), { recursive: true });
-    writeFileSync(storePath, `${JSON.stringify(store, null, 2)}\n`);
+    const temporaryPath = `${storePath}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(temporaryPath, `${JSON.stringify(store, null, 2)}\n`);
+    renameSync(temporaryPath, storePath);
   }
 
   function requirePermission(
@@ -213,6 +227,7 @@ export function createAmazonMessagesRepository(options: RepositoryOptions = {}) 
       externalSend: false,
     };
     conversation.workflowStatus =
+      conversation.workflowStatus === "NUEVO" ||
       conversation.workflowStatus === "RESUELTO" ||
       conversation.workflowStatus === "CERRADO"
         ? conversation.workflowStatus
@@ -312,6 +327,9 @@ export function createAmazonMessagesRepository(options: RepositoryOptions = {}) 
         conversation,
         context,
         messages: store.messages.filter((item) => item.conversationId === conversationId),
+        messageTranslations: store.messageTranslations.filter(
+          (item) => item.conversationId === conversationId,
+        ),
         attachments: store.attachments.filter(
           (item) => item.conversationId === conversationId,
         ),
@@ -334,6 +352,103 @@ export function createAmazonMessagesRepository(options: RepositoryOptions = {}) 
           .filter((item) => item.conversationId === conversationId)
           .reverse(),
       };
+    },
+    getMessageTranslation(
+      actor: AmazonMessagesActor,
+      conversationId: string,
+      messageId: string,
+    ) {
+      requirePermission(actor, "amazonMessages:read");
+      const store = readStore();
+      ensureConversation(store, conversationId);
+      return store.messageTranslations.find(
+        (item) =>
+          item.conversationId === conversationId &&
+          item.messageId === messageId &&
+          item.targetLanguage === "es",
+      );
+    },
+    async translateMessageToSpanish(
+      actor: AmazonMessagesActor,
+      conversationId: string,
+      messageId: string,
+      input: { force?: boolean; externalSend?: boolean } = {},
+    ) {
+      requirePermission(actor, "amazonMessages:aiDraft");
+      if (input.externalSend === true) {
+        throw new Error("La traduccion interna nunca permite envio externo");
+      }
+      const store = readStore();
+      ensureConversation(store, conversationId);
+      const message = store.messages.find(
+        (item) =>
+          item.conversationId === conversationId && item.messageId === messageId,
+      );
+      if (!message) throw new Error("Mensaje no encontrado");
+      if (message.direction !== "inbound") {
+        throw new Error("Solo se traducen mensajes entrantes del comprador");
+      }
+      const sourceContentHash = sha256(message.content);
+      const existing = store.messageTranslations.find(
+        (item) =>
+          item.conversationId === conversationId &&
+          item.messageId === messageId &&
+          item.targetLanguage === "es",
+      );
+      if (
+        existing &&
+        existing.sourceContentHash === sourceContentHash &&
+        input.force !== true
+      ) {
+        return { ...existing, cached: true };
+      }
+      const sourceLanguage = message.language;
+      const translated = sourceLanguage?.toLowerCase().startsWith("es")
+        ? {
+            translatedText: message.content,
+            detectedLanguage: sourceLanguage,
+            model: undefined,
+          }
+        : await translateMessage({
+            text: message.content,
+            sourceLanguage,
+            targetLanguage: "es",
+          });
+      const translatedText = requiredDraftBody(
+        translated.translatedText,
+        "translatedText",
+      );
+      const now = new Date().toISOString();
+      const record: AmazonMessageTranslationRecord = {
+        translationId:
+          existing?.translationId ??
+          `message-translation-${Date.now()}-${store.messageTranslations.length + 1}`,
+        conversationId,
+        messageId,
+        sourceLanguage: translated.detectedLanguage ?? sourceLanguage,
+        targetLanguage: "es",
+        sourceContentHash,
+        translatedText,
+        provider: sourceLanguage?.toLowerCase().startsWith("es")
+          ? "ORIGINAL_ES"
+          : "AI",
+        model: translated.model,
+        createdBy: existing?.createdBy ?? actor.name,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+        externalSend: false,
+      };
+      if (existing) Object.assign(existing, record);
+      else store.messageTranslations.push(record);
+      appendAudit(store, actor, {
+        conversationId,
+        entityType: "message_translation",
+        entityId: record.translationId,
+        eventType: "message_translated_to_spanish",
+        detail: `Traduccion interna ${record.provider} guardada. external_send=false.`,
+      });
+      writeStore(store);
+      return { ...record, cached: false };
     },
     updateConversationWorkflow(
       actor: AmazonMessagesActor,
@@ -382,6 +497,41 @@ export function createAmazonMessagesRepository(options: RepositoryOptions = {}) 
       });
       writeStore(store);
       return conversation;
+    },
+    resolveHistoricalBacklog(actor: AmazonMessagesActor, input: { reason?: string } = {}) {
+      requirePermission(actor, "amazonMessages:admin");
+      const store = readStore();
+      if (store.historicalCutoverAt) throw new Error(`El histórico ya fue cerrado el ${store.historicalCutoverAt}`);
+      const now = new Date().toISOString();
+      let resolved = 0;
+      let alreadyClosed = 0;
+      let alreadyResolved = 0;
+      for (const conversation of store.conversations) {
+        if (conversation.workflowStatus === "CERRADO") { alreadyClosed += 1; continue; }
+        if (conversation.workflowStatus === "RESUELTO") { alreadyResolved += 1; continue; }
+        const previousStatus = conversation.workflowStatus;
+        conversation.workflowStatus = "RESUELTO";
+        conversation.status = "resolved";
+        conversation.updatedAt = now;
+        appendWorkflowHistory(conversation, actor, previousStatus, "RESUELTO", now, input.reason?.trim() || "Cierre inicial de histórico Amazon");
+        appendAudit(store, actor, {
+          conversationId: conversation.conversationId,
+          entityType: "conversation",
+          entityId: conversation.conversationId,
+          eventType: "historical_backlog_resolved",
+          detail: "Cerrada como histórico inicial; external_send=false; sin envío externo.",
+        });
+        resolved += 1;
+      }
+      store.historicalCutoverAt = now;
+      appendAudit(store, actor, {
+        entityType: "amazon_historical_cutover",
+        entityId: now,
+        eventType: "historical_cutover_created",
+        detail: `Corte creado. ${resolved} conversaciones marcadas resueltas; ${alreadyResolved} ya resueltas; ${alreadyClosed} cerradas. external_send=false; sin envío externo.`,
+      });
+      writeStore(store);
+      return { cutoverAt: now, resolved, alreadyResolved, alreadyClosed };
     },
     assignConversationWorkflow(
       actor: AmazonMessagesActor,
@@ -2127,8 +2277,65 @@ export function createAmazonMessagesRepository(options: RepositoryOptions = {}) 
       const parsed = parseAmazonEmail(input.rawEmail, input.gmailMessageId);
       const duplicateReason = findDuplicateReason(store, parsed, input);
 
-      if (duplicateReason) {
+      if (input.repairEncodingOnly === true && !duplicateReason) {
         const processMs = Date.now() - startedAt;
+        updateGmailSync(store, {
+          imported: 0,
+          duplicate: 1,
+          error: 0,
+          processMs,
+          historyId: input.historyId,
+        });
+        appendAudit(store, actor, {
+          entityType: "gmail_message",
+          entityId: input.gmailMessageId,
+          eventType: "gmail_encoding_repair_skipped",
+          detail:
+            "Mensaje no existente en el Dashboard omitido durante reparacion historica. No se creo conversacion, mensaje, borrador ni envio externo.",
+        });
+        writeStore(store);
+        return {
+          status: "duplicate" as const,
+          gmailMessageId: input.gmailMessageId,
+          reason: "repair-only-not-present-locally",
+          processMs,
+        };
+      }
+
+      if (duplicateReason) {
+        const repairedMessage = repairDuplicateMessageEncoding(
+          store,
+          parsed,
+          input,
+        );
+        const processMs = Date.now() - startedAt;
+        if (repairedMessage) {
+          updateGmailSync(store, {
+            imported: 0,
+            updated: 1,
+            duplicate: 0,
+            error: 0,
+            processMs,
+            historyId: input.historyId,
+          });
+          appendAudit(store, actor, {
+            conversationId: repairedMessage.conversationId,
+            entityType: "gmail_message",
+            entityId: repairedMessage.messageId,
+            eventType: "gmail_message_encoding_repaired",
+            detail:
+              "Contenido reparado idempotentemente desde Gmail readonly. Sin nueva conversacion, borrador ni envio externo.",
+          });
+          writeStore(store);
+          return {
+            status: "updated" as const,
+            gmailMessageId: input.gmailMessageId,
+            conversationId: repairedMessage.conversationId,
+            messageId: repairedMessage.messageId,
+            reason: "encoding-repaired",
+            processMs,
+          };
+        }
         updateGmailSync(store, {
           imported: 0,
           duplicate: 1,
@@ -2160,6 +2367,22 @@ export function createAmazonMessagesRepository(options: RepositoryOptions = {}) 
         existingConversation ??
         createConversationFromParsedEmail(store, parsed, input.gmailThreadId);
       const wasCreated = !existingConversation;
+      const cutoverAt = store.historicalCutoverAt ? new Date(store.historicalCutoverAt).getTime() : undefined;
+      const receivedAt = new Date(parsed.receivedAt).getTime();
+      if (existingConversation && cutoverAt !== undefined && Number.isFinite(receivedAt) && receivedAt >= cutoverAt && conversation.workflowStatus === "RESUELTO") {
+        const previousStatus = conversation.workflowStatus;
+        conversation.workflowStatus = "NUEVO";
+        conversation.status = "new";
+        conversation.closedAt = undefined;
+        appendWorkflowHistory(conversation, actor, previousStatus, "NUEVO", new Date().toISOString(), "Mensaje recibido después del corte de histórico");
+        appendAudit(store, actor, {
+          conversationId: conversation.conversationId,
+          entityType: "conversation",
+          entityId: conversation.conversationId,
+          eventType: "historical_cutover_reopened",
+          detail: "Conversación reabierta por mensaje recibido después del corte; external_send=false.",
+        });
+      }
       const orderContext = parsed.amazonOrderId
         ? await resolveOrderContext(process.env as Record<string, string>, {
             amazonOrderId: parsed.amazonOrderId,
@@ -2389,6 +2612,13 @@ function buildStatsFromStore(store: AmazonMessagesStore) {
 }
 
 function normalizeStore(store: AmazonMessagesStore): AmazonMessagesStore {
+  store.messageTranslations ??= [];
+  store.messageTranslations = store.messageTranslations.map((translation) => ({
+    ...translation,
+    targetLanguage: "es",
+    provider: translation.provider ?? "AI",
+    externalSend: false,
+  }));
   store.templates = store.templates.map((template) => ({
     ...template,
     name: template.name ?? nameFromTemplateId(template.templateId, template.category),
@@ -2972,6 +3202,86 @@ function juanitoAiConfig(env: Record<string, string | undefined>) {
     };
   }
   return undefined;
+}
+
+async function generateJuanitoTranslation(input: {
+  text: string;
+  sourceLanguage?: string;
+  targetLanguage: "es";
+}) {
+  const config = juanitoAiConfig(process.env as Record<string, string | undefined>);
+  if (!config) throw new Error("Traduccion IA no configurada");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+  try {
+    const response = await fetch(config.url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ***}`,
+        "Content-Type": "application/json",
+        ...(config.provider === "openrouter"
+          ? {
+              "HTTP-Referer": "https://dashboard.todoelectrico.net",
+              "X-Title": "TodoElectrico Dashboard Amazon Translation",
+            }
+          : {}),
+      },
+      body: JSON.stringify({
+        model: config.model,
+        temperature: 0,
+        max_tokens: 1400,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content:
+              "Traduce mensajes de compradores Amazon al español de forma fiel. Conserva referencias, números de pedido, SKU, enlaces, nombres propios, saltos de línea y tono. No resumas, no respondas al cliente y no añadas información. Devuelve solo JSON válido.",
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              task: "Traducir el texto completo al español",
+              sourceLanguage: input.sourceLanguage ?? "auto",
+              targetLanguage: input.targetLanguage,
+              outputSchema: {
+                translatedText: "string obligatorio",
+                detectedLanguage: "código ISO del idioma detectado",
+              },
+              text: input.text,
+            }),
+          },
+        ],
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Traduccion IA HTTP ${response.status}`);
+    }
+    const payload = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const content = payload.choices?.[0]?.message?.content;
+    if (!content) throw new Error("La IA no devolvio traduccion");
+    const parsed = JSON.parse(content) as {
+      translatedText?: string;
+      detectedLanguage?: string;
+    };
+    return {
+      translatedText: requiredDraftBody(parsed.translatedText, "translatedText"),
+      detectedLanguage:
+        typeof parsed.detectedLanguage === "string"
+          ? parsed.detectedLanguage
+          : input.sourceLanguage,
+      model: config.model,
+    };
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("La traduccion IA excedio el tiempo de espera");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function buildJuanitoAiPrompt(input: JuanitoAiDraftInput) {
@@ -3719,6 +4029,42 @@ function findDuplicateReason(
     return "normalized-hash";
   }
   return undefined;
+}
+
+function repairDuplicateMessageEncoding(
+  store: AmazonMessagesStore,
+  parsed: ParsedAmazonEmail,
+  input: GmailRawImport,
+) {
+  const existing = store.messages.find(
+    (message) =>
+      message.gmailMessageId === input.gmailMessageId ||
+      message.messageId === parsed.messageId,
+  );
+  if (!existing) return undefined;
+  const currentReplacementCount = countReplacementCharacters(existing.content);
+  const repairedContent = compactAmazonMessageContent(parsed.cleanBody).content;
+  const repairedReplacementCount = countReplacementCharacters(repairedContent);
+  if (
+    currentReplacementCount === 0 ||
+    repairedReplacementCount >= currentReplacementCount ||
+    repairedContent === existing.content
+  ) {
+    return undefined;
+  }
+  existing.content = repairedContent;
+  existing.normalizedHash = parsed.normalizedHash;
+  existing.sender = parsed.from;
+  existing.language = parsed.language;
+  existing.amazonMetadata = {
+    ...existing.amazonMetadata,
+    encodingRepairedAt: new Date().toISOString(),
+  };
+  return existing;
+}
+
+function countReplacementCharacters(value: string) {
+  return value.match(/�/g)?.length ?? 0;
 }
 
 function findConversationForParsedEmail(

@@ -1259,3 +1259,5 @@
 }
 
 .si-match-candidates { display: block; color: #92400e; margin-top: 0.25rem; font-weight: 500; }
+.si-mismatch-confirm { display: flex; align-items: flex-start; gap: 7px; margin-top: 7px; color: #8b3b00; font-size: 12px; line-height: 1.35; }
+.si-mismatch-confirm input { flex: 0 0 auto; margin: 2px 0 0; }

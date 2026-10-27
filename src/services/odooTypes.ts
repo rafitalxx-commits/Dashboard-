@@ -16,6 +16,20 @@ export type OperationalHomeChart = {
   points: Array<{ at: string; value: number }>;
   updatedAt: string;
 };
+export type OperationalHomeComparisonBucket = {
+  key: string; label: string;
+  fbmOrders: number; websiteOrders: number;
+  fbmSales: number; websiteSales: number;
+};
+export type OperationalHomeComparison = {
+  buckets: OperationalHomeComparisonBucket[];
+  granularity: "hour" | "day" | "month";
+  range: { from: string; to: string };
+  period?: "48h";
+  timezone: "Europe/Madrid";
+  source: string;
+  updatedAt: string;
+};
 
 export type CatalogProduct = {
   id: number;
@@ -34,6 +48,7 @@ export type CatalogProduct = {
   isKit: boolean;
   componentCount: number;
   physicalLocations: string[];
+  localLocations: Pick<ProductLocation, "code" | "quantity" | "preferred">[];
   supplierNames: string[];
   locationSummary?: {
     preferredCode?: string;
@@ -545,7 +560,9 @@ export type ReceptionHistory = {
   operatorName: string;
   outcome: "total" | "partial_backorder" | "partial_no_backorder" | "cancelled";
   pendingReceptionRef?: string;
-  lines: PendingReceipt["lines"];
+  lines: Array<PendingReceipt["lines"][number] & {
+    locationAllocations?: Array<{ location: string; quantity: number }>;
+  }>;
   createdAt: string;
 };
 
@@ -574,6 +591,8 @@ export type InventoryReception = {
   orderType?: string;
   isImportation: boolean;
   scheduledDate: string;
+  orderConfirmedAt?: string;
+  partialEntryCreatedAt?: string;
   state: string;
   status: "Esperando" | "Pendiente" | "Borrador" | "Otra";
   destination: string;

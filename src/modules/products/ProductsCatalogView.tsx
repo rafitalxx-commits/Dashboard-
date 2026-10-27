@@ -4,6 +4,7 @@ import {
   Camera,
   ChevronLeft,
   ChevronRight,
+  Factory,
   MapPin,
   Pencil,
   Plus,
@@ -87,6 +88,7 @@ export function ProductsCatalogView({
     "ids" | "filtered" | "all"
   >("ids");
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [exporting, setExporting] = useState<"csv" | "pdf" | null>(null);
   const load = async () => {
     setLoading(true);
     try {
@@ -201,6 +203,14 @@ export function ProductsCatalogView({
     selectionMode === "all" ||
     selectionMode === "filtered" ||
     selectedIds.includes(id);
+  const locationText = (location: Pick<ProductLocation, "code" | "quantity" | "preferred">, uom: string) => {
+    const label = locationCatalog.find((entry) => entry.code === location.code)?.label || location.code;
+    return `${label}: ${fmt(location.quantity, uom)}${location.preferred ? " · Preferida" : ""}`;
+  };
+  const productLocationsText = (product: CatalogProduct, separator: string) =>
+    product.localLocations.length
+      ? product.localLocations.map((location) => locationText(location, product.uom)).join(separator)
+      : "Sin ubicaciones registradas";
   const selectionScope: InventoryScope = {
     type: locationFilter.trim()
       ? "locations"
@@ -237,13 +247,16 @@ export function ProductsCatalogView({
     });
   };
   const downloadCsv = () => {
+    if (exporting) return;
+    setExporting("csv");
     const rowsCsv = [
-      ["Referencia", "Producto", "EAN", "Stock Odoo"],
+      ["Referencia", "Producto", "EAN", "Stock Odoo", "Ubicaciones Dashboard"],
       ...selectedProducts.map((product) => [
         product.reference,
         product.name,
         product.barcode,
         String(product.onHand),
+        productLocationsText(product, "; "),
       ]),
     ]
       .map((row) =>
@@ -258,27 +271,34 @@ export function ProductsCatalogView({
     link.download = "productos-seleccionados.csv";
     link.click();
     URL.revokeObjectURL(url);
+    setMessage("Descarga CSV iniciada con las ubicaciones del Dashboard.");
+    window.setTimeout(() => setExporting(null), 350);
   };
   const printSelection = () => {
+    if (exporting) return;
+    setExporting("pdf");
     // `noopener` makes window.open return null in several browsers, which was
     // the cause of the blank PDF/print window in LAB.
     const popup = window.open("", "_blank");
     if (!popup) {
       setMessage("El navegador ha bloqueado la ventana. Permite ventanas emergentes para guardar el PDF.");
+      setExporting(null);
       return;
     }
     const lines = selectedProducts
       .map(
         (product) =>
-          `<tr><td>${escapePrintHtml(product.reference || "—")}</td><td>${escapePrintHtml(product.name)}</td><td>${escapePrintHtml(product.barcode || "—")}</td><td>${escapePrintHtml(String(product.onHand))}</td></tr>`,
+          `<tr><td>${escapePrintHtml(product.reference || "—")}</td><td>${escapePrintHtml(product.name)}</td><td>${escapePrintHtml(product.barcode || "—")}</td><td>${escapePrintHtml(String(product.onHand))}</td><td>${escapePrintHtml(productLocationsText(product, " · "))}</td></tr>`,
       )
       .join("");
     popup.document.write(
-      `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Productos seleccionados</title><style>body{font:12px Arial;padding:16px;color:#172033}h1{font-size:18px}p{color:#475569}table{width:100%;border-collapse:collapse}th,td{border:1px solid #cbd5e1;padding:7px;text-align:left}th{background:#f1f5f9}</style></head><body><h1>Productos seleccionados</h1><p>${selectedProducts.length} productos · usa «Guardar como PDF» en el diálogo de impresión.</p><table><thead><tr><th>Referencia</th><th>Producto</th><th>EAN</th><th>Stock</th></tr></thead><tbody>${lines}</tbody></table></body></html>`,
+      `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Productos seleccionados</title><style>body{font:12px Arial;padding:16px;color:#172033}h1{font-size:18px}p{color:#475569}table{width:100%;border-collapse:collapse}th,td{border:1px solid #cbd5e1;padding:7px;text-align:left;vertical-align:top}th{background:#f1f5f9}</style></head><body><h1>Productos seleccionados</h1><p>${selectedProducts.length} productos · usa «Guardar como PDF» en el diálogo de impresión.</p><table><thead><tr><th>Referencia</th><th>Producto</th><th>EAN</th><th>Stock</th><th>Ubicaciones Dashboard</th></tr></thead><tbody>${lines}</tbody></table></body></html>`,
     );
     popup.document.close();
     popup.focus();
     popup.print();
+    setMessage("Vista de impresión abierta con las ubicaciones del Dashboard. Elige «Guardar como PDF».");
+    window.setTimeout(() => setExporting(null), 350);
   };
   const sendSelectionToInventory = () => {
     if (!selectedProducts.length) return;
@@ -639,18 +659,20 @@ export function ProductsCatalogView({
           Todo el catálogo
         </button>
         <button
-          disabled={!selectedProducts.length}
+          aria-live="polite"
+          disabled={!selectedProducts.length || exporting !== null}
           onClick={downloadCsv}
           type="button"
         >
-          CSV
+          {exporting === "csv" ? "Preparando CSV…" : "CSV"}
         </button>
         <button
-          disabled={!selectedProducts.length}
+          aria-live="polite"
+          disabled={!selectedProducts.length || exporting !== null}
           onClick={printSelection}
           type="button"
         >
-          PDF
+          {exporting === "pdf" ? "Preparando PDF…" : "PDF"}
         </button>
         <button
           className="primary-button"
@@ -692,7 +714,7 @@ export function ProductsCatalogView({
               <span>Reservado</span>
               <span>Por recibir</span>
               <span>Pronóstico</span>
-              <span>Estado</span>
+              <span>Ubicaciones</span>
             </div>
             {visibleRows.map((p) => (
               <div
@@ -722,6 +744,7 @@ export function ProductsCatalogView({
                       alt=""
                     />
                   )}
+                  {p.isKit && <span className="product-manufactured-marker" role="img" aria-label="Fabricado en Odoo (BOM)" title="Fabricado en Odoo · lista de materiales"><Factory aria-hidden="true" size={15}/></span>}
                   {p.name}
                 </span>
                 <span title={p.reference}>{p.reference || "—"}</span>
@@ -729,15 +752,12 @@ export function ProductsCatalogView({
                 <span>{fmt(p.reserved, p.uom)}</span>
                 <span>{fmt(p.incoming, p.uom)}</span>
                 <span>{fmt(p.forecast, p.uom)}</span>
-                <span className="product-tags">
-                  {p.mto && <i className="tag warn">Bajo pedido</i>}
-                  {!p.barcode && <i className="tag">Sin EAN</i>}
-                  {p.locationSummary?.needsReplenishment && (
-                    <i className="tag danger">Reponer</i>
-                  )}
-                  {!p.physicalLocations.length && (
-                    <i className="tag">Sin ubicación</i>
-                  )}
+                <span className="product-locations-cell" title={productLocationsText(p, " · ")}>
+                  {p.localLocations.length ? (
+                    p.localLocations.map((location) => {
+                      return <i className="tag" key={location.code}>{locationText(location, p.uom)}</i>;
+                    })
+                  ) : <i className="tag">Sin ubicaciones registradas</i>}
                 </span>
               </div>
             ))}
@@ -788,7 +808,7 @@ export function ProductsCatalogView({
                     <Boxes />
                   )}
                   <div>
-                    <strong>{detail.name}</strong>
+                    <strong className="drawer-product-name">{selected?.isKit && <span className="product-manufactured-marker" role="img" aria-label="Fabricado en Odoo (BOM)" title="Fabricado en Odoo · lista de materiales"><Factory aria-hidden="true" size={15}/></span>}{detail.name}</strong>
                     <small>{detail.reference || "Sin referencia"}</small>
                     {barcodeEditor === null ? (
                       <div className="drawer-ean">
@@ -871,7 +891,7 @@ export function ProductsCatalogView({
                           quantity: "0",
                           preferred: !locations.length,
                           replenishmentMin: "",
-                          adjustOdoo: false,
+                          adjustOdoo: true,
                         })
                       }
                     >
@@ -915,7 +935,7 @@ export function ProductsCatalogView({
                                   item.replenishmentMin === undefined
                                     ? ""
                                     : String(item.replenishmentMin),
-                                adjustOdoo: false,
+                                adjustOdoo: true,
                               })
                             }
                           >

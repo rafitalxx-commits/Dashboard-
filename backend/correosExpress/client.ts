@@ -1,4 +1,5 @@
 import zlib from "node:zlib";
+import { PDFDocument } from "pdf-lib";
 
 export type CorreosExpressServiceId =
   | "cex-paq-10"
@@ -167,7 +168,7 @@ export function createCorreosExpressClient(env: Record<string, string>) {
         parcelCodes: Array.isArray(body.listaBultos)
           ? body.listaBultos.map((parcel) => String((parcel as Record<string, unknown>).codUnico || "")).filter(Boolean)
           : [],
-        labelBase64: extractEmbeddedLabel(body),
+        labelBase64: await extractEmbeddedLabel(body),
         raw: body,
       };
     },
@@ -312,26 +313,42 @@ function resolveProductCode(service: string) {
   return code;
 }
 
-function extractTransportLabel(body: Record<string, unknown>) {
+async function extractTransportLabel(body: Record<string, unknown>) {
   const labels = Array.isArray(body.listaEtiquetas) ? body.listaEtiquetas : [];
-  for (const label of labels) {
-    const value = (label || {}) as Record<string, unknown>;
-    const pdf = String(value.DevuelveEtiquetaPdf || value.devuelveEtiquetaPdf || value.etiquetaPdf || "");
-    if (pdf) return normalizeCorreosExpressPdfBase64(pdf);
-  }
+  const pdfs = extractCorreosExpressLabelValues(labels, ["DevuelveEtiquetaPdf", "devuelveEtiquetaPdf", "etiquetaPdf"]);
+  if (pdfs.length) return mergeCorreosExpressLabels(pdfs);
   const direct = String(body.DevuelveEtiquetaPdf || body.devuelveEtiquetaPdf || body.etiquetaPdf || "");
-  if (direct) return normalizeCorreosExpressPdfBase64(direct);
+  if (direct) return mergeCorreosExpressLabels([direct]);
   throw new Error(extractErrorMessage(body) || "Correos Express no ha devuelto PDF de etiqueta");
 }
 
-function extractEmbeddedLabel(body: Record<string, unknown>) {
+async function extractEmbeddedLabel(body: Record<string, unknown>) {
   const labels = Array.isArray(body.etiqueta) ? body.etiqueta : [];
-  for (const label of labels) {
-    const value = (label || {}) as Record<string, unknown>;
-    const pdf = String(value.etiqueta1 || value.etiqueta2 || value.DevuelveEtiquetaPdf || "");
-    if (pdf && /^[A-Za-z0-9+/=]+$/.test(pdf) && pdf.length > 1000) return normalizeCorreosExpressPdfBase64(pdf);
+  const pdfs = extractCorreosExpressLabelValues(labels, ["etiqueta1", "etiqueta2", "DevuelveEtiquetaPdf"])
+    .filter((pdf) => pdf.length > 1000);
+  return pdfs.length ? mergeCorreosExpressLabels(pdfs) : undefined;
+}
+
+export function extractCorreosExpressLabelValues(entries: unknown[], fields: string[]) {
+  return entries.map((entry) => {
+    const value = (entry || {}) as Record<string, unknown>;
+    return String(fields.map((field) => value[field] || "").find(Boolean) || "");
+  }).filter(Boolean);
+}
+
+/** Merge the carrier's one-PDF-per-parcel responses so the dashboard prints every parcel label. */
+export async function mergeCorreosExpressLabels(labels: string[]) {
+  const pdfs = labels.filter(Boolean).map((label) => normalizeCorreosExpressPdfBase64(label));
+  if (pdfs.length === 0) throw new Error("Correos Express no ha devuelto etiquetas PDF");
+  if (pdfs.length === 1) return pdfs[0];
+
+  const merged = await PDFDocument.create();
+  for (const label of pdfs) {
+    const source = await PDFDocument.load(Buffer.from(label, "base64"));
+    const pages = await merged.copyPages(source, source.getPageIndices());
+    for (const page of pages) merged.addPage(page);
   }
-  return undefined;
+  return Buffer.from(await merged.save()).toString("base64");
 }
 
 export function normalizeCorreosExpressPdfBase64(value: string) {

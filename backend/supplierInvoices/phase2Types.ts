@@ -25,6 +25,8 @@ export interface PdfExtractedLine {
   /** Pedido que aportó esta línea cuando se asoció manualmente. */
   sourcePurchaseOrderName?: string | null;
   sourcePurchaseOrderId?: number | null;
+  /** ID exacto de purchase.order.line; permite verificar líneas repetidas del mismo producto. */
+  sourcePurchaseLineId?: number | null;
   /** Excepción explícita: servicio/consumible existente elegido y confirmado por el operario. */
   genericProductConfirmed?: boolean;
   /** Cantidades de compra de sólo lectura: permiten cotejar recepción y factura. */
@@ -32,6 +34,18 @@ export interface PdfExtractedLine {
   qtyReceived?: number | null;
   qtyInvoiced?: number | null;
   qtyPending?: number | null;
+  /** Confirmación auditada de discrepancia de factura; nunca confirma recepción física. */
+  quantityMismatchConfirmation?: {
+    purchaseOrderId: number;
+    productId: number;
+    invoiceQuantity: number;
+    qtyOrdered: number;
+    qtyReceived: number;
+    qtyInvoiced: number;
+    confirmedBy: string;
+    confirmedAt: string;
+    scope: "quantity-discrepancy-not-receipt";
+  } | null;
   /** Precio/descuento del pedido en Odoo al importar la línea; no se pisa al editar la factura. */
   odooPurchasePriceUnit?: number | null;
   odooPurchaseDiscount?: number | null;
@@ -123,6 +137,10 @@ export interface InboxDocument {
   driveFileId: string;
   /** Elección humana persistente; nunca inferida por la extracción. */
   confirmedOdooPartnerId?: number | null;
+  /** Campos que el operador ha editado o aceptado y que un reescaneo no debe sobrescribir. */
+  operatorEditedFields?: string[];
+  /** Líneas que el operador ha editado o aceptado localmente. */
+  operatorLinesEdited?: boolean;
   invoiceBranch?: "goods" | "services" | null;
   /** Aceptación humana de las líneas leídas del PDF cuando no existe pedido. */
   pdfLinesAccepted?: boolean;
@@ -167,6 +185,16 @@ export interface InboxDocument {
     at: string;
     fields: Partial<Pick<PdfExtractedData, "supplier" | "supplierVat" | "country" | "billingAddress" | "currency" | "invoiceNumber" | "invoiceDate" | "dueDate" | "base" | "taxes" | "total">>;
     lines: PdfExtractedLine[];
+    unresolved: string[];
+  } | null;
+  /** Último resultado estructurado del escaneo, separado de las confirmaciones humanas. */
+  lastAiScan?: {
+    at: string;
+    status: "complete" | "partial";
+    fieldsUpdated: string[];
+    fieldsPreserved?: string[];
+    lineCountUpdated: number;
+    linesPreserved: boolean;
     unresolved: string[];
   } | null;
   /** Líneas originalmente leídas del PDF, antes de importar líneas de pedidos. */

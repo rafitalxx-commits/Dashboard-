@@ -1,0 +1,24 @@
+{
+  "id": "/",
+  "name": "TodoElectrico Dashboard",
+  "short_name": "Dashboard TE",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#192b45",
+  "theme_color": "#192b45",
+  "icons": [
+    {
+      "src": "/te-panel-rayo-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/te-panel-rayo-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

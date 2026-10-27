@@ -51,6 +51,7 @@ type CatalogProduct = {
   supplierNames?: string[];
   physicalLocations?: string[];
   onHand?: number;
+  isKit?: boolean;
 };
 type Store = { version: 1; inventories: ProductInventory[] };
 const empty = (): Store => ({ version: 1, inventories: [] });
@@ -87,13 +88,14 @@ export function createProductInventories(options: {
     selection: InventoryScope["productSelection"],
     catalog: CatalogProduct[],
   ) => {
-    if (selection.mode === "all") return catalog.map((product) => product.id);
+    const countableCatalog = catalog.filter((product) => !product.isKit);
+    if (selection.mode === "all") return countableCatalog.map((product) => product.id);
     if (selection.mode === "ids")
       return [
         ...new Set(
           (selection.ids || [])
             .map(Number)
-            .filter((id) => catalog.some((product) => product.id === id)),
+            .filter((id) => countableCatalog.some((product) => product.id === id)),
         ),
       ];
     const query = String(selection.query || "")
@@ -101,7 +103,7 @@ export function createProductInventories(options: {
       .toLowerCase();
     const supplier = String(selection.supplier || "");
     const filter = String(selection.filter || "all");
-    return catalog
+    return countableCatalog
       .filter((product) => {
         if (
           query &&
@@ -125,6 +127,16 @@ export function createProductInventories(options: {
     const inventory = read().inventories.find((item) => item.id === id);
     if (!inventory) throw new Error("Inventario no encontrado");
     return inventory;
+  };
+  const assertNoManufacturedCounts = (id: string) => {
+    const inventory = find(id);
+    const productsById = new Map(options.catalog().map((product) => [product.id, product]));
+    const manufactured = [...new Set(inventory.counts
+      .filter((count) => productsById.get(count.productId)?.isKit)
+      .map((count) => productsById.get(count.productId)?.name || String(count.productId)))];
+    if (manufactured.length) {
+      throw new Error(`Este inventario contiene conteos de productos fabricados o kits: ${manufactured.join(", ")}. No se ha enviado ningún cambio a Odoo.`);
+    }
   };
   const save = (inventory: ProductInventory) => {
     const store = read(); const index = store.inventories.findIndex((item) => item.id === inventory.id);
@@ -215,6 +227,8 @@ export function createProductInventories(options: {
       throw new Error("La ubicación no existe o no está activa en Productos → Ubicaciones");
     if (inventory.scope.allowedLocationCodes.length && !inventory.scope.allowedLocationCodes.includes(code)) throw new Error("Ubicación fuera del alcance de este inventario");
     const productId = Number(input.productId);
+    if (options.catalog().some((product) => product.id === productId && product.isKit))
+      throw new Error("No se pueden contar kits ni productos fabricados; cuenta sus componentes");
     const zoneProducts = inventory.scope.plannedProductIdsByLocation?.[code];
     if (!inventory.plannedProductIds.includes(productId) || (zoneProducts && !zoneProducts.includes(productId)) || (inventory.recountProductIds?.length && !inventory.recountProductIds.includes(productId))) throw new Error("Producto fuera del alcance de este inventario");
     const quantity = Math.max(0, Math.floor(Number(input.quantity) || 0)); const now = new Date().toISOString();
@@ -236,7 +250,8 @@ export function createProductInventories(options: {
   };
   const recount = (id: string, productIds: number[]) => {
     const inventory = find(id); if (inventory.status !== "review") throw new Error("El inventario debe estar en revisión");
-    const selected = [...new Set(productIds.map(Number))].filter((productId) => inventory.plannedProductIds.includes(productId));
+    const countableIds = new Set(options.catalog().filter((product) => !product.isKit).map((product) => product.id));
+    const selected = [...new Set(productIds.map(Number))].filter((productId) => inventory.plannedProductIds.includes(productId) && countableIds.has(productId));
     if (!selected.length) throw new Error("Selecciona al menos un producto para recontar");
     const nextRevision = Math.max(1, ...inventory.counts.map((count) => count.revision || 1)) + 1;
     inventory.status = "in_progress"; inventory.recountProductIds = selected; inventory.recountRevision = nextRevision; inventory.updatedAt = new Date().toISOString(); return save(inventory);
@@ -258,5 +273,5 @@ export function createProductInventories(options: {
     store.inventories = store.inventories.filter((item) => item.id !== id);
     write(store);
   };
-  return { create, list, find, start, count, status, recount, finalize, discard };
+  return { create, list, find, start, count, status, recount, finalize, discard, assertNoManufacturedCounts };
 }

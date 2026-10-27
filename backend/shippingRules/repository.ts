@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { correosExpressServices } from "../correosExpress/client.ts";
+import { glsServices } from "../gls/services.ts";
 import type { ShippingRule, ShippingRuleCatalogs, ShippingRulesStore } from "./types.ts";
 
 export function createShippingRulesRepository(options: { dataDir?: string } = {}) {
@@ -258,6 +259,11 @@ function defaultCatalogs(): ShippingRuleCatalogs {
         services: [
           { id: "dhl-connect-b2c", label: "DHL Connect (B2C)" },
         ],
+      },
+      {
+        id: "gls",
+        label: "GLS directo",
+        services: glsServices.map(({ id, label }) => ({ id, label })),
       },
     ],
     countries: [

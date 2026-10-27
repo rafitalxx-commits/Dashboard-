@@ -24,6 +24,7 @@ import type {
   OperationalHomePayload,
   OperationalHomePeriod,
   OperationalHomeChart,
+  OperationalHomeComparison,
 } from "./odooTypes";
 
 type DashboardUserRole = "viewer" | "printer" | "admin";
@@ -726,6 +727,16 @@ export const odooClient = {
     const payload = await readJson(response);
     if (!response.ok) throw new Error(payload.message || `No se pudo cargar la gráfica de ${kind}`);
     return payload as OperationalHomeChart;
+  },
+  async getOperationalHomeComparison(range: { from?: string; to?: string; period?: "48h" }, refresh = false, signal?: AbortSignal): Promise<OperationalHomeComparison> {
+    const query = new URLSearchParams();
+    if (range.period) query.set("period", range.period);
+    else if (range.from && range.to) { query.set("from", range.from); query.set("to", range.to); }
+    if (refresh) query.set("refresh", "1");
+    const response = await fetch(receptionsApiPath("/api/odoo/dashboard/home/charts/comparison?" + query.toString()), { signal });
+    const payload = await readJson(response);
+    if (!response.ok) throw new Error(payload.message || "No se pudo cargar el comparativo de Inicio");
+    return payload as OperationalHomeComparison;
   },
   async getDashboardV2(params?: { from?: string; to?: string }) {
     const query = new URLSearchParams();

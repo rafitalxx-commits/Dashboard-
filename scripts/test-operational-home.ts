@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { groupShipmentLabels, hasOdooOutboundDelivery, isHomeOrderUnprinted, isHomeOrderUnsent } from "../backend/home/metrics.ts";
+import { groupShipmentLabels, isHomeOrderUnprinted, isHomeOrderUnsent } from "../backend/home/metrics.ts";
 
 const now = new Date("2026-10-02T13:00:00.000Z");
 const labels = [
@@ -14,14 +14,15 @@ assert.equal(grouped.points.length, 49, "rolling 48H displays each hourly bucket
 assert.equal(grouped.points.find((point) => point.at === "2026-10-02T12")?.value, 1);
 
 const base = { id: "S101", odooRef: "#101", date: "2026-10-02", channel: "Amazon FBM", fulfillmentBy: "FBM", deliveryPrinted: true, deliveryStatus: "Pendiente" };
-assert.equal(hasOdooOutboundDelivery([{ pickingTypeCode: "outgoing", state: "assigned" }]), true, "a reserved Odoo delivery counts even before printing");
-assert.equal(hasOdooOutboundDelivery([{ pickingTypeCode: "outgoing", state: "done" }]), true, "a completed Odoo delivery counts as sent");
-assert.equal(hasOdooOutboundDelivery([{ pickingTypeCode: "outgoing", state: "cancel" }]), false, "a cancelled Odoo delivery does not count");
-assert.equal(hasOdooOutboundDelivery([{ pickingTypeCode: "incoming", state: "assigned" }]), false, "a non-delivery picking does not count");
-assert.equal(isHomeOrderUnsent(base, true), false, "an Odoo delivery counts regardless of label or print state");
-assert.equal(isHomeOrderUnsent({ ...base, deliveryPrinted: false, odooRef: "#105" }, false), true, "no Odoo delivery stays pending regardless of print state");
+assert.equal(isHomeOrderUnsent({ ...base, deliveryStatus: "Albaran reservado" }), true, "a printed reserved delivery is not sent");
+assert.equal(isHomeOrderUnsent({ ...base, deliveryPrinted: false, deliveryStatus: "Pendiente stock" }), true, "an unprinted waiting delivery is not sent");
+assert.equal(isHomeOrderUnsent({ ...base, deliveryStatus: "Sin albaran" }), true, "an order without a delivery is not sent");
+assert.equal(isHomeOrderUnsent({ ...base, deliveryStatus: "Albaran reservado" }), true, "a partial delivery with another pending picking stays unsent");
+assert.equal(isHomeOrderUnsent({ ...base, deliveryStatus: "Entregado" }), false, "only completed Odoo delivery is sent");
+assert.equal(isHomeOrderUnsent({ ...base, sendcloud: { status: "Entregado" } }), true, "a carrier status cannot override the pending Odoo delivery");
+assert.throws(() => isHomeOrderUnsent({ ...base, deliveryStatus: undefined }), /Falta el estado/, "unknown Odoo state must not become a false zero");
 assert.equal(isHomeOrderUnprinted({ ...base, deliveryPrinted: false }), true);
 assert.equal(isHomeOrderUnprinted({ ...base, deliveryPrinted: false, sendcloud: { status: "Entregado" } }), false);
-assert.equal(isHomeOrderUnsent({ ...base, channel: "Website", fulfillmentBy: "", odooRef: "#105" }, true), false, "Website also uses the Odoo delivery");
-assert.equal(isHomeOrderUnsent({ ...base, channel: "Sales", fulfillmentBy: "", odooRef: "#105" }, false), false, "the KPI excludes sales channels other than Amazon FBM and Website");
+assert.equal(isHomeOrderUnsent({ ...base, channel: "Website", fulfillmentBy: "", odooRef: "#105" }), true, "Website also uses the Odoo delivery");
+assert.equal(isHomeOrderUnsent({ ...base, channel: "Sales", fulfillmentBy: "", odooRef: "#105" }), false, "the KPI excludes sales channels other than Amazon FBM and Website");
 console.log("Operational Home definitions: OK");

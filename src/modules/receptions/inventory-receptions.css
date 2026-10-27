@@ -26,6 +26,10 @@
 .inventory-state.draft { background: #edf0f3; color: #56636b; }
 .inventory-state.other { background: #e8f2ff; color: #245f98; }
 .inventory-reference, .inventory-supplier, .inventory-date, .inventory-date > span, .inventory-progress { display: grid; gap: 3px; min-width: 0; }
+.inventory-reception-dates { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; min-width: 0; }
+.inventory-reception-date-chip { align-items: center; background: #f2f6f8; border: 1px solid #e3ebef; border-radius: 6px; color: #536976; display: inline-flex; flex: 0 0 auto; gap: 4px; line-height: 1; max-width: 100%; padding: 3px 5px; white-space: nowrap; }
+.inventory-reception-date-chip svg { color: #54758a; flex: none; }
+.inventory-reception-date-chip time { font-size: 10px; font-variant-numeric: tabular-nums; }
 .inventory-reference strong { color: #173f59; font-size: 17px; }
 .inventory-supplier strong { overflow-wrap: anywhere; }
 .inventory-reference small, .inventory-supplier small, .inventory-date small, .inventory-progress small { color: #77858d; }
@@ -120,6 +124,8 @@
 .inventory-reception-drawer > header > button { background: #eef3f5; border: 0; border-radius: 50%; color: #345468; cursor: pointer; display: grid; height: 37px; place-items: center; width: 37px; }
 .inventory-drawer-summary { align-items: center; background: #f5f8fa; display: flex; gap: 24px; padding: 13px 24px; }
 .inventory-drawer-summary > span:not(.inventory-receipt-metrics) { color: #71818a; display: grid; font-size: 12px; gap: 2px; }
+.inventory-drawer-summary > span.inventory-reception-dates { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 0; }
+.inventory-drawer-summary > span.inventory-reception-dates .inventory-reception-date-chip { background: #fff; }
 .inventory-drawer-summary strong { color: #173f59; font-size: 14px; }
 .inventory-drawer-summary .inventory-receipt-metrics { margin-left: auto; }
 .inventory-session-gate, .inventory-active-session { align-items: center; border-bottom: 1px solid #dce7ec; display: flex; gap: 12px; padding: 15px 24px; }

@@ -2,7 +2,7 @@
 // Se integra en SupplierInvoicesView mediante tabs. UI con feedback de carga en cada acción.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { ChangeEvent, PointerEvent as ReactPointerEvent } from "react";
 import {
   AlertTriangle,
   ArrowRight,
@@ -20,19 +20,27 @@ import {
   ShoppingCart,
   Sparkles,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import type { CatalogProduct } from "../../services/odooTypes";
 import { WEB_ADJUSTMENT_PRODUCT_ID, isWebAdjustmentProductId, calculateWebAdjustment, discountedBase, taxFromBase } from "../../../shared/supplierInvoiceDiscounts";
+import { archiveMismatch } from "../../../shared/supplierInvoiceArchiveGate";
 
 async function readSaveResponse(response: Response): Promise<Record<string, any>> {
   const body = await response.text();
-  if (!body.trim()) throw new Error(`El servidor no respondió al guardar (HTTP ${response.status}). Comprueba que LAB esté disponible y vuelve a intentarlo.`);
+  if (!body.trim()) throw new Error(`El servidor no respondió al guardar (HTTP ${response.status}). Comprueba que el servicio esté disponible y vuelve a intentarlo.`);
   try { return JSON.parse(body) as Record<string, any>; }
   catch { throw new Error(`El servidor devolvió una respuesta no válida al guardar (HTTP ${response.status}). No se ha confirmado el guardado.`); }
 }
 
 type F = Record<string, string>;
+
+type QuantityMismatchConfirmation = {
+  purchaseOrderId: number; productId: number; invoiceQuantity: number; qtyOrdered: number;
+  qtyReceived: number; qtyInvoiced: number; confirmedBy: string; confirmedAt: string;
+  scope: "quantity-discrepancy-not-receipt";
+} | null;
 
 type DocLine = {
   productId?: number | null;
@@ -56,6 +64,8 @@ type DocLine = {
   qtyReceived?: number | null;
   qtyInvoiced?: number | null;
   qtyPending?: number | null;
+  quantityMismatchAcknowledged?: boolean;
+  quantityMismatchConfirmation?: QuantityMismatchConfirmation;
   aiProductCandidateId?: number | null;
   aiPurchaseOrderCandidateId?: number | null;
   aiCandidateReason?: string | null;
@@ -261,6 +271,8 @@ export function InboxView({ base }: { base: string }) {
   const [data, setData] = useState<InboxData | null>(null);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const uploadInput = useRef<HTMLInputElement | null>(null);
   const initialScanStarted = useRef(false);
   const [extracting, setExtracting] = useState<string | null>(null);
   const [msg, setMsg] = useState("");
@@ -308,6 +320,37 @@ export function InboxView({ base }: { base: string }) {
       setScanning(false);
     }
   };
+
+  const uploadPdf = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    if (!file) return;
+    event.currentTarget.value = "";
+    if (!/\.pdf$/i.test(file.name) || (file.type && file.type !== "application/pdf")) {
+      setMsg("Selecciona un archivo PDF.");
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      setMsg("El PDF supera el límite de 20 MB.");
+      return;
+    }
+    setUploading(true);
+    setMsg(`Subiendo ${file.name} a Drive/SIN REVISAR…`);
+    try {
+      const r = await fetch(api("/api/odoo/supplier-invoices/inbox/drive/upload"), {
+        method: "POST",
+        headers: { "Content-Type": "application/pdf", "X-File-Name": encodeURIComponent(file.name) },
+        body: file,
+      });
+      const result = await readSaveResponse(r);
+      if (!r.ok) throw new Error(result.message || "No se pudo subir el PDF a Drive");
+      await load();
+      setMsg(result.message || `PDF subido a Drive/SIN REVISAR: ${file.name}. Ya puedes seleccionarlo y pulsar «Escanear con IA».`);
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : "No se pudo subir el PDF a Drive");
+    } finally {
+      setUploading(false);
+    }
+  };
   // La bandeja se sincroniza al abrirse; esto sólo lee nombres/metadatos de Drive.
   useEffect(() => {
     if (initialScanStarted.current) return;
@@ -327,7 +370,7 @@ export function InboxView({ base }: { base: string }) {
       });
       const x = await r.json();
       if (!r.ok) throw Error(x.message);
-      setMsg(x.message || "Análisis añadido al chat local de la factura. Abre la factura para revisar y responder a Raskibot.");
+      setMsg(x.message || "Análisis añadido al chat local de la factura. Abre la factura para revisar y responder a Facturas.");
       await load();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "Error en extracción IA");
@@ -380,10 +423,16 @@ export function InboxView({ base }: { base: string }) {
           <p className="eyebrow">Compras / Facturas de proveedor</p>
           <h2>Bandeja documental</h2>
           <p>Fase 2 · Bandeja documental · {data?.total ?? 0} PDF en la lista · IA sólo por documento elegido</p>
+          <p className="si-note">PDF de hasta 20 MB; se incorpora a Drive/SIN REVISAR y no se lee hasta que pulses «Escanear con IA».</p>
         </div>
         <div className="si-actions">
           <small>Último escaneo: {dt(data?.lastScanAt?.slice(0, 10) ?? null)}</small>
-          <button className="si-primary" disabled={scanning || extracting !== null} onClick={() => void scan()}>
+          <input ref={uploadInput} type="file" accept="application/pdf,.pdf" onChange={(event) => void uploadPdf(event)} hidden aria-label="Seleccionar PDF para subir a Drive" />
+          <button disabled={uploading || scanning || extracting !== null} onClick={() => uploadInput.current?.click()} aria-busy={uploading}>
+            {uploading ? <RefreshCw className="spin" /> : <Upload />}
+            {uploading ? "Subiendo PDF…" : "Subir PDF a Drive"}
+          </button>
+          <button className="si-primary" disabled={scanning || uploading || extracting !== null} onClick={() => void scan()}>
             {scanning ? <RefreshCw className="spin" /> : <Inbox />}
             {scanning ? "Actualizando lista…" : "Actualizar lista de Drive"}
           </button>
@@ -495,7 +544,7 @@ export function InboxView({ base }: { base: string }) {
             <span>{dt(doc.extracted?.invoiceDate ?? null)} · {doc.extracted?.total != null ? money(doc.extracted.total, doc.extracted.currency ?? "EUR") : "Importe pendiente"}</span>
             <span>Pedido: {doc.match?.purchaseOrderName || "sin confirmar"} · {doc.match?.excluded ? "No factura" : doc.match ? `${Math.min(100, doc.match.score)}% ${BAND_ES[doc.match.band]}` : "sin cotejar"}</span>
             <span className={`si-badge doc-${doc.status}`}>{STATUS_ES[doc.status] ?? doc.status}</span>
-            <small>Abrir PDF y revisión con Raskibot</small>
+            <small>Abrir PDF y revisión con Facturas</small>
           </button>
         ))}
       </div>
@@ -557,6 +606,8 @@ type ProductLineEdit = {
   qtyReceived?: number | null;
   qtyInvoiced?: number | null;
   qtyPending?: number | null;
+  quantityMismatchAcknowledged?: boolean;
+  quantityMismatchConfirmation?: QuantityMismatchConfirmation;
   aiProductCandidateId?: number | null;
   aiPurchaseOrderCandidateId?: number | null;
   aiCandidateReason?: string | null;
@@ -676,6 +727,14 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
   const [foundExactPo, setFoundExactPo] = useState(false);
   const [poLoading, setPoLoading] = useState(false);
   const [selectedPoIds, setSelectedPoIds] = useState<number[]>(doc.assignedPurchaseOrderIds ?? []);
+  // An AI scan may confirm identities through independent Odoo reads while the
+  // detail panel stays mounted. Reflect the saved draft, not stale local picks.
+  useEffect(() => {
+    setConfirmedPartnerId(doc.confirmedOdooPartnerId ?? null);
+    setSupplierAccepted(Boolean(doc.confirmedOdooPartnerId));
+    setSelectedPoIds(doc.assignedPurchaseOrderIds ?? []);
+    setInvoiceBranch(doc.invoiceBranch ?? "goods");
+  }, [doc.driveFileId, doc.lastAiScan?.at]);
   const [poSaving, setPoSaving] = useState(false);
   const [poMsg, setPoMsg] = useState("");
   const [acceptingPdfLines, setAcceptingPdfLines] = useState(false);
@@ -699,6 +758,7 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
   const [validatingDraft, setValidatingDraft] = useState(false);
   const [accountingDate, setAccountingDate] = useState("");
   const [draftWriteEnabled, setDraftWriteEnabled] = useState(false);
+  const [driveWriteEnabled, setDriveWriteEnabled] = useState(false);
   const [draftCapabilityChecking, setDraftCapabilityChecking] = useState(false);
   const [draftCapabilityError, setDraftCapabilityError] = useState("");
   const [chatOpen, setChatOpen] = useState(false);
@@ -715,16 +775,22 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
     const check = async () => {
       if (!cancelled) setDraftCapabilityChecking(true);
       try {
-        const response = await fetch(`${apiPath}/odoo-draft-capability?id=${encodeURIComponent(doc.driveFileId)}`, { cache: "no-store" });
-        const result = await response.json();
+        const [response, driveResponse] = await Promise.all([
+          fetch(`${apiPath}/odoo-draft-capability?id=${encodeURIComponent(doc.driveFileId)}`, { cache: "no-store" }),
+          fetch(`${apiPath}/drive/move-capability?id=${encodeURIComponent(doc.driveFileId)}`, { cache: "no-store" }),
+        ]);
+        const [result, driveResult] = await Promise.all([response.json(), driveResponse.json()]);
         if (!response.ok) throw new Error(result.message || "No se pudo comprobar el permiso de Odoo");
+        if (!driveResponse.ok) throw new Error(driveResult.message || "No se pudo comprobar el permiso de Drive");
         if (!cancelled) {
           setDraftWriteEnabled(result.enabled === true);
+          setDriveWriteEnabled(driveResult.enabled === true);
           setDraftCapabilityError("");
         }
       } catch (error) {
         if (!cancelled) {
           setDraftWriteEnabled(false);
+          setDriveWriteEnabled(false);
           setDraftCapabilityError(error instanceof Error ? error.message : "No se pudo comprobar el permiso de Odoo");
         }
       } finally {
@@ -736,10 +802,10 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [draftConfirmation, apiPath, doc.driveFileId]);
 
-  const askRaskibot = async (question = "") => {
+  const askFacturas = async (question = "") => {
     setChatOpen(true);
     setChatBusy(true);
-    setChatStage(question ? "Enviando tu consulta a Raskibot…" : "Leyendo PDF y preparando cotejo…");
+    setChatStage(question ? "Enviando tu consulta a Facturas…" : "Leyendo PDF y preparando cotejo…");
     try {
       setChatStage(question ? "Cotejando la duda con PDF y pedidos…" : "Identificando emisor, CIF, pedidos y líneas…");
       const r = await fetch(`${apiPath}/raskibot-extract`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: [doc.driveFileId], ...(question ? { question } : {}) }) });
@@ -751,9 +817,9 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
         if (updated) setFields({ supplier: updated.supplier ?? "", supplierVat: updated.supplierVat ?? "", country: updated.country ?? "", invoiceNumber: updated.invoiceNumber ?? "", invoiceDate: updated.invoiceDate ?? "", dueDate: updated.dueDate ?? "", currency: updated.currency ?? "", billingAddress: updated.billingAddress ?? "", base: updated.base != null ? String(updated.base) : "", taxes: updated.taxes != null ? String(updated.taxes) : "", total: updated.total != null ? String(updated.total) : "", docType: updated.docType ?? "" });
       }
       setChatInput("");
-      setChatStage("Análisis terminado. Datos del PDF rellenados; coteja los productos de Odoo y confirma proveedor y pedidos antes del borrador.");
+      setChatStage(x.message || "Análisis terminado. Revisa los datos del PDF y cualquier pendiente antes de validar.");
     } catch (e) {
-      setChatStage(e instanceof Error ? e.message : "No se pudo contactar con Raskibot.");
+      setChatStage(e instanceof Error ? e.message : "No se pudo contactar con Facturas.");
     } finally { setChatBusy(false); }
   };
 
@@ -925,7 +991,7 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
     setTerm("");
   };
 
-  const acceptRaskibotProductCandidate = async (index: number, productId: number) => {
+  const acceptFacturasProductCandidate = async (index: number, productId: number) => {
     if (applyingSuggestion !== null) return;
     setApplyingSuggestion(index);
     setSaveMsg("Comprobando la referencia del producto sugerido en Odoo…");
@@ -946,7 +1012,7 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
         pdfPriceVerified: false,
       } : line));
       setSaveMsg(`Producto «${data.product.reference || data.product.name}» verificado por referencia exacta y seleccionado localmente. Guarda las líneas; el pedido se confirma por separado.`);
-    } catch (error) { setSaveMsg(error instanceof Error ? error.message : "No se pudo comprobar el candidato de Raskibot"); }
+    } catch (error) { setSaveMsg(error instanceof Error ? error.message : "No se pudo comprobar el candidato de Facturas"); }
     finally { setApplyingSuggestion(null); }
   };
 
@@ -1008,7 +1074,10 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
   const updateLine = (i: number, patch: Partial<ProductLineEdit>) => {
     const rates = [patch.discount, patch.discountExtra, patch.promptPaymentDiscount].filter((value) => value != null);
     if (rates.some((value) => !Number.isFinite(value) || value! < 0 || value! > 100 || Math.abs(value! * 1000 - Math.round(value! * 1000)) > 0.000001)) { setSaveMsg("Cada descuento debe estar entre 0 y 100% y tener como máximo tres decimales."); return; }
-    setLines((prev) => prev.map((line, index) => index === i ? recalculateProductLine(line, patch) : line));
+    setLines((prev) => prev.map((line, index) => index === i ? recalculateProductLine(line, {
+      ...patch,
+      ...(["quantity", "productId", "sourcePurchaseOrderId"].some((key) => key in patch) ? { quantityMismatchAcknowledged: false, quantityMismatchConfirmation: null } : {}),
+    }) : line));
   };
 
   const applySequentialDiscounts = () => {
@@ -1110,7 +1179,7 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
       if (!r.ok) throw new Error(x.message || "No se pudo guardar");
       if (x.document) onDocUpdated(x.document);
       setManualTaxTotal(false);
-      setSaveMsg("Líneas guardadas en el registro local del LAB.");
+      setSaveMsg("Líneas guardadas en el borrador local del Dashboard.");
       const mappedTax = Number(x.fiscalDefaults?.defaultTaxId);
       const mappedAccount = Number(x.fiscalDefaults?.defaultAccountId);
       if (Number.isFinite(mappedTax) && mappedTax > 0) setBulkTaxId(mappedTax);
@@ -1242,7 +1311,7 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
       const x = await r.json();
       if (!r.ok) throw new Error(x.message || "No se pudo guardar");
       if (x.document) onDocUpdated(x.document);
-      setPoMsg(`Proveedor verificado y cotejo guardado en LAB. ${selectedPoIds.length ? `Pedidos: ${selectedPoIds.join(", ")}.` : "Rama de servicios sin pedido."}`);
+      setPoMsg(`Proveedor verificado y cotejo guardado en el borrador del Dashboard. ${selectedPoIds.length ? `Pedidos: ${selectedPoIds.join(", ")}.` : "Rama de servicios sin pedido."}`);
     } catch (e) {
       setPoMsg(e instanceof Error ? e.message : "Error guardando asociación");
     } finally {
@@ -1334,7 +1403,7 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
       const r = await fetch(`${apiPath}/drive/move`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: doc.driveFileId, targetFolderId: driveTarget.id }),
+        body: JSON.stringify({ id: doc.driveFileId, targetFolderId: driveTarget.id, expectedFolderPath: driveTarget.path }),
       });
       const x = await r.json();
       if (!r.ok) throw new Error(x.message || "No se pudo mover el PDF");
@@ -1351,20 +1420,48 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
 
   const createOdooDraft = async () => {
     if (odooBusy) return;
+    if (!driveTarget || archiveDestinationError) {
+      setOdooMsg(archiveDestinationError || "Selecciona la carpeta de archivo antes de continuar.");
+      return;
+    }
     setOdooBusy(true);
-    setOdooMsg("");
+    setOdooMsg("Comprobando permisos y carpeta de destino…");
     try {
-      const r = await fetch(`${apiPath}/odoo-draft`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: doc.driveFileId, accountingDate }) });
+      const [odooPermission, drivePermission, folderResponse] = await Promise.all([
+        fetch(`${apiPath}/odoo-draft-capability?id=${encodeURIComponent(doc.driveFileId)}`, { cache: "no-store" }),
+        fetch(`${apiPath}/drive/move-capability?id=${encodeURIComponent(doc.driveFileId)}`, { cache: "no-store" }),
+        fetch(`${apiPath}/drive/browse?folder=${encodeURIComponent(driveTarget.id)}`, { cache: "no-store" }),
+      ]);
+      const [odooAccess, driveAccess, folder] = await Promise.all([odooPermission.json(), drivePermission.json(), folderResponse.json()]);
+      if (!odooPermission.ok || odooAccess.enabled !== true || !drivePermission.ok || driveAccess.enabled !== true) throw new Error("La operación conjunta requiere permiso activo de Odoo y Drive para esta factura.");
+      if (!folderResponse.ok || folder.path !== driveTarget.path) throw new Error("La carpeta de Drive cambió o ya no está disponible. Selecciónala de nuevo.");
+      setOdooMsg("Creando borrador en Odoo…");
+      const r = await fetch(`${apiPath}/odoo-draft`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: doc.driveFileId, accountingDate, requireVerified: true }) });
       const x = await r.json();
-      if (!r.ok) throw new Error(x.message || "No se pudo crear el borrador");
+      if (!r.ok) throw new Error([x.message, ...(x.verification?.blockers ?? []).slice(0, 4)].filter(Boolean).join(" · ") || "No se pudo crear el borrador");
       if (x.document) onDocUpdated(x.document);
       setDraftConfirmation(false);
       const res = x.result ?? {};
       const actual = res.actual;
-      setDraftCreated({ id: Number(res.moveId), reference: actual?.reference ?? doc.extracted?.invoiceNumber ?? "", dueDate: actual?.dueDate ?? null, total: actual?.total ?? null });
-      setOdooMsg(`Borrador creado en Odoo (ID ${res.moveId}).` +
-        (actual ? ` Odoo calculó base ${actual.base.toFixed(2)} €, IVA ${actual.taxes.toFixed(2)} € y total ${actual.total.toFixed(2)} € en ${actual.lines.length} líneas; PDF ${doc.extracted?.total ?? "—"} €.` : " Revisa sus importes en Odoo.") +
-        (res.warnings?.length ? ` Avisos: ${res.warnings.join(" · ")}` : ""));
+      setOdooMsg(`Borrador Odoo ${res.moveId} creado. Archivando el PDF en Drive…`);
+      try {
+        const pdf = doc.extracted;
+        const mismatch = archiveMismatch(pdf, actual, res.warnings ?? [], doc.invoiceBranch === "services" ? "services" : "goods");
+        if (mismatch) throw new Error(`${mismatch} Revisa el borrador antes de archivar.`);
+        const moveResponse = await fetch(`${apiPath}/drive/move`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: doc.driveFileId, targetFolderId: driveTarget.id, expectedFolderPath: driveTarget.path }),
+        });
+        const moved = await moveResponse.json();
+        if (!moveResponse.ok) throw new Error(moved.message || "No se pudo archivar el PDF");
+        if (moved.document) onDocUpdated(moved.document);
+        setDraftCreated({ id: Number(res.moveId), reference: actual?.reference ?? doc.extracted?.invoiceNumber ?? "", dueDate: actual?.dueDate ?? null, total: actual?.total ?? null });
+        setOdooMsg(`Borrador Odoo ${res.moveId} creado y PDF archivado en ${moved.targetFolderPath}.`);
+      } catch (moveError) {
+        setOdooMsg(`Borrador Odoo ${res.moveId} creado, pero el PDF NO se archivó: ${moveError instanceof Error ? moveError.message : "error de Drive"}. No repitas la creación; usa «Guardar PDF aquí» para reintentar solo el traslado.`);
+        setDriveMsg("Borrador creado; traslado pendiente. Reintenta solo «Guardar PDF aquí».");
+      }
     } catch (e) {
       setOdooMsg(e instanceof Error ? e.message : "Error creando borrador");
     } finally {
@@ -1391,6 +1488,10 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
     setValidatingDraft(true);
     setOdooMsg("");
     try {
+      const checked = await fetch(`${apiPath}/verification?id=${encodeURIComponent(doc.driveFileId)}`, { cache: "no-store" });
+      const check = await checked.json();
+      if (!checked.ok) throw new Error(check.message || "No se pudo verificar el PDF y Odoo");
+      if (!check.verification?.ready) throw new Error(`Cotejo pendiente: ${(check.verification?.blockers ?? ["verificación incompleta"]).slice(0, 5).join(" · ")}`);
       if (doc.status !== "VALIDADA") {
         const r = await fetch(`${apiPath}/status`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: doc.driveFileId, status: "VALIDADA" }) });
         const x = await r.json();
@@ -1433,6 +1534,15 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
     }
     addAmountWarning("Total de líneas", lines.reduce((sum, line, index) => sum + (line.totalWithTax ?? ((line.total ?? projectedLines[index].base) + (line.taxAmount ?? 0))), 0), declaredTotal);
   }
+  const invoiceYear = ex?.invoiceDate?.slice(0, 4);
+  const invoiceMonth = Number(ex?.invoiceDate?.slice(5, 7));
+  const invoiceQuarter = invoiceMonth >= 1 && invoiceMonth <= 12 ? Math.ceil(invoiceMonth / 3) : null;
+  const archiveParts = driveTarget?.path.split("/").filter(Boolean) ?? [];
+  const archiveDestinationError = !driveTarget ? "Selecciona primero FACTURAS / proveedor / AÑO / TRIMESTRE en Drive."
+    : !invoiceYear || !invoiceQuarter ? "Falta una fecha de factura válida para comprobar año y trimestre."
+    : archiveParts.length !== 4 || archiveParts[0] !== "FACTURAS" || !archiveParts[1]
+      || archiveParts[2] !== `AÑO ${invoiceYear}` || archiveParts[3] !== `TRIMESTRE ${invoiceQuarter}`
+      ? `El destino debe ser FACTURAS / proveedor / AÑO ${invoiceYear} / TRIMESTRE ${invoiceQuarter}.` : "";
   let webAdjustmentPreview: ReturnType<typeof calculateWebAdjustment> | null = null;
   let webAdjustmentError = "";
   try {
@@ -1456,7 +1566,7 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
         </span>}
         {doc.ocrStatus === "needs_ocr" && <p className="si-warn"><AlertTriangle /> PDF escaneado sin capa de texto: OCR pendiente (fase posterior).</p>}
         <div className="si-doc-actions si-scan-top">
-          <button type="button" disabled={extracting !== null || isExcluded || chatBusy} onClick={() => void askRaskibot()} title="Lee solo este PDF y propone datos para revisar">
+          <button type="button" disabled={extracting !== null || isExcluded || chatBusy} onClick={() => void askFacturas()} title="Lee solo este PDF y propone datos para revisar">
             {chatBusy || extracting === doc.driveFileId ? <RefreshCw className="spin" /> : <Sparkles />} {chatBusy || extracting === doc.driveFileId ? "Analizando…" : "Escanear con IA"}
           </button>
         </div>
@@ -1584,17 +1694,17 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
             )}
 
             <section className="si-review-chat">
-              <h3>Revisión con Raskibot</h3>
+              <h3>Revisión con Facturas</h3>
               <p className="si-note">Rellena los datos que constan en el PDF; los pedidos y productos se cotejan con Odoo. No crea borradores.</p>
-              <button className="si-editor-add" type="button" onClick={() => void askRaskibot()} disabled={chatBusy}>
+              <button className="si-editor-add" type="button" onClick={() => void askFacturas()} disabled={chatBusy}>
                 {chatBusy ? <RefreshCw className="spin" size={14} /> : <Sparkles size={14} />} {chatOpen ? "Actualizar análisis" : "Abrir chat y extraer con IA"}
               </button>
               {chatOpen && <>
                 <p className="si-chat-stage" role="status">{chatStage}</p>
                 <div className="si-chat-log" aria-live="polite">
-                  {(doc.reviewChat ?? []).length ? (doc.reviewChat ?? []).map((message, index) => <p key={`${message.at}-${index}`} className={`si-chat-${message.role}`}><b>{message.role === "user" ? "Rafa" : message.role === "assistant" ? "Raskibot" : "Sistema"}:</b> {message.content}</p>) : <p className="si-note">Todavía no hay mensajes. Inicia la extracción o pregunta algo de esta factura.</p>}
+                  {(doc.reviewChat ?? []).length ? (doc.reviewChat ?? []).map((message, index) => <p key={`${message.at}-${index}`} className={`si-chat-${message.role}`}><b>{message.role === "user" ? "Rafa" : message.role === "assistant" ? "Facturas" : "Sistema"}:</b> {message.content}</p>) : <p className="si-note">Todavía no hay mensajes. Inicia la extracción o pregunta algo de esta factura.</p>}
                 </div>
-                <div className="si-chat-compose"><input value={chatInput} maxLength={1000} onChange={(e) => setChatInput(e.target.value)} placeholder="Ej.: MH es horizontal móvil, ¿qué líneas cambian?" aria-label="Pregunta para Raskibot" /><button type="button" className="si-editor-add" disabled={chatBusy || !chatInput.trim()} onClick={() => void askRaskibot(chatInput.trim())}>Preguntar</button></div>
+                <div className="si-chat-compose"><input value={chatInput} maxLength={1000} onChange={(e) => setChatInput(e.target.value)} placeholder="Ej.: MH es horizontal móvil, ¿qué líneas cambian?" aria-label="Pregunta para Facturas" /><button type="button" className="si-editor-add" disabled={chatBusy || !chatInput.trim()} onClick={() => void askFacturas(chatInput.trim())}>Preguntar</button></div>
               </>}
             </section>
 
@@ -1610,13 +1720,13 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
                   </div>
                 )}
                 {raskibotOrderSuggestions.length > 0 && <div className="si-note si-raskibot-order-suggestions">
-                  <b>Sugerencia de Raskibot (sin guardar):</b> referencia exacta de pedido encontrada. Revísala y preselecciónala; después confirma la asociación en la lista.
+                  <b>Sugerencia de Facturas (sin guardar):</b> referencia exacta de pedido encontrada. Revísala y preselecciónala; después confirma la asociación en la lista.
                   {raskibotOrderSuggestions.map((id) => {
                     const order = poCandidates.find((candidate) => candidate.id === id);
                     return <button key={id} className="si-link-product" type="button" disabled={poLoading || poSaving} onClick={() => {
                       setPoOpen(true);
                       setSelectedPoIds((current) => current.includes(id) ? current : [...current, id]);
-                      setPoMsg(`Raskibot propone ${order?.name ?? `pedido #${id}`}; queda preseleccionado para que lo revises. Pulsa «Guardar asociación» solo si corresponde.`);
+                      setPoMsg(`Facturas propone ${order?.name ?? `pedido #${id}`}; queda preseleccionado para que lo revises. Pulsa «Guardar asociación» solo si corresponde.`);
                     }}>Revisar y preseleccionar {order?.name ?? `pedido #${id}`}</button>;
                   })}
                 </div>}
@@ -1624,7 +1734,7 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
                 <button className="si-editor-add" disabled={poLoading} onClick={() => { if (!poOpen) void loadPoCandidates(); setPoOpen((v) => !v); }} type="button">
                   {poLoading ? <RefreshCw className="spin" size={14} /> : <ShoppingCart size={14} />} {poOpen ? "Ocultar pedidos" : "Asociar pedidos de compra"}
                 </button>
-                {poMsg && <p className={poMsg.startsWith("Proveedor verificado") || poMsg.startsWith("Pedidos asociados") || poMsg.startsWith("Raskibot propone") || poMsg.startsWith("La lista de pedidos") ? "si-msg" : "error"} role="status">{poMsg}</p>}
+                {poMsg && <p className={poMsg.startsWith("Proveedor verificado") || poMsg.startsWith("Pedidos asociados") || poMsg.startsWith("Facturas propone") || poMsg.startsWith("La lista de pedidos") ? "si-msg" : "error"} role="status">{poMsg}</p>}
                 {poOpen && (
                   <div className="si-multipo">
                     {poCandidates.length === 0 ? (
@@ -1666,14 +1776,14 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
               </section>
             )}
 
-            {!isExcluded && Boolean(doc.odooDraftMoveId) && (
+            {!isExcluded && (
               <section className="si-drive-section">
-                <h3>Guardar en Drive</h3>
+                <h3>Destino del PDF en Drive</h3>
                 {doc.movedTo ? (
                   <p className="si-msg"><CheckCircle2 size={14} /> PDF ya archivado en {doc.targetFolderPath ?? doc.movedTo}.</p>
                 ) : (
                   <>
-                    <p className="si-note">Navega dentro de FACTURAS, elige una carpeta existente o crea una nueva. El PDF solo se moverá al pulsar «Guardar PDF aquí».</p>
+                    <p className="si-note">Antes de crear el borrador, selecciona o crea la carpeta FACTURAS / proveedor / AÑO / TRIMESTRE. Tras tu confirmación se creará el borrador Odoo y solo después se archivará el PDF. Si falla el archivo, podrás reintentar solo el traslado.</p>
                     <button className="si-editor-add" onClick={() => void openDrive()} type="button" disabled={driveLoading || creatingFolder || moving}>
                       {driveLoading ? <RefreshCw className="spin" size={14} /> : <Folder size={14} />} {driveLoading ? "Cargando carpetas…" : driveOpen ? "Ocultar navegador" : "Abrir navegador de Drive"}
                     </button>
@@ -1705,7 +1815,7 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
                         </div>
                         <div className="si-pick">
                           <button className="si-editor-add" type="button" disabled={driveLoading || creatingFolder || moving || !drivePath.length} onClick={selectCurrentFolder}>Usar carpeta actual</button>
-                          <button className="si-editor-add" type="button" disabled={!driveTarget || driveLoading || creatingFolder || moving} onClick={() => void movePdf()}>
+                          <button className="si-editor-add" type="button" disabled={!doc.odooDraftMoveId || !driveTarget || driveLoading || creatingFolder || moving} onClick={() => void movePdf()}>
                             {moving ? <RefreshCw className="spin" size={14} /> : <CheckCircle2 size={14} />} {moving ? "Guardando PDF…" : "Guardar PDF aquí"}
                           </button>
                         </div>
@@ -1780,7 +1890,7 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
                       const currentInvoiceOverReceipt = invoiceBranch === "goods" && availableReceived != null && l.quantity != null && Math.abs(l.quantity - availableReceived) > 0.0001;
                       return (
                       <div className={`si-editor-line${currentInvoiceOverReceipt ? " si-qty-mismatch" : ""}`} key={i} style={{ gridTemplateColumns: lineGridTemplate }}>
-                        <div className="si-editor-product">{l.productId ? <a className="si-product-odoo-link" href={`${apiPath}/product-odoo?id=${l.productId}`} target="_blank" rel="noopener noreferrer" title="Abrir producto en Odoo" aria-label={`Abrir ${l.description} en Odoo`}><Search size={14} /></a> : null}<div><label className="si-editor-field"><span>{invoiceBranch === "services" ? "Descripción contable" : "Producto / descripción"}</span><input value={l.description} onChange={(e) => updateLine(i, { description: e.target.value })} /></label><span className="si-line-origin">{l.sourcePurchaseOrderName || (l.genericProductConfirmed ? "Servicio/consumible confirmado" : invoiceBranch === "services" ? "Servicio sin pedido · producto opcional" : "Línea manual · sin producto Odoo; requiere cuenta e IVA")}<small>{l.productId && l.sourcePurchaseOrderId ? `Producto Odoo #${l.productId}: ${poCandidates.find((order) => order.id === l.sourcePurchaseOrderId)?.lines.find((source) => source.productId === l.productId)?.productName ?? "comprueba el pedido"} · ` : ""}Pedida: {l.qtyOrdered ?? "—"} · Recibida: {l.qtyReceived ?? "—"} · Fact. previa: {l.qtyInvoiced ?? "—"} · Esta factura: {l.quantity ?? "—"} · Pendiente: {l.qtyPending ?? "—"}</small>{currentInvoiceOverReceipt && <small className="si-qty-mismatch-note" role="alert">La cantidad de esta factura ({l.quantity}) no coincide con lo recibido pendiente de facturar ({availableReceived}); revisa esta línea.</small>}{l.matchCandidates?.length ? <small className="si-match-candidates">{l.matchCandidates.some((candidate) => candidate.identityLevel === "ambiguous") ? "Coincidencia ambigua" : l.matchCandidates.some((candidate) => candidate.identityLevel === "exact") ? "Identidad exacta" : "Candidatos probables"}: {l.matchCandidates.map((candidate) => `${candidate.purchaseOrderName} · ${candidate.productName} (${candidate.score}%, ${candidate.evidence.join("/") || "nombre aproximado"}${candidate.discrepancies.length ? `; revisar ${candidate.discrepancies.join(", ")}` : ""})`).join(" · ")}. Requiere revisión humana; no está asociado.</small> : null}{doc.pdfSourceLines?.[i]?.reference === l.reference && doc.pdfSourceLines?.[i]?.description === l.description && doc.pdfSourceLines?.[i]?.priceUnit != null && l.priceUnit != null && Math.abs(doc.pdfSourceLines[i].priceUnit! - l.priceUnit) > 0.000001 ? <small>Precio impreso en PDF: {doc.pdfSourceLines[i].priceUnit!.toLocaleString("es-ES", { maximumFractionDigits: 5 })} € · ajuste del borrador: {l.priceUnit.toLocaleString("es-ES", { maximumFractionDigits: 5 })} €</small> : null}{!l.productId ? <button className="si-link-product" type="button" onClick={() => { setLinkingLineIndex(i); setPickerOpen(true); if (!catalog.length) void loadCatalog(); }}>Enlazar producto Odoo</button> : null}{l.aiProductCandidateId && l.aiProductCandidateId !== l.productId ? <><small>Raskibot encontró un producto por referencia exacta; sigue sin estar seleccionado{l.aiCandidateReason ? ` · ${l.aiCandidateReason}` : ""}.</small><button className="si-link-product" type="button" disabled={applyingSuggestion !== null || saving || savingFields} aria-label={`Revisar y seleccionar el producto sugerido ${l.aiProductCandidateId} para ${l.description}`} onClick={() => void acceptRaskibotProductCandidate(i, Number(l.aiProductCandidateId))}>{applyingSuggestion === i ? <><RefreshCw className="spin" size={14} /> Comprobando referencia en Odoo…</> : `Revisar candidato Odoo #${l.aiProductCandidateId}`}</button></> : null}{productSuggestions[i] && productSuggestions[i]?.productId !== l.productId ? <button className="si-link-product" type="button" disabled={applyingSuggestion !== null} onClick={() => void acceptProductSuggestion(i, productSuggestions[i]!)}>{applyingSuggestion === i ? <><RefreshCw className="spin" size={14} /> Comprobando en Odoo…</> : `Sugerencia aprendida: producto #${productSuggestions[i]?.productId} · revisar y elegir`}</button> : null}</span>
+                        <div className="si-editor-product">{l.productId ? <a className="si-product-odoo-link" href={`${apiPath}/product-odoo?id=${l.productId}`} target="_blank" rel="noopener noreferrer" title="Abrir producto en Odoo" aria-label={`Abrir ${l.description} en Odoo`}><Search size={14} /></a> : null}<div><label className="si-editor-field"><span>{invoiceBranch === "services" ? "Descripción contable" : "Producto / descripción"}</span><input value={l.description} onChange={(e) => updateLine(i, { description: e.target.value })} /></label><span className="si-line-origin">{l.sourcePurchaseOrderName || (l.genericProductConfirmed ? "Servicio/consumible confirmado" : invoiceBranch === "services" ? "Servicio sin pedido · producto opcional" : "Línea manual · sin producto Odoo; requiere cuenta e IVA")}<small>{l.productId && l.sourcePurchaseOrderId ? `Producto Odoo #${l.productId}: ${poCandidates.find((order) => order.id === l.sourcePurchaseOrderId)?.lines.find((source) => source.productId === l.productId)?.productName ?? "comprueba el pedido"} · ` : ""}Pedida: {l.qtyOrdered ?? "—"} · Recibida: {l.qtyReceived ?? "—"} · Fact. previa: {l.qtyInvoiced ?? "—"} · Esta factura: {l.quantity ?? "—"} · Pendiente: {l.qtyPending ?? "—"}</small>{currentInvoiceOverReceipt && <><small className="si-qty-mismatch-note" role="alert">La factura indica {l.quantity}; Odoo muestra {l.qtyOrdered} pedidas, {l.qtyReceived} recibidas y {l.qtyInvoiced ?? 0} facturadas. Esta confirmación no declara recibida ninguna unidad pendiente.</small><label className="si-mismatch-confirm"><input type="checkbox" checked={Boolean(l.quantityMismatchAcknowledged || l.quantityMismatchConfirmation)} onChange={(e) => updateLine(i, { quantityMismatchAcknowledged: e.target.checked })} /><span>Confirmo que la cantidad facturada ({l.quantity}) no coincide con la cantidad pedida/recibida. Las unidades pendientes siguen sin confirmar.</span></label></>}{l.matchCandidates?.length ? <small className="si-match-candidates">{l.matchCandidates.some((candidate) => candidate.identityLevel === "ambiguous") ? "Coincidencia ambigua" : l.matchCandidates.some((candidate) => candidate.identityLevel === "exact") ? "Identidad exacta" : "Candidatos probables"}: {l.matchCandidates.map((candidate) => `${candidate.purchaseOrderName} · ${candidate.productName} (${candidate.score}%, ${candidate.evidence.join("/") || "nombre aproximado"}${candidate.discrepancies.length ? `; revisar ${candidate.discrepancies.join(", ")}` : ""})`).join(" · ")}. Requiere revisión humana; no está asociado.</small> : null}{doc.pdfSourceLines?.[i]?.reference === l.reference && doc.pdfSourceLines?.[i]?.description === l.description && doc.pdfSourceLines?.[i]?.priceUnit != null && l.priceUnit != null && Math.abs(doc.pdfSourceLines[i].priceUnit! - l.priceUnit) > 0.000001 ? <small>Precio impreso en PDF: {doc.pdfSourceLines[i].priceUnit!.toLocaleString("es-ES", { maximumFractionDigits: 5 })} € · ajuste del borrador: {l.priceUnit.toLocaleString("es-ES", { maximumFractionDigits: 5 })} €</small> : null}{!l.productId ? <button className="si-link-product" type="button" onClick={() => { setLinkingLineIndex(i); setPickerOpen(true); if (!catalog.length) void loadCatalog(); }}>Enlazar producto Odoo</button> : null}{l.aiProductCandidateId && l.aiProductCandidateId !== l.productId ? <><small>Facturas encontró un producto por referencia exacta; sigue sin estar seleccionado{l.aiCandidateReason ? ` · ${l.aiCandidateReason}` : ""}.</small><button className="si-link-product" type="button" disabled={applyingSuggestion !== null || saving || savingFields} aria-label={`Revisar y seleccionar el producto sugerido ${l.aiProductCandidateId} para ${l.description}`} onClick={() => void acceptFacturasProductCandidate(i, Number(l.aiProductCandidateId))}>{applyingSuggestion === i ? <><RefreshCw className="spin" size={14} /> Comprobando referencia en Odoo…</> : `Revisar candidato Odoo #${l.aiProductCandidateId}`}</button></> : null}{productSuggestions[i] && productSuggestions[i]?.productId !== l.productId ? <button className="si-link-product" type="button" disabled={applyingSuggestion !== null} onClick={() => void acceptProductSuggestion(i, productSuggestions[i]!)}>{applyingSuggestion === i ? <><RefreshCw className="spin" size={14} /> Comprobando en Odoo…</> : `Sugerencia aprendida: producto #${productSuggestions[i]?.productId} · revisar y elegir`}</button> : null}</span>
                           {invoiceBranch === "goods" && l.productId && !l.sourcePurchaseOrderId && !(doc.assignedPurchaseOrderIds ?? []).some((id) => poCandidates.find((order) => order.id === id)?.lines.some((source) => source.productId === l.productId)) && <><small className="error">Este producto no figura en las líneas de los pedidos asociados.</small><button className="si-link-product" type="button" onClick={() => updateLine(i, { productId: null, sourcePurchaseOrderId: null, sourcePurchaseOrderName: null, qtyOrdered: null, qtyReceived: null, qtyInvoiced: null, qtyPending: null, genericProductConfirmed: false, pdfPriceVerified: false })}>Dejar como línea manual sin producto</button></>}
                         </div></div>
                         <label className="si-editor-field"><span>Cant.</span><input type="number" min="0" step="any" value={l.quantity ?? ""} onChange={(e) => updateLine(i, { quantity: e.target.value === "" ? null : Number(e.target.value) })} /></label>
@@ -1838,7 +1948,7 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
                 )}
                 {saveMsg && <p className={saveMsg.startsWith("Líneas") || saveMsg.startsWith("Descuentos sucesivos") || saveMsg.startsWith("Producto AJUSTEWEB preparado") ? "si-msg" : "error"} role="status">{saveMsg}</p>}
                 {optionError && <p className="error" role="alert">{optionError}</p>}
-                <p className="si-note">«Guardar líneas» solo guarda en el LAB. «Validar y revisar borrador Odoo» abre la confirmación; el borrador se crea solo si después pulsas «Aceptar y crear borrador».</p>
+                <p className="si-note">«Guardar líneas» conserva el borrador local del Dashboard. «Validar y revisar borrador Odoo» muestra la confirmación; solo entonces, al pulsar «Aceptar y crear borrador», se crea el borrador en Odoo.</p>
               </div>
             </section>
 
@@ -1878,18 +1988,22 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
                 </tbody></table></div>
                 <p>PDF: {doc.extracted?.base ?? "—"} € + {doc.extracted?.taxes ?? "—"} € = {doc.extracted?.total ?? "—"} € · Previsión Odoo: {projectedBase.toFixed(2)} € + {projectedTax.toFixed(2)} € = {(projectedBase + projectedTax).toFixed(2)} €.</p>
                 <label>Fecha contable / creación del borrador <input type="date" required value={accountingDate} onChange={(e) => setAccountingDate(e.target.value)} /></label>
-                {amountReviewWarnings.length > 0 && <p className="si-warn" role="alert"><b>Hay diferencias de importes.</b> Se podrá crear el borrador para revisarlo en Odoo; comprueba los importes antes de contabilizar. {amountReviewWarnings.join(" · ")}</p>}
-                {!draftWriteEnabled && <p className="si-warn" role="status">{draftCapabilityChecking ? "Comprobando permiso para crear el borrador…" : draftCapabilityError || "El LAB está en solo lectura: el botón Aceptar está deshabilitado. El permiso se comprueba de nuevo automáticamente; la previsualización no modifica Odoo."}</p>}
+                {amountReviewWarnings.length > 0 && <p className="si-warn" role="alert"><b>Hay diferencias de importes.</b> Resuelve las diferencias antes de crear el borrador y archivar el PDF. {amountReviewWarnings.join(" · ")}</p>}
+                <p>Destino Drive: <b>{driveTarget?.path ?? "Sin seleccionar"}</b>.</p>
+                {archiveDestinationError && <p className="si-warn" role="alert">{archiveDestinationError}</p>}
+                {!draftWriteEnabled && <p className="si-warn" role="status">{draftCapabilityChecking ? "Comprobando permiso para crear el borrador…" : draftCapabilityError || "La creación de borradores no está habilitada para esta factura. La previsualización no modifica Odoo."}</p>}
+                {!driveWriteEnabled && <p className="si-warn" role="status">El traslado a Drive no está habilitado para esta factura.</p>}
                 {odooMsg && <p className="error" role="alert">{odooMsg}</p>}
-                <div className="si-draft-confirm-actions"><button type="button" disabled={odooBusy} onClick={() => setDraftConfirmation(false)}>Cancelar</button><button type="button" className="si-primary" disabled={odooBusy || !accountingDate || !draftWriteEnabled} onClick={() => void createOdooDraft()}>{odooBusy ? <><RefreshCw className="spin" size={14}/> Enviando a Odoo…</> : "Aceptar y crear borrador"}</button></div>
+                <div className="si-draft-confirm-actions"><button type="button" disabled={odooBusy} onClick={() => setDraftConfirmation(false)}>Cancelar</button><button type="button" className="si-primary" disabled={odooBusy || !accountingDate || !draftWriteEnabled || !driveWriteEnabled || !!archiveDestinationError || amountReviewWarnings.length > 0} onClick={() => void createOdooDraft()}>{odooBusy ? <><RefreshCw className="spin" size={14}/> Creando borrador y archivando PDF…</> : "Crear borrador y archivar PDF"}</button></div>
               </div>
             </div>}
             {draftCreated && <div className="si-draft-confirm-backdrop">
               <div className="si-draft-confirm" role="dialog" aria-modal="true" aria-labelledby="si-draft-created-title">
-                <h3 id="si-draft-created-title"><CheckCircle2 size={20} /> Borrador creado en Odoo</h3>
+                <h3 id="si-draft-created-title"><CheckCircle2 size={20} /> Borrador creado y PDF archivado</h3>
                 <p>Factura de proveedor <b>{draftCreated.reference || "—"}</b> · ID de Odoo <b>{draftCreated.id}</b>.</p>
                 {draftCreated.dueDate && <p>Vencimiento guardado en Odoo: <b>{draftCreated.dueDate}</b>.</p>}
                 {draftCreated.total != null && <p>Total calculado por Odoo: <b>{money(draftCreated.total, "EUR")}</b>. Total del PDF: <b>{doc.extracted?.total != null ? money(doc.extracted.total, "EUR") : "—"}</b>.</p>}
+                <p>PDF archivado en <b>{doc.targetFolderPath ?? driveTarget?.path ?? "Drive"}</b>.</p>
                 <p className="si-note">El número contable todavía no está asignado: Odoo muestra «/» mientras la factura está en borrador. Revisa y valida la factura directamente en Odoo.</p>
                 <div className="si-draft-confirm-actions"><a className="si-odoo-draft-link" href={`${apiPath}/odoo-draft-open?id=${encodeURIComponent(doc.driveFileId)}`} target="_blank" rel="noopener noreferrer"><ExternalLink size={16} /> Abrir borrador en Odoo</a><button type="button" className="si-primary" onClick={() => setDraftCreated(null)}>Entendido</button></div>
               </div>
@@ -1971,7 +2085,7 @@ export function UnbilledView({ base }: { base: string }) {
         <div>
           <p className="eyebrow">Compras / Facturas de proveedor</p>
           <h2>Pedidos sin facturar</h2>
-          <p>Fase 2 · Control pedido / recepción / factura · datos reales de Odoo (solo lectura)</p>
+          <p>Fase 2 · Control pedido / recepción / factura · datos reales de Odoo; borrador solo tras confirmación</p>
         </div>
         <div className="si-actions">
           <small>{data?.poFreshness?.stale ? "DATOS DESACTUALIZADOS · " : ""}Última sync: {dt(data?.lastPoSyncAt?.slice(0, 10) ?? null)}</small>

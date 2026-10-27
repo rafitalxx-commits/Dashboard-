@@ -172,10 +172,12 @@ function matchWeight(from: number | null | undefined, to: number | null | undefi
 }
 
 function matchProduct(condition: ShippingRule["conditions"]["product"], items: NonNullable<ShippingRuleOrderInput["items"]>) {
-  const value = normalizeText(condition?.value);
-  if (!condition || !value) return null;
-  const productText = items.map((item) => `${item.sku || ""} ${item.name || ""}`).join("\n");
-  const contains = normalizeText(productText).includes(value);
+  // Commas, semicolons and newlines separate alternatives, not one literal phrase.
+  // Keep spaces inside each term (e.g. "Arqueta cuadrada estanca 300x300").
+  const values = [...new Set(String(condition?.value || "").split(/[,;\n]+/).map(normalizeText).filter(Boolean))];
+  if (!condition || !values.length) return null;
+  const productTexts = items.map((item) => normalizeText(`${item.sku || ""} ${item.name || ""}`));
+  const contains = values.some((value) => productTexts.some((text) => text.includes(value)));
   const matched = condition.operator === "contains" ? contains : !contains;
   return { matched, reason: matched ? "Producto coincide" : "Producto no coincide" };
 }

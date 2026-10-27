@@ -1678,7 +1678,9 @@ function App() {
                 ? "Inventario · Odoo real"
                 : activeView === "pendingPurchases"
                   ? "Compras · Odoo real"
-                  : activeView === "supplierInvoices" || activeView === "purchaseAnalytics"
+                  : activeView === "supplierInvoices"
+                    ? "Compras · Odoo real · borradores bajo confirmación"
+                  : activeView === "purchaseAnalytics"
                     ? "Compras · Odoo real · solo lectura"
                   : `Pedidos de venta · ${
                       isV2View
@@ -1727,7 +1729,9 @@ function App() {
                 ? authUser.permissions.includes("odooWrite")
                   ? "Odoo real · acciones habilitadas"
                   : "Odoo real · solo lectura"
-                : activeView === "supplierInvoices" || activeView === "purchaseAnalytics"
+                : activeView === "supplierInvoices"
+                  ? "Odoo real · borrador solo con confirmación"
+                : activeView === "purchaseAnalytics"
                   ? "Odoo real · solo lectura"
                   : connectionMessage}
             </div>
@@ -2024,7 +2028,7 @@ function App() {
           <InventoryReceptionsView initialIds={homeDestination?.metric === "receptions" ? homeDestination.ids : undefined} />
         ) : isOrdersView ? (
           <>
-            {homeDestination && (homeDestination.metric === "unprinted" || homeDestination.metric === "unsent") && <div className="home-destination-filter">Filtro de Inicio · {homeDestination.metric === "unprinted" ? "FBM + Website · sin imprimir" : "FBM + Website · sin etiqueta de Expediciones"} · {homeDestination.ids.length} pedidos <button onClick={() => setHomeDestination(null)} type="button">Quitar filtro</button></div>}
+            {homeDestination && (homeDestination.metric === "unprinted" || homeDestination.metric === "unsent") && <div className="home-destination-filter">Filtro de Inicio · {homeDestination.metric === "unprinted" ? "FBM + Website · sin imprimir" : "FBM + Website · entrega Odoo pendiente"} · {homeDestination.ids.length} pedidos <button onClick={() => setHomeDestination(null)} type="button">Quitar filtro</button></div>}
             {isV2View && (
               <V2PerformancePanel
                 performance={ordersV2Performance}
