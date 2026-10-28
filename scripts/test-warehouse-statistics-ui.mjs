@@ -9,7 +9,7 @@ const {chromium}=createRequire('/usr/lib/node_modules/openclaw/package.json')('p
 const probe=createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r));
 const origin=`http://127.0.0.1:${port}`,base='/expeditions-redesign-lab/';
 const temp=mkdtempSync(join(tmpdir(),'warehouse-statistics-ui-'));
-const evidence='/root/.openclaw/workspace/qa/warehouse-statistics-20261028';mkdirSync(evidence,{recursive:true});
+const evidence='/root/.openclaw/workspace/qa/warehouse-statistics-daily-20261028';mkdirSync(evidence,{recursive:true});
 for(const file of ['warehouse-worker-activity.json','warehouse-workers.json'])copyFileSync(join('/var/lib/odoo-v18-dashboard-expeditions-navigation-lab',file),join(temp,file));
 const ledgerBefore=readFileSync(join(temp,'warehouse-worker-activity.json'),'utf8');
 let serverLog='';
@@ -52,10 +52,12 @@ try{
  assert.match(await legend.locator('[data-worker-id="b"]').innerText(),/66,7/);assert.match(await legend.locator('[data-worker-id="a"]').innerText(),/33,3/);
  const color=await legend.locator('[data-worker-id="a"]>i').evaluate(el=>el.style.background);
  checks.push('Today: 3 unique orders / 4 labels; duplicate, test, future and invalid rows excluded; same-name workers split 1/3 and 2/3');
- await page.getByRole('button',{name:'7 días',exact:true}).click();assert.equal(await total.innerText(),'5');assert.equal(await page.locator('.warehouse-order-plot [role="button"]').count(),24);
+ await page.getByRole('button',{name:'7 días',exact:true}).click();assert.equal(await total.innerText(),'5');assert.equal(await page.locator('.warehouse-week-row').count(),5);
  assert.equal(await legend.locator('[data-worker-id="a"]>i').evaluate(el=>el.style.background),color);
- await page.getByRole('button',{name:'10:00: 4 pedidos',exact:true}).click();assert.equal(await total.innerText(),'4');await page.getByRole('button',{name:'Ver todas las horas',exact:true}).click();assert.equal(await total.innerText(),'5');
- checks.push('7 calendar days aggregated by hour; select hour and reset; stable colors');
+ await page.getByRole('button',{name:'28 de octubre, 10:00: 2 pedidos',exact:true}).click();assert.equal(await total.innerText(),'2');await page.getByRole('button',{name:'Ver todas las horas',exact:true}).click();assert.equal(await total.innerText(),'3');await page.getByRole('button',{name:'Volver a los 7 días',exact:true}).click();assert.equal(await total.innerText(),'5');
+ assert.equal(await page.locator('.warehouse-week-row[data-day="2026-10-24"]').count(),0);assert.equal(await page.locator('.warehouse-week-row[data-day="2026-10-25"]').count(),0);
+ assert.equal(await page.locator('.warehouse-week-row').evaluateAll(rows=>rows.reduce((sum,r)=>sum+Number(r.dataset.total),0)),5);
+ checks.push('7 calendar days: separate daily hourly rows, five weekdays, no empty weekend, day+hour click/reset, reconciled sum, stable worker colors');
  await page.getByRole('button',{name:'Mes',exact:true}).click();assert.equal(await total.innerText(),'6');
  assert.equal(await page.getByTestId('month-total').innerText(),'6 pedidos en el mes');assert.equal(await page.locator('.warehouse-month-table tbody tr').count(),28);
  const daySum=await page.locator('.warehouse-month-table tbody tr').evaluateAll(rows=>rows.reduce((sum,row)=>sum+Number(row.cells[1].textContent),0));assert.equal(daySum,6);
@@ -83,6 +85,17 @@ try{
  // Regression: locale format must not be used as an ISO day key.
  await page.addInitScript(()=>{const original=Date.prototype.toLocaleDateString;Date.prototype.toLocaleDateString=function(locale,options){if(locale==='en-CA')return '10/28/2026';return original.call(this,locale,options);};});await page.reload();await page.waitForFunction(()=>document.querySelector('[data-testid="orders-total"]')?.textContent==='3');
  await page.getByRole('button',{name:'Mes',exact:true}).click();assert.equal(await total.innerText(),'6');checks.push('Locale/date regression in non-Madrid browser timezone');
+ await page.getByRole('button',{name:'7 días',exact:true}).click();
+ activities.push(a('weekend-exception','WKEND','2026-10-24T12:00:00Z'),a('early-edge','EARLY','2026-10-27T23:15:00Z'),a('late-edge','LATE','2026-10-22T21:59:59Z'));
+ await page.getByRole('button',{name:'Actualizar',exact:true}).click();await page.waitForFunction(()=>document.querySelector('[data-testid="orders-total"]')?.textContent==='8');
+ assert.equal(await page.locator('.warehouse-week-row[data-day="2026-10-24"]').count(),1);assert.match(await page.locator('.warehouse-week-row[data-day="2026-10-24"]').innerText(),/Excepcional/);
+ assert.equal(await page.locator('.warehouse-week-row').evaluateAll(rows=>rows.reduce((sum,r)=>sum+Number(r.dataset.total),0)),8);
+ assert.equal(await page.locator('.warehouse-week-row[data-day="2026-10-28"] [data-hour="00"]').getAttribute('data-total'),'1');
+ assert.equal(await page.locator('.warehouse-week-row[data-day="2026-10-22"] [data-hour="23"]').getAttribute('data-total'),'1');
+ const saved=activities;activities=[];await page.getByRole('button',{name:'Actualizar',exact:true}).click();await page.waitForFunction(()=>document.querySelector('[data-testid="orders-total"]')?.textContent==='0');assert.equal(await page.locator('.warehouse-week-row').count(),5);assert.equal(await page.locator('.warehouse-week-row [data-hour="00"]').count(),5);
+ activities=saved;await page.getByRole('button',{name:'Mes',exact:true}).click();
+ checks.push('Exceptional weekend and out-of-office edge hours remain visible; empty working days and all-zero week render safely');
+
  // Unintercepted application reader over the disposable snapshot; not public auth acceptance.
  interceptStats=false;await page.getByRole('button',{name:'Actualizar',exact:true}).click();await page.waitForFunction(()=>Number(document.querySelector('[data-testid="orders-total"]')?.textContent.replaceAll('.',''))>100);
  const realToday=new Date();const madridParts=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Madrid',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(realToday).map(p=>[p.type,p.value]));const key=`${madridParts.year}-${madridParts.month}-${madridParts.day}`;

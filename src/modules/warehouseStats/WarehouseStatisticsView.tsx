@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BarChart3, ChartPie, PackageCheck, RefreshCw, Users } from "lucide-react";
 import { downloadWorkerQr, workerQrDataUrl } from "../expeditions/workerQr";
-import { bucketOrders, localDate, orderReference, periodFor, TIME_ZONE, uniqueOrders, withinPeriod, workerRoster, type Activity, type Bucket, type Range, type Worker } from "./statistics";
+import { activeHourKeys, weekDayRows, bucketOrders, localDate, orderReference, periodFor, TIME_ZONE, uniqueOrders, withinPeriod, workerRoster, type Activity, type Bucket, type Range, type Worker } from "./statistics";
 import "../home/homeComparison.css";
 import "./warehouseStatistics.css";
 
@@ -67,6 +67,8 @@ export function WarehouseStatisticsView() {
   const filtered = selectedHour ? dayOrders.filter(item => localDate(item.createdAt)?.hour === selectedHour) : dayOrders;
   const kind = range === "month" && !selectedDay ? "day" : "hour";
   const buckets = bucketOrders(dayOrders, kind, period);
+  const weeklyOverview = range === "week" && !selectedDay;
+  const weekRows = useMemo(() => range === "week" ? weekDayRows(periodOrders, period) : [], [range, periodOrders, period.from, period.to]);
   const pageCount = Math.max(1, Math.ceil(filtered.length / 50));
   const currentPage = Math.min(detailPage, pageCount);
   const visibleOrders = filtered.slice().reverse().slice((currentPage - 1) * 50, currentPage * 50);
@@ -93,7 +95,7 @@ export function WarehouseStatisticsView() {
       <span className="home-comparison-range-status" role="status">{loading ? "Cargando periodo…" : error ? "Lectura no disponible" : `Actualizado ${updatedAt?.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", timeZone: TIME_ZONE })} · hora peninsular`}</span>
     </div>
     {error && <p className="warehouse-stats-error" role="alert">{error}</p>}
-    <div className="warehouse-scope"><span>{scopeLabel}{selectedWorker ? ` · ${selectedWorker.name}` : " · Todos los operarios"}</span>{selectedHour && <button type="button" onClick={() => setSelectedHour(null)}>Ver todas las horas</button>}{selectedDay && <button type="button" onClick={() => { setSelectedDay(null); setSelectedHour(null); }}>Volver al mes completo</button>}</div>
+    <div className="warehouse-scope"><span>{scopeLabel}{selectedWorker ? ` · ${selectedWorker.name}` : " · Todos los operarios"}</span>{selectedHour && <button type="button" onClick={() => setSelectedHour(null)}>Ver todas las horas</button>}{selectedDay && <button type="button" onClick={() => { setSelectedDay(null); setSelectedHour(null); }}>{range === "week" ? "Volver a los 7 días" : "Volver al mes completo"}</button>}</div>
     <div className="warehouse-kpis">
       <article><span><PackageCheck size={17}/>Pedidos totales</span><strong data-testid="orders-total">{unavailable ? "—" : integer.format(filtered.length)}</strong><small>{selectedHour ? "En la hora seleccionada" : selectedDay ? "En el día seleccionado" : "En el periodo seleccionado"}</small></article>
       <article><span><Users size={17}/>Operarios con actividad</span><strong>{unavailable ? "—" : byWorker.length}</strong><small>Sobre el mismo filtro</small></article>
@@ -101,23 +103,23 @@ export function WarehouseStatisticsView() {
     </div>
     <div className="warehouse-charts">
       <article className="home-comparison-card warehouse-chart-panel">
-        <div className="home-comparison-top"><div><h3>Pedidos por {kind === "day" ? "día" : "hora"}</h3><strong className="home-comparison-big">{unavailable ? "—" : integer.format(dayOrders.length)}</strong><span className="home-comparison-unit">{kind === "day" ? `${contextLabel} · pulsa un día para ver sus horas` : range === "week" ? "Suma por hora de los últimos 7 días" : `${contextLabel} · agrupado por hora`}</span></div><BarChart3 size={21} color="#4f8cff"/></div>
-        {unavailable ? <div className="warehouse-chart-placeholder">{loading ? "Cargando actividad…" : "No se pudieron leer los datos."}</div> : <OrderChart buckets={buckets} roster={roster} kind={kind} selectedHour={selectedHour} onSelect={value => kind === "day" ? selectDay(value) : setSelectedHour(current => current === value ? null : value)}/>}
-        <p className="home-comparison-note">{kind === "day" ? "Cada barra es un día. También puedes abrirlo desde el resumen mensual." : "Pulsa una hora para consultar su detalle y el reparto entre operarios. Los colores son los mismos del gráfico circular."}</p>
+        <div className="home-comparison-top"><div><h3>Pedidos por {weeklyOverview ? "día y hora" : kind === "day" ? "día" : "hora"}</h3><strong className="home-comparison-big">{unavailable ? "—" : integer.format(dayOrders.length)}</strong><span className="home-comparison-unit">{kind === "day" ? `${contextLabel} · pulsa un día para ver sus horas` : weeklyOverview ? "Últimos 7 días · cada fila muestra las horas de un día" : `${contextLabel} · agrupado por hora`}</span></div><BarChart3 size={21} color="#4f8cff"/></div>
+        {unavailable ? <div className="warehouse-chart-placeholder">{loading ? "Cargando actividad…" : "No se pudieron leer los datos."}</div> : weeklyOverview ? <WeekHoursChart rows={weekRows} roster={roster} onSelectDay={selectDay} onSelectHour={(day, hour) => { setSelectedDay(day); setSelectedHour(hour); }}/> : <OrderChart buckets={buckets} roster={roster} kind={kind} selectedHour={selectedHour} onSelect={value => kind === "day" ? selectDay(value) : setSelectedHour(current => current === value ? null : value)}/>}
+        <p className="home-comparison-note">{weeklyOverview ? "Sábados y domingos sin actividad ocultos. Pulsa un día o una hora para ver el detalle." : kind === "day" ? "Cada barra es un día. También puedes abrirlo desde el resumen mensual." : "Pulsa una hora para consultar su detalle y el reparto entre operarios. Los colores son los mismos del gráfico circular."}</p>
       </article>
       <article className="home-comparison-card warehouse-share-card" aria-label="Porcentaje por operario">
         <div className="home-comparison-top"><div><h3>Reparto por operario</h3><span className="home-comparison-unit">Porcentaje del total filtrado</span></div><ChartPie size={21} color="#21b987"/></div>
-        <div className="warehouse-donut" role="img" aria-label={unavailable ? "Reparto no disponible" : `${filtered.length} pedidos. ${byWorker.map(item => `${item.name} (${item.code}): ${percent.format(item.total / filtered.length)}`).join(". ") || "Sin actividad"}`} style={{ background: unavailable || !filtered.length ? "#e9eef5" : `conic-gradient(${gradient})` }}><div><strong>{unavailable ? "—" : integer.format(filtered.length)}</strong><small>pedidos</small></div></div>
-        {!unavailable && <ul className="warehouse-share-legend">{byWorker.map(item => <li key={item.id} data-worker-id={item.id}><i style={{ background: item.color }}/><span>{item.name}<small>{item.code}</small></span><b>{percent.format(item.total / filtered.length)}<small>{integer.format(item.total)} pedidos</small></b></li>)}</ul>}
+        <div className="warehouse-share-body"><div className="warehouse-donut" role="img" aria-label={unavailable ? "Reparto no disponible" : `${filtered.length} pedidos. ${byWorker.map(item => `${item.name} (${item.code}): ${percent.format(item.total / filtered.length)}`).join(". ") || "Sin actividad"}`} style={{ background: unavailable || !filtered.length ? "#e9eef5" : `conic-gradient(${gradient})` }}><div><strong>{unavailable ? "—" : integer.format(filtered.length)}</strong><small>pedidos</small></div></div>
+        {!unavailable && <ul className="warehouse-share-legend">{byWorker.map(item => <li key={item.id} data-worker-id={item.id}><i style={{ background: item.color }}/><span>{item.name}<small>{item.code}</small></span><b>{percent.format(item.total / filtered.length)}<small>{integer.format(item.total)} pedidos</small></b></li>)}</ul>}</div>
         {!unavailable && !filtered.length && <p className="warehouse-no-results">No hay pedidos para este filtro.</p>}
         <p className="home-comparison-note">{selectedWorker ? "Un solo operario seleccionado: su participación es el 100 % cuando hay actividad." : "La suma de los operarios representa el 100 % del filtro; los porcentajes se muestran redondeados."}</p>
       </article>
     </div>
     {range === "month" && <article className="home-comparison-card warehouse-monthly" aria-label="Resumen mensual">
       <div className="warehouse-panel-head"><div><h3>Resumen mensual · {new Date(`${month}-01T12:00:00Z`).toLocaleDateString("es-ES", { month: "long", year: "numeric", timeZone: TIME_ZONE })}</h3><small>Selecciona un día para consultar sus horas y pedidos.</small></div><b data-testid="month-total">{unavailable ? "—" : integer.format(periodOrders.length)} pedidos en el mes</b></div>
-      <div className="table-scroll"><table className="orders-table warehouse-month-table"><thead><tr><th>Día</th><th>Pedidos totales</th><th>% del mes</th></tr></thead><tbody>{!unavailable && daily.map(bucket => <tr key={bucket.key} className={selectedDay === bucket.key ? "selected" : ""}><td><button type="button" aria-pressed={selectedDay === bucket.key} onClick={() => selectDay(bucket.key)}>{dayLabel(bucket.key)}</button></td><td>{integer.format(bucket.total)}</td><td>{percent.format(periodOrders.length ? bucket.total / periodOrders.length : 0)}</td></tr>)}</tbody><tfoot><tr><th>Total del mes</th><td>{unavailable ? "—" : integer.format(periodOrders.length)}</td><td>{unavailable ? "—" : periodOrders.length ? "100 %" : "0 %"}</td></tr></tfoot></table></div>
+      <div className="table-scroll" role="region" aria-label="Días del mes" tabIndex={0}><table className="orders-table warehouse-month-table"><thead><tr><th>Día</th><th>Pedidos totales</th><th>% del mes</th></tr></thead><tbody>{!unavailable && daily.map(bucket => <tr key={bucket.key} className={selectedDay === bucket.key ? "selected" : ""}><td><button type="button" aria-pressed={selectedDay === bucket.key} onClick={() => selectDay(bucket.key)}>{dayLabel(bucket.key)}</button></td><td>{integer.format(bucket.total)}</td><td>{percent.format(periodOrders.length ? bucket.total / periodOrders.length : 0)}</td></tr>)}</tbody><tfoot><tr><th>Total del mes</th><td>{unavailable ? "—" : integer.format(periodOrders.length)}</td><td>{unavailable ? "—" : periodOrders.length ? "100 %" : "0 %"}</td></tr></tfoot></table></div>
     </article>}
-    <article className="home-comparison-card warehouse-detail"><div className="warehouse-panel-head"><div><h3>Detalle de pedidos</h3><small>Primera etiqueta real de cada pedido · {scopeLabel}</small></div><b>{unavailable ? "—" : integer.format(filtered.length)} pedidos</b></div><div className="table-scroll"><table className="orders-table"><thead><tr><th>Fecha y hora</th><th>Operario</th><th>Pedido</th><th>Transportista</th><th>Tracking</th></tr></thead><tbody>{!unavailable && visibleOrders.map(item => <tr key={item.id}><td>{new Date(item.createdAt).toLocaleString("es-ES", { timeZone: TIME_ZONE })}</td><td><strong className="warehouse-detail-worker"><i style={{ background: colorById.get(item.workerId) }}/>{roster.find(person => person.id === item.workerId)?.name || item.workerName}</strong><small>{item.workerCode}</small></td><td>{orderReference(item)}</td><td>{item.carrier || "Sin dato"}</td><td>{item.tracking || "Sin dato"}</td></tr>)}{(unavailable || !filtered.length) && <tr><td colSpan={5} className="empty-state">{loading ? "Cargando pedidos…" : error ? "Datos no disponibles. Reintenta la lectura." : "No hay pedidos registrados para este filtro."}</td></tr>}</tbody></table></div>{!unavailable && filtered.length > 50 && <nav className="warehouse-detail-pages" aria-label="Páginas del detalle de pedidos"><span>{(currentPage - 1) * 50 + 1}–{Math.min(currentPage * 50, filtered.length)} de {integer.format(filtered.length)} pedidos</span><button type="button" disabled={currentPage === 1} onClick={() => setDetailPage(currentPage - 1)}>Anterior</button><button type="button" disabled={currentPage === pageCount} onClick={() => setDetailPage(currentPage + 1)}>Siguiente</button></nav>}</article>
+    <article className="home-comparison-card warehouse-detail"><div className="warehouse-panel-head"><div><h3>Detalle de pedidos</h3><small>Primera etiqueta real de cada pedido · {scopeLabel}</small></div><b>{unavailable ? "—" : integer.format(filtered.length)} pedidos</b></div><div className="table-scroll" role="region" aria-label="Pedidos del filtro" tabIndex={0}><table className="orders-table"><thead><tr><th>Fecha y hora</th><th>Operario</th><th>Pedido</th><th>Transportista</th><th>Tracking</th></tr></thead><tbody>{!unavailable && visibleOrders.map(item => <tr key={item.id}><td>{new Date(item.createdAt).toLocaleString("es-ES", { timeZone: TIME_ZONE })}</td><td><strong className="warehouse-detail-worker"><i style={{ background: colorById.get(item.workerId) }}/>{roster.find(person => person.id === item.workerId)?.name || item.workerName}</strong><small>{item.workerCode}</small></td><td>{orderReference(item)}</td><td>{item.carrier || "Sin dato"}</td><td>{item.tracking || "Sin dato"}</td></tr>)}{(unavailable || !filtered.length) && <tr><td colSpan={5} className="empty-state">{loading ? "Cargando pedidos…" : error ? "Datos no disponibles. Reintenta la lectura." : "No hay pedidos registrados para este filtro."}</td></tr>}</tbody></table></div>{!unavailable && filtered.length > 50 && <nav className="warehouse-detail-pages" aria-label="Páginas del detalle de pedidos"><span>{(currentPage - 1) * 50 + 1}–{Math.min(currentPage * 50, filtered.length)} de {integer.format(filtered.length)} pedidos</span><button type="button" disabled={currentPage === 1} onClick={() => setDetailPage(currentPage - 1)}>Anterior</button><button type="button" disabled={currentPage === pageCount} onClick={() => setDetailPage(currentPage + 1)}>Siguiente</button></nav>}</article>
     {selectedWorker && <article className="panel warehouse-worker-qr"><div><span>QR DEL OPERARIO</span><h3>{selectedWorker.name}</h3><p>{selectedWorker.code} · 40 × 40 mm · listo para imprimir</p><button onClick={() => void downloadWorkerQr(selectedWorker)} type="button">Descargar QR</button></div>{qrDataUrl ? <img alt={`Código QR de ${selectedWorker.name}`} src={qrDataUrl}/> : <div className="warehouse-qr-loading">Generando QR…</div>}</article>}
   </section>;
 }
@@ -126,7 +128,7 @@ function OrderChart({ buckets, roster, kind, selectedHour, onSelect }: { buckets
   const plotRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(650);
   useEffect(() => { const node = plotRef.current; if (!node) return; const observer = new ResizeObserver(() => setWidth(Math.max(200, node.clientWidth))); observer.observe(node); return () => observer.disconnect(); }, []);
-  const W = width, H = W < 350 ? 250 : 300, L = 32, R = 8, top = 18, bottom = 32;
+  const W = width, H = W < 350 ? 190 : 210, L = 32, R = 8, top = 18, bottom = 32;
   const plotHeight = H - top - bottom, peak = Math.max(1, ...buckets.map(bucket => bucket.total));
   const tickStep = Math.max(1, Math.ceil(peak / 4)), max = Math.ceil(peak / tickStep) * tickStep;
   const ticks = Array.from({ length: max / tickStep + 1 }, (_, index) => index * tickStep / max);
@@ -145,4 +147,22 @@ function OrderChart({ buckets, roster, kind, selectedHour, onSelect }: { buckets
       </g>;
     })}
   </svg></div>;
+}
+
+function WeekHoursChart({ rows, roster, onSelectDay, onSelectHour }: { rows: ReturnType<typeof weekDayRows>; roster: Array<Worker & { color: string }>; onSelectDay: (day: string) => void; onSelectHour: (day: string, hour: string) => void }) {
+  const hours = activeHourKeys(rows);
+  const peak = Math.max(1, ...rows.flatMap(day => day.hours.map(hour => hour.total)));
+  const style = { gridTemplateColumns: `repeat(${hours.length}, minmax(0, 1fr))` };
+  return <div className="warehouse-week-hours" aria-label="Horas separadas por día">
+    <div className="warehouse-week-axis" aria-hidden="true"><span>Día · pedidos</span><div style={style}>{hours.map((hour, i) => <span key={hour} className={i % (hours.length > 12 ? 3 : hours.length > 7 ? 2 : 1) && i !== hours.length - 1 ? "quiet" : ""}>{hour}h</span>)}</div></div>
+    {rows.map(day => <div className="warehouse-week-row" data-day={day.key} data-total={day.total} key={day.key}>
+      <button className="warehouse-week-day" type="button" aria-label={`Ver ${dayLabel(day.key)}: ${day.total} pedidos`} onClick={() => onSelectDay(day.key)}><span>{new Date(`${day.key}T12:00:00Z`).toLocaleDateString("es-ES", { timeZone: TIME_ZONE, weekday: "short", day: "numeric" })}</span><b>{integer.format(day.total)}</b>{day.weekend && <small>Excepcional</small>}</button>
+      <div className="warehouse-week-bars" role="group" aria-label={`Horas del ${dayLabel(day.key)}`} style={style}>{hours.map(hour => {
+        const bucket = day.hours[Number(hour)];
+        const description = `${dayLabel(day.key)}, ${hour}:00: ${bucket.total} pedidos`;
+        return <button className="warehouse-hour-cell" key={hour} type="button" data-hour={hour} data-total={bucket.total} aria-label={description} title={description + roster.filter(person => bucket.workers[person.id]).map(person => `\n${person.name} (${person.code}): ${bucket.workers[person.id]}`).join("")} onClick={() => onSelectHour(day.key, hour)}>{roster.filter(person => bucket.workers[person.id]).map(person => <i key={person.id} data-worker-id={person.id} style={{ background: person.color, height: `${bucket.workers[person.id] / peak * 100}%` }}/>)}</button>;
+      })}</div>
+    </div>)}
+    <div className="warehouse-week-scale">{hours[0]}:00–{hours[hours.length - 1]}:59 · escala común: {peak} pedidos/h · colores por operario</div>
+  </div>;
 }

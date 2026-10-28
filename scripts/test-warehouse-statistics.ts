@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { bucketOrders, localDate, periodFor, shiftDay, uniqueOrders, withinPeriod, workerRoster, type Activity } from '../src/modules/warehouseStats/statistics.ts';
+import { activeHourKeys, weekDayRows, bucketOrders, localDate, periodFor, shiftDay, uniqueOrders, withinPeriod, workerRoster, type Activity } from '../src/modules/warehouseStats/statistics.ts';
 const now = new Date('2026-10-28T15:40:00Z');
 const activity = (id:string, ref:string, createdAt:string, workerId='a', result='label-created'):Activity => ({id,orderRef:ref,createdAt,workerId,workerName:'Mismo nombre',workerCode:workerId,result});
 const rows = [
@@ -56,3 +56,21 @@ assert.equal(people[1].active,false,'historic worker remains selectable');
 const dstRows=[activity('dst1','D1','2026-10-25T00:30:00Z'),activity('dst2','D2','2026-10-25T01:30:00Z')];
 assert.equal(bucketOrders(dstRows,'hour',{from:'2026-10-25',to:'2026-10-25'})[2].total,2);
 console.log('PASS: unique orders/labels, simulations/future/invalid exclusions, worker attribution, Madrid midnight/DST, 7 calendar days, monthly daily reconciliation/zero days/leap year, stable identity colors.');
+
+const dailyWeek = weekDayRows(weekly, week);
+assert.equal(dailyWeek.length, 5, "seven calendar days contain five weekdays; empty weekend is hidden");
+assert(dailyWeek.every(day => !day.weekend));
+assert.equal(dailyWeek.reduce((sum, day) => sum + day.total, 0), weekly.length);
+assert.equal(dailyWeek.flatMap(day => day.hours).reduce((sum, hour) => sum + hour.total, 0), weekly.length);
+assert.deepEqual(activeHourKeys(dailyWeek), ["10", "11", "12"]);
+assert(dailyWeek.some(day => day.total === 0), "empty working days stay visible");
+const exceptionalWeekend = weekDayRows([...weekly, activity('sat', 'SAT', '2026-10-24T21:59:59Z')], week);
+assert.equal(exceptionalWeekend.length, 6);
+assert.equal(exceptionalWeekend.find(day => day.key === '2026-10-24')?.weekend, true);
+assert.equal(exceptionalWeekend.reduce((sum, day) => sum + day.total, 0), weekly.length + 1, "exceptional weekend data must never vanish");
+assert.equal(activeHourKeys(exceptionalWeekend).at(-1), '23');
+const midnight = weekDayRows([activity('late', 'LATE', '2026-10-27T23:30:00Z')], week);
+assert.equal(midnight.find(day => day.key === '2026-10-28')?.hours[0].total, 1);
+assert.deepEqual(activeHourKeys(midnight), ['00']);
+assert.equal(activeHourKeys(weekDayRows([], week)).length, 24, 'empty state has a truthful full-day axis');
+console.log('PASS: separated day/hour cells, weekday zeros, empty weekends omitted, weekend exceptions retained, no dropped edge/midnight hours, totals reconcile.');

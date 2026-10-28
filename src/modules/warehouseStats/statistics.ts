@@ -57,3 +57,16 @@ export function workerRoster(workers: Worker[], activities: Activity[]) {
   for (const item of activities) if (!roster.has(item.workerId)) roster.set(item.workerId, { id: item.workerId, code: item.workerCode, name: item.workerName, active: false });
   return [...roster.values()].sort((a, b) => a.code.localeCompare(b.code) || a.id.localeCompare(b.id)).map((worker, index) => ({ ...worker, color: palette[index] || `hsl(${(index * 137.508) % 360} 58% 43%)` }));
 }
+
+export function weekDayRows(items: Activity[], period: { from: string; to: string }) {
+  return bucketOrders(items, "day", period).map(day => {
+    const weekday = new Date(`${day.key}T12:00:00Z`).getUTCDay();
+    return { ...day, weekend: weekday === 0 || weekday === 6, hours: bucketOrders(items.filter(item => localDate(item.createdAt)?.day === day.key), "hour", period) };
+  }).filter(day => !day.weekend || day.total > 0);
+}
+// Crop only empty edge hours; retain every internal zero, and never drop an event.
+export function activeHourKeys(rows: ReturnType<typeof weekDayRows>) {
+  const active = rows.flatMap(day => day.hours.filter(hour => hour.total > 0).map(hour => Number(hour.key)));
+  const from = active.length ? Math.min(...active) : 0, to = active.length ? Math.max(...active) : 23;
+  return Array.from({ length: to - from + 1 }, (_, i) => String(from + i).padStart(2, "0"));
+}
