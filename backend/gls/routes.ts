@@ -1,3 +1,4 @@
+import {assertIncidentLabelAllowed} from '../incidents/labelGuard.ts';
 import { loadGlsEnvironment } from "./config.ts";
 import { createGlsClient, GlsCreationRejected } from "./client.ts";
 import { createGlsRepository } from "./repository.ts";
@@ -26,6 +27,7 @@ export function registerGlsRoutes(server: Server, auth: Auth, env: Record<string
       }
       if (request.method === "POST" && path === "shipments/real") {
         const input = await body<GlsShipmentInput>(request);
+        await assertIncidentLabelAllowed(env,input);
         if (client.status().labMock && !client.status().mockShipmentCreationEnabled) return send(response, 503, { message: "GLS está en modo mock; no se registrará una etiqueta ficticia ni se validará una entrega. La creación simulada solo se habilita expresamente para pruebas." });
         if (!client.status().labMock && !client.status().realWritesEnabled) return send(response, 503, { message: "La creación real GLS está desactivada en esta instancia." });
         validateGlsShipment(input, glsEnv);

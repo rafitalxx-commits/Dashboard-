@@ -18,6 +18,7 @@ Este repositorio esta pensado como punto central de trabajo para Rafa, Juanito, 
 - `src/`: interfaz del Dashboard.
 - `src/modules/amazonMessages/`: modulo Amazon Messages.
 - `src/services/`: cliente API y tipos compartidos.
+- `src/modules/incidents/` y `backend/incidents/`: incidencias, devoluciones, DEV/REX y conciliación Odoo con conexión TEST/operativa separada.
 - `backend/`: rutas y repositorios backend internos.
 - `backend/agentApi/`: API segura para agentes externos como Hermes.
 - `docs/`: documentacion tecnica y decisiones.

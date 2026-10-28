@@ -41,18 +41,21 @@
     "test:supplier-invoices": "node --experimental-strip-types scripts/test-supplier-invoices.ts",
     "test:product-catalog-sync": "node --experimental-strip-types scripts/test-product-catalog-sync.ts",
     "test:supplier-mappings": "node --experimental-strip-types scripts/test-supplier-mappings.ts",
-    "test:correos-express-labels": "node --experimental-strip-types scripts/test-correos-express-multiparcel-labels.ts"
+    "test:correos-express-labels": "node --experimental-strip-types scripts/test-correos-express-multiparcel-labels.ts",
+    "test:incidents": "node scripts/test-incidents-release.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.5.2",
+    "jsbarcode": "^3.12.3",
+    "jspdf": "^4.2.1",
     "lucide-react": "^0.513.0",
+    "pdf-lib": "^1.17.1",
     "pdf-parse": "^1.1.1",
     "qrcode": "^1.5.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "typescript": "^5.8.3",
-    "vite": "^6.3.5",
-    "pdf-lib": "^1.17.1"
+    "vite": "^6.3.5"
   },
   "devDependencies": {
     "@types/node": "^25.9.2",

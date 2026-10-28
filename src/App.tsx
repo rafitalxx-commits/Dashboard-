@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import {
   BarChart3,
+  AlertTriangle,
   Boxes,
   CheckCircle2,
   CalendarDays,
@@ -48,6 +49,8 @@ import { InventoryReceptionsView } from "./modules/receptions/InventoryReception
 import { PendingPurchasesView } from "./modules/receptions/ReceptionsView";
 import { HomePage } from "./modules/home/HomePage";
 import { SupplierInvoicesView } from "./modules/supplierInvoices/SupplierInvoicesView";
+import { IncidentsView } from "./modules/incidents/IncidentsView";
+import { IncidentsHome } from "./modules/incidents/IncidentsHome";
 import { odooClient } from "./services/odooClient";
 import type {
   InvoiceAnalytics,
@@ -207,6 +210,12 @@ const navItems = [
     navGroup: "products",
   },
   {
+    label: "Incidencias",
+    icon: AlertTriangle,
+    view: "incidents",
+    permission: "products",
+  },
+  {
     label: "Amazon Messages",
     icon: MessagesSquare,
     view: "amazonMessages",
@@ -243,6 +252,7 @@ const viewRoutes: Record<ActiveView, string> = {
   productsInventoryFinal: "productos/inventario/finalizados",
   productsInventoryHistory: "productos/inventario/historial",
   receptions: "productos/recepciones",
+  incidents: "incidencias",
   amazonMessages: "amazon-messages",
   settings: "configuracion",
 };
@@ -492,6 +502,7 @@ function App() {
     activeView === "dashboard" || activeView === "dashboardV2";
   const isOrdersView = activeView === "orders" || activeView === "ordersV2";
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  const [incidentOrderToOpen, setIncidentOrderToOpen] = useState<string | null>(null);
   const [salesPurchaseAlerts, setSalesPurchaseAlerts] = useState<SalesPurchaseAlert[]>([]);
   const [salesPurchaseAlertsLoading, setSalesPurchaseAlertsLoading] = useState(false);
   const [selectedPurchaseAlertId, setSelectedPurchaseAlertId] = useState<string | null>(null);
@@ -748,6 +759,12 @@ function App() {
     serverPage,
     serverSearch,
   ]);
+
+  useEffect(() => {
+    if (!incidentOrderToOpen || activeView !== "orders" || dataMode !== "live") return;
+    const target = orders.find(order => order.odooRef === incidentOrderToOpen || order.id === incidentOrderToOpen);
+    if (target) { setSelectedOrderId(target.id); setIncidentOrderToOpen(null); }
+  }, [incidentOrderToOpen, activeView, dataMode, orders]);
 
   useEffect(() => {
     if (authMode !== "logged-in" || !isOrdersView) return;
@@ -1513,7 +1530,7 @@ function App() {
     <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">OD</div>
+          <div className="brand-mark"><img src="/te-panel-rayo-192.png" alt="Todoeléctrico" style={{width:"100%",height:"100%",objectFit:"contain"}} /></div>
           <div className="brand-copy">
             <strong>Odoo v18</strong>
             <span>Dashboard interno</span>
@@ -1674,8 +1691,10 @@ function App() {
         <header className="topbar">
           <div>
             <p className="eyebrow">
-              {activeView === "receptions"
-                ? "Inventario · Odoo real"
+              {activeView === "incidents"
+                ? "Atención al cliente · Operaciones"
+                : activeView === "receptions"
+                ? (import.meta.env.BASE_URL.startsWith("/incidents-lab/") ? "Inventario · Odoo DEMO" : "Inventario · Odoo real")
                 : activeView === "pendingPurchases"
                   ? "Compras · Odoo real"
                   : activeView === "supplierInvoices"
@@ -1705,6 +1724,8 @@ function App() {
                   ? "Estadísticas"
                 : activeView === "amazonMessages"
                     ? "Amazon Messages"
+                  : activeView === "incidents"
+                    ? "Incidencias"
                   : activeView === "settings"
                     ? "Configuracion"
                     : navItems.find((item) => item.view === activeView)?.label}
@@ -1725,7 +1746,11 @@ function App() {
             )}
             <div className={`connection-pill ${activeView === "receptions" || activeView === "pendingPurchases" || activeView === "supplierInvoices" || activeView === "purchaseAnalytics" ? "live" : dataMode}`}>
               <span />
-              {activeView === "receptions" || activeView === "pendingPurchases"
+              {activeView === "incidents"
+                ? (import.meta.env.BASE_URL.startsWith("/incidents-lab/") ? "Incidencias · Odoo TEST" : "Incidencias · Operaciones")
+                : activeView === "receptions" && import.meta.env.BASE_URL.startsWith("/incidents-lab/")
+                ? "LAB · Recepciones DEMO"
+                : activeView === "receptions" || activeView === "pendingPurchases"
                 ? authUser.permissions.includes("odooWrite")
                   ? "Odoo real · acciones habilitadas"
                   : "Odoo real · solo lectura"
@@ -1814,7 +1839,7 @@ function App() {
         )}
 
         {activeView === "dashboard" ? (
-          <HomePage onOpen={openOperationalHomeMetric} />
+          <><HomePage onOpen={openOperationalHomeMetric} /><IncidentsHome /></>
         ) : activeView === "dashboardV2" ? (
           <>
             {isV2View && (
@@ -1924,6 +1949,20 @@ function App() {
             onSaveUsers={saveDashboardUsers}
             users={dashboardUsers}
           />
+        ) : activeView === "incidents" ? (
+          <IncidentsView currentUser={authUser?.name || authUser?.username || "Usuario"} onOpenOrder={async (reference) => {
+            try {
+              const value = await odooClient.getOrderDetail(reference);
+              if (value.mode !== "live" || !value.order) throw new Error("No se pudo abrir el pedido real");
+              const order = value.order;
+              setRangePreset("custom"); setCustomFrom(order.date.slice(0,10)); setCustomTo(todayIso()); setHomeDestination(null); setSelectedChannels([]); setDelivery("Todos"); setPrinted("Todos"); setOdooDelivery("Todos");
+              setQuery(reference); setServerPage(1); setPage(1);
+              setOrders((items) => [order, ...items.filter(item => item.id !== order.id)]);
+              setOrderDetailsById((items) => ({...items,[order.id]:order}));
+              navigateToView("orders");
+              setIncidentOrderToOpen(reference);
+            } catch (error) { throw new Error(error instanceof Error ? error.message : "No se pudo abrir el pedido"); }
+          }} />
         ) : activeView === "amazonMessages" ? (
           <AmazonMessagesView
             currentUser={authUser}

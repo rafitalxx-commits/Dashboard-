@@ -1,0 +1,12 @@
+import { useEffect, useRef, type ReactNode } from 'react';
+export const money=(n:number)=>new Intl.NumberFormat('es-ES',{style:'currency',currency:'EUR'}).format(n);
+export const date=(v:string)=>new Date(v).toLocaleString('es-ES',{dateStyle:'short',timeStyle:'short'});
+export function Modal({title,children,onClose,className='',closeDisabled=false,closeLabel='Cerrar'}:{title:string;children:ReactNode;onClose:()=>void;className?:string;closeDisabled?:boolean;closeLabel?:string}){
+ const ref=useRef<HTMLDialogElement>(null);const opener=useRef<HTMLElement|null>(document.activeElement as HTMLElement);
+ useEffect(()=>{const d=ref.current!;d.showModal();return()=>{d.close();if(opener.current?.isConnected)opener.current.focus();};},[]);
+ return <dialog className={`inc-modal ${className}`} ref={ref} aria-label={title} tabIndex={-1} onKeyDown={event=>{if(event.key!=='Tab')return;const d=ref.current!;const targets=Array.from(d.querySelectorAll<HTMLElement>('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')).filter(e=>e.getClientRects().length>0);const first=targets[0],last=targets[targets.length-1];if(!first){event.preventDefault();d.focus();return;}if(event.shiftKey&&(document.activeElement===first||!d.contains(document.activeElement))){event.preventDefault();last?.focus();}else if(!event.shiftKey&&(document.activeElement===last||!d.contains(document.activeElement))){event.preventDefault();first.focus();}}} onCancel={e=>{e.preventDefault();e.stopPropagation();if(!closeDisabled)onClose();}}><div className="incidents-app"><header><h2>{title}</h2><button className="btn" aria-label="Cerrar diálogo" disabled={closeDisabled} onClick={onClose} type="button">{closeLabel}</button></header>{children}</div></dialog>;
+}
+export function Badge({children,tone='info'}:{children:ReactNode;tone?:string}){return <span className={`badge b-${tone}`}>{children}</span>;}
+export function Field({label,children}:{label:string;children:ReactNode}){return <label className="inc-field"><span>{label}</span>{children}</label>;}
+export function Message({error,children}:{error?:boolean;children:ReactNode}){return <div className={`callout ${error?'warn':'ok'}`} role={error?'alert':'status'}>{children}</div>;}
+export function OperationStatus({message}:{message:string}){return message?<div className="inc-operation-status" role="status" aria-live="polite"><span className="inc-operation-spinner" aria-hidden="true"/>{message}</div>:null;}

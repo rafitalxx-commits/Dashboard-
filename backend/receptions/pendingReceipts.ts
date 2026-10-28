@@ -37,6 +37,7 @@ export type ReceptionHistory = {
   operatorName: string;
   outcome: "total" | "partial_backorder" | "partial_no_backorder" | "cancelled";
   pendingReceptionRef?: string;
+  cancellationReason?: string;
   lines: Array<PendingReceiptLine & {
     locationAllocations?: Array<{ location: string; quantity: number }>;
   }>;

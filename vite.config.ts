@@ -1,3 +1,13 @@
+import {assertInternalAutomationNote} from './backend/incidents/automationAuthor';
+import {IncidentChatter} from './backend/incidents/chatter';
+import { enrichIncidentKits } from './backend/incidents/kits';
+import { orderMerchandise } from './backend/incidents/merchandise';
+import { operationalOdooTarget, operationalRexWritable, assertOperationalRexRpc } from './backend/incidents/odooRuntime';
+import { OdooDemoReader } from './backend/incidents/odooDemo';
+import { IncidentOdooStock, ControlledStockExecutor, StockJournal, TEST_TARGET } from './backend/incidents/odooStock';
+import { incidentVolumes } from './backend/incidents/statistics';
+import { searchIncidentCatalog } from "./backend/incidents/catalog";
+import { registerIncidentRoutes } from "./backend/incidents/routes";
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import {
@@ -457,11 +467,15 @@ const readOnlyModels = new Set([
   "sale.order.line",
   "stock.picking",
   "stock.location",
+  "stock.warehouse",
+  "stock.picking.type",
   "stock.move",
   "purchase.order",
   "purchase.order.line",
   "mail.message",
   "res.partner",
+  "res.company",
+  "res.country",
   "product.product",
   "product.category",
   "product.supplierinfo",
@@ -488,6 +502,32 @@ export default defineConfig(({ mode }) => {
   // Keep supplier-invoice write gates under systemd control even if a stale
   // local env file contains different values.
   for (const key of [
+    "DASHBOARD_DATA_DIR",
+    "DASHBOARD_AUTH_STORE",
+    "DASHBOARD_DEV_BYPASS_AUTH",
+    "INCIDENTS_ODOO_WRITE_ENABLED",
+    "INCIDENTS_ODOO_READ_ENABLED",
+    "INCIDENTS_ODOO_MODE",
+    "INCIDENTS_REX_WRITE_ENABLED",
+    "INCIDENTS_DOCUMENTS_WRITE_ENABLED",
+    "INCIDENTS_OPERATIONAL_WORKFLOW_ENABLED",
+    "INCIDENTS_DATA_DIR",
+    "INCIDENTS_GOOGLE_ACCOUNT",
+    "INCIDENTS_GOOGLE_TOKENS_PATH",
+    "INCIDENTS_GOOGLE_CLIENT_PATH",
+    "INCIDENTS_DRIVE_ROOT_ID",
+    "INCIDENTS_LEDGER_DATA_DIR",
+    "INCIDENTS_TEST_EXTERNAL_EFFECTS_ISOLATED",
+    "INCIDENTS_ODOO_URL",
+    "INCIDENTS_ODOO_DATABASE",
+    "INCIDENTS_ODOO_USERNAME",
+    "INCIDENTS_ODOO_API_KEY",
+    "CREDENTIALS_DIRECTORY",
+    "INCIDENTS_ODOO_APPROVED_DIGEST",
+    "INCIDENTS_ODOO_APPROVED_OPERATION",
+    "INCIDENTS_SHEETS_WRITE_ENABLED",
+    "INCIDENTS_DRIVE_WRITE_ENABLED",
+    "INCIDENTS_SPREADSHEET_ID",
     "SUPPLIER_INVOICES_ODOO_WRITE_ENABLED",
     "SUPPLIER_INVOICES_ODOO_ALLOWED_FILE_ID",
     "SUPPLIER_INVOICES_DRIVE_WRITE_ENABLED",
@@ -516,6 +556,12 @@ function odooReadOnlyApi(env: Record<string, string>) {
   return {
     name: "odoo-read-only-api",
     configureServer(server) {
+      // Same isolated API works through Caddy's stripped public prefix and directly in local QA.
+      server.middlewares.use((request, _response, next) => {
+        const base = server.config.base;
+        if (base !== "/" && request.url?.startsWith(base + "api/")) request.url = request.url.slice(base.length - 1);
+        next();
+      });
       const auth = createAuthRepository(env);
       const tasks = createTaskRepository(env);
       const calendar = createCalendarRepository(env);
@@ -612,6 +658,67 @@ function odooReadOnlyApi(env: Record<string, string>) {
               .map((location) => location.code),
           }));
         },
+      });
+      const operationalTarget=env.INCIDENTS_ODOO_MODE==='operational'?operationalOdooTarget(env):undefined;
+      const incidentsTest = !operationalTarget&&env.INCIDENTS_ODOO_READ_ENABLED === 'true' ? new OdooDemoReader(env) : undefined;
+      const incidentCall = async (model:string,method:string,args:unknown[],kwargs:Record<string,unknown>={}) => {
+        if (incidentsTest) return incidentsTest.read(model,method,args,kwargs);
+        const config=getOdooConfig(env);const uid=await authenticate(config);
+        return executeKw(config,uid,model,method,args,kwargs);
+      };
+      const operationalWrite=async(model:string,method:string,args:unknown[],kwargs:Record<string,unknown>={})=>{
+        assertOperationalRexRpc(env,operationalTarget||'',model,method,args);
+        if(method==='message_post')await assertInternalAutomationNote(incidentCall,kwargs);
+        const config=getOdooConfig(env),uid=await authenticate(config);
+        return rpc(config.url,'object','execute_kw',[config.database,uid,config.apiKey,model,method,args,{...kwargs,context:{...((kwargs.context||{}) as object),mail_create_nosubscribe:true,mail_create_nolog:true,mail_notrack:true,tracking_disable:true,mail_notify_force_send:false,mail_post_autofollow:false}}]);
+      };
+      const incidentTarget=operationalTarget||TEST_TARGET;
+      const incidentWrite=operationalTarget?operationalWrite:incidentsTest?.controlledWrite.bind(incidentsTest);
+      registerIncidentRoutes(server, auth, env, {
+        odoo: incidentWrite ? {
+          mode: operationalTarget?'operational':'test',target:incidentTarget,
+          stock: new IncidentOdooStock(incidentCall,incidentTarget),
+          executor: new ControlledStockExecutor(incidentCall,incidentWrite,new StockJournal(env.INCIDENTS_DATA_DIR||env.DASHBOARD_DATA_DIR||'.dashboard-data',operationalTarget?'operational':'test'),env,new IncidentChatter(incidentCall,incidentWrite,env.INCIDENTS_DATA_DIR||env.DASHBOARD_DATA_DIR||'.dashboard-data')),
+          inspect: operationalTarget ? async()=>({target:operationalTarget,mode:'operational',readOnly:true,writesEnabled:operationalRexWritable(env,operationalTarget),companies:await incidentCall('res.company','search_read',[[]],{fields:['id','name'],limit:20})}) : () => incidentsTest!.inspect(),
+          read: incidentCall,
+          isolate: incidentsTest ? incidentsTest.isolated.bind(incidentsTest) : undefined,
+        } : undefined,
+        catalog: async (query, id) => {
+          return searchIncidentCatalog((model, method, args, kwargs) => incidentCall(model, method, args, kwargs), query, id);
+        },
+        lookup: async (query) => {
+          const call = (model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) => incidentCall(model, method, args, kwargs);
+          const found = await call("sale.order", "search_read", [["|", "|", ["name", "=", query], ["client_order_ref", "=", query], ["picking_ids.carrier_tracking_ref", "=", query]]], {fields:["id","name","client_order_ref","date_order","partner_id","partner_shipping_id","team_id","amount_untaxed","company_id"],limit:2}) as any[];
+          if (found.length !== 1) throw new Error(found.length ? "Coincide con varios pedidos; concreta la referencia" : "Pedido no encontrado");
+          const order = found[0];
+          const recipientId=order.partner_shipping_id?.[0]||order.partner_id?.[0];
+          const recipients=await call('res.partner','read',[[recipientId]],{fields:['name','street','street2','zip','city','country_id','phone','mobile','email']}) as any[];
+          if(recipients.length!==1)throw Error('No se pudo verificar el destinatario de envío');const recipient=recipients[0];
+          const countries=recipient.country_id?.[0]?await call('res.country','read',[[recipient.country_id[0]]],{fields:['code']}) as any[]:[];
+          const shippingDestination={name:String(recipient.name||''),address:[recipient.street,recipient.street2].filter(Boolean).join(' '),postalCode:String(recipient.zip||''),city:String(recipient.city||''),country:String(countries[0]?.code||''),phone:String(recipient.mobile||recipient.phone||''),email:String(recipient.email||'')};
+          const lines = await call("sale.order.line", "search_read", [[["order_id","=",order.id],["display_type","=",false]]], {fields:["product_id","name","product_uom_qty","price_unit","discount"],limit:500}) as any[];
+          const ids = [...new Set(lines.map(l => l.product_id?.[0]).filter(Boolean))];
+          const products = ids.length ? await call("product.product","read",[ids],{fields:["id","default_code","name","standard_price","type"]}) as any[] : [];
+          const goods=orderMerchandise(lines,products).map(p=>({...p,imageUrl:`${server.config.base === "/" ? "" : server.config.base.replace(/\/$/, "")}/api/incidents/product-image?id=${p.productId}`}));
+          const merchandise=await enrichIncidentKits(call,order.id,Number(order.company_id?.[0]),lines,goods,server.config.base === "/" ? "" : server.config.base.replace(/\/$/, ""));
+          const picking = await call("stock.picking","search_read",[[["sale_id","=",order.id],["picking_type_id.code","=","outgoing"]]],{fields:["carrier_tracking_ref","carrier_id","state"],order:"id desc",limit:1}) as any[];
+          const labels = readHomeShippingLabels({...env,DASHBOARD_DATA_DIR:env.INCIDENTS_LEDGER_DATA_DIR || env.DASHBOARD_DATA_DIR}) as any[];
+          const label = (incidentsTest ? [] : labels).filter(l => [l.odooOrderRef,l.externalOrderRef,...(l.orderRefs||[])].includes(order.name)).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+          return {source:"odoo" as const,order:{shippingDestination,odooId:order.id,odooReference:order.name,channelReference:order.client_order_ref||"",channel:order.team_id?.[1]||"Sales",customerName:order.partner_id?.[1]||"",orderDate:String(order.date_order).replace(" ","T")+"Z",shippedAt:label?.createdAt||undefined,saleWithoutTax:Number(order.amount_untaxed),carrier:label?.shipper||picking[0]?.carrier_id?.[1]||"",tracking:label?.tracking||picking[0]?.carrier_tracking_ref||"",preparedBy:label?.operator||label?.user||""},products:merchandise,excludedServiceCount:lines.filter(l=>products.some(p=>p.id===l.product_id?.[0]&&p.type==='service')).length};
+        },
+        image: async (id) => {
+          const products=await incidentCall("product.product","read",[[id]],{fields:["image_128"]}) as any[];
+          if(!products[0]?.image_128)throw new Error("El producto no tiene imagen");
+          return Buffer.from(products[0].image_128,"base64");
+        },
+        statistics: async (from,to,channel) => {
+          const start=new Date(from+"T00:00:00");const end=new Date(Math.min(Date.now(),new Date(to+"T23:59:59.999").getTime()));
+          const domain:any[]=[["state","in",["sale","done"]],["date_order",">=",start.toISOString().slice(0,19).replace("T"," ")],["date_order","<=",end.toISOString().slice(0,19).replace("T"," ")]];
+          if(channel){const teams=await incidentCall("crm.team","search_read",[[["name","=",channel]]],{fields:["id"],limit:10}) as any[];if(!teams.length)throw new Error("Canal no reconocido en Odoo");domain.push(["team_id","in",teams.map(t=>t.id)]);}
+          const rows=await incidentCall("sale.order","read_group",[domain,["amount_untaxed:sum"],[]],{lazy:false}) as any[];
+          const labels=(readHomeShippingLabels({...env,DASHBOARD_DATA_DIR:env.INCIDENTS_LEDGER_DATA_DIR || env.DASHBOARD_DATA_DIR}) as any[]).filter(l=>{const date=new Date(l.createdAt||"");return Boolean(l.tracking)&&date>=start&&date<=end;});
+          return {salesWithoutTax:Number(rows[0]?.amount_untaxed||0),salesSource:"sale.order.amount_untaxed · sale/done · misma base que Inicio",range:{from,to},...incidentVolumes(incidentsTest ? [] : labels,channel)};
+        }
       });
       registerQzSigningRoutes(server, auth, env);
       registerPublicTrackingRoutes(server, env);

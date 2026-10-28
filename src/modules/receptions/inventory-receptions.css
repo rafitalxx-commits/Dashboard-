@@ -265,3 +265,46 @@
   .inventory-validation-review > div { flex-direction: column-reverse; }
   .inventory-validation-units { grid-template-columns: 1fr; }
 }
+
+/* Compact reception products: one row; allocation editor stays expandable. */
+.inventory-reception-drawer .inventory-reception-line-compact {
+  align-items: center;
+  gap: 10px;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  min-width: 820px;
+  padding: 10px 16px;
+}
+.inventory-reception-line-compact .inventory-product-image { width: 24px; height: 28px; border-radius: 6px; }
+.inventory-product-inline { align-items: center; display: grid; gap: 10px; grid-template-columns: minmax(130px, 1fr) minmax(64px, 100px) auto auto; }
+.inventory-product-inline > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.inventory-product-inline .inventory-product-reference { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.inventory-classification-inline { align-items: center; flex-direction: row; gap: 6px; margin: 0; max-width: 230px; min-width: 0; overflow: hidden; padding: 4px 6px; white-space: nowrap; }
+.inventory-classification-inline b, .inventory-classification-inline span, .inventory-classification-inline a { font-size: 10px; }
+.inventory-classification-inline span { overflow: hidden; text-overflow: ellipsis; }
+.inventory-product-inline .inventory-local-status { font-size: 10px; margin: 0; padding: 4px 6px; white-space: nowrap; }
+.inventory-reception-line-compact .inventory-plan-toggle, .inventory-reception-line-compact .inventory-locked-action { grid-column: auto; font-size: 11px; padding: 7px; white-space: nowrap; }
+.inventory-reception-lines { overflow-x: auto; }
+.inventory-history-reason { background: #fff5f3; border-bottom: 1px solid #f0d4cf; color: #863a32; padding: 14px 24px; }
+.inventory-history-reason strong { font-size: 12px; }
+.inventory-history-reason p { margin: 5px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.inventory-history-cancel-reason { color: #863a32 !important; white-space: normal; overflow-wrap: anywhere; }
+/* Native modal top layer: not limited by drawer overflow or other stacking contexts. */
+.inventory-cancel-dialog { background: #fff; border: 1px solid #e1d7d5; border-radius: 16px; box-shadow: 0 24px 80px rgb(12 30 42 / 30%); color: #173f59; margin: auto; max-height: calc(100dvh - 32px); max-width: 480px; overflow-y: auto; padding: 0; width: calc(100vw - 32px); }
+.inventory-cancel-dialog::backdrop { background: rgb(13 32 43 / 66%); }
+.inventory-cancel-dialog form { display: grid; gap: 18px; padding: 24px; }
+.inventory-cancel-dialog header > span { color: #963a33; font-size: 11px; font-weight: 800; letter-spacing: .09em; }
+.inventory-cancel-dialog h3 { font-size: 21px; margin: 6px 0 0; }
+.inventory-cancel-dialog p { font-size: 13px; line-height: 1.5; margin: 0; }
+.inventory-cancel-dialog label { display: grid; font-size: 13px; font-weight: 750; gap: 8px; }
+.inventory-cancel-dialog textarea { border: 1px solid #b9cbd4; border-radius: 8px; box-sizing: border-box; color: #173f59; font: inherit; min-height: 90px; padding: 10px 12px; resize: vertical; width: 100%; }
+.inventory-cancel-dialog textarea:focus { outline: 2px solid #2a718f; outline-offset: 2px; }
+.inventory-cancel-dialog footer { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; }
+.inventory-cancel-dialog button { align-items: center; border: 1px solid #cad8df; border-radius: 8px; cursor: pointer; display: inline-flex; font: inherit; font-size: 13px; font-weight: 750; gap: 7px; justify-content: center; min-height: 40px; padding: 10px 14px; }
+.inventory-cancel-dialog .secondary-button { background: #fff; color: #345468; }
+.inventory-cancel-dialog .inventory-cancel-confirm { background: #a5362f; border-color: #a5362f; color: #fff; }
+.inventory-cancel-dialog button:disabled { cursor: not-allowed; opacity: .55; }
+@media (max-width: 520px) { .inventory-cancel-dialog form { padding: 20px; } .inventory-cancel-dialog footer > button { flex: 1 1 auto; } }
+.inventory-history-recovery { background: #fff6df; border: 1px solid #e3cf94; border-radius: 10px; display: grid; font-size: 13px; gap: 10px; padding: 14px 18px; }
+.inventory-history-recovery > div { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; }
+.inventory-history-recovery span { overflow-wrap: anywhere; }
+.inventory-history-recovery button { background: #fff; border: 1px solid #c6ac6c; border-radius: 7px; cursor: pointer; font: inherit; min-height: 36px; padding: 7px 10px; }

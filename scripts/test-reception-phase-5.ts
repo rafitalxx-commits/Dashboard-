@@ -28,7 +28,7 @@ assert.match(view, /Cancelando en Odoo…/);
 assert.match(view, /disabled=\{validating/);
 assert.match(vite, /fields: \["id", "partner_ref", "order_type", "date_approve"\]/);
 assert.match(vite, /=== "rebastecimiento"/);
-assert.match(view, /useState<ReceptionFilter>\(initialIds \? "Todos" : "Esperando"\)/);
+assert.match(view, /useState<ReceptionFilter>\(\(\) => incidentsLab \? 'Devoluciones' : [^\n]*\.has\("dev"\) \? "Devoluciones" : initialIds \? "Todos" : "Esperando"\)/);
 assert.match(view, /filter === "Importaciones" \? item\.isImportation/);
 assert.match(view, /item\.status === filter && !item\.isImportation/);
 assert.match(view, /Página \{historyPage\} de \{historyPages\}/);

@@ -1,3 +1,4 @@
+import {assertIncidentLabelAllowed} from '../incidents/labelGuard.ts';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createCorreosExpressClient, mergeCorreosExpressLabels, normalizeCorreosExpressPdfBase64, type CorreosExpressShipmentRequest } from "./client.ts";
@@ -26,10 +27,10 @@ export function registerCorreosExpressRoutes(server: Server, auth: Auth, env: Re
         return sendJson(response, 200, { payload: cex.buildShipmentPayload(await readJsonBody<CorreosExpressShipmentRequest>(request)) });
       }
       if (request.method === "POST" && path === "shipments/test") {
-        return await createShipment(response, cex, repository, await readJsonBody<CorreosExpressShipmentRequest & { force?: boolean }>(request), "test");
+        const input=await readJsonBody<CorreosExpressShipmentRequest & { force?: boolean }>(request);await assertIncidentLabelAllowed(env,input);return await createShipment(response, cex, repository, input, "test");
       }
       if (request.method === "POST" && path === "shipments/real") {
-        return await createShipment(response, cex, repository, await readJsonBody<CorreosExpressShipmentRequest & { force?: boolean }>(request), "real");
+        const input=await readJsonBody<CorreosExpressShipmentRequest & { force?: boolean }>(request);await assertIncidentLabelAllowed(env,input);return await createShipment(response, cex, repository, input, "real");
       }
       const labelMatch = path.match(/^shipments\/([^/]+)\/label\.pdf$/);
       if (request.method === "GET" && labelMatch) return await sendShipmentLabel(response, cex, repository, decodeURIComponent(labelMatch[1]));
