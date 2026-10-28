@@ -38,3 +38,24 @@ La promoción habilita el flujo operativo propio de Incidencias, Sheets y Drive 
 ## Publicación
 
 Estado: candidato validado, pendiente de respaldo, despliegue, verificación pública y actualización GitHub. No confundir este documento preparatorio con una publicación completada. El resultado y hashes se añadirán tras la verificación.
+
+## Resultado de publicación (2026-10-28)
+
+- Backend desplegado desde `6fd9198` mediante delta de 127 archivos; `HEAD` del directorio productivo sigue siendo `9a343d2` y conserva sus cambios heredados. La identidad real se registra por SHA256 de los archivos, no por ese HEAD.
+- Servicio reiniciado y activo. Dependencias instaladas con scripts npm deshabilitados. Se añadió únicamente el override `90-incidents-production.conf`; no se sustituyeron los overrides anteriores ni se tocó Caddy.
+- API pública autenticada sin bypass: modo operativo, Sheets configurado y 0 incidencias, lectura real de Odoo/catálogo correcta; puertas propias Odoo/DEV/REX/Sheets/Drive habilitadas para operadores. La puerta Odoo genérica ya estaba habilitada y no se cambió.
+- HTML público y assets coinciden exactamente con el candidato compilado:
+  - `index-DnI1CUfi.js`: `c4a863967671f81ebfe9cee880f02404a13e0e0cc3982e13ee9147ac6d91cc1e`.
+  - `index-BasP4Vx9.css`: `6d1ba89c8abe0fdbf7455a518f25f3e8cd7bef229e92addde8c25d53e98a3c1b`.
+- Verificación visual autenticada: Incidencias, listado y estadísticas, escritorio/móvil; sin errores JS ni desbordamiento horizontal. Regresiones sobre assets públicos de Reglas, Expediciones y Recepciones correctas (todas sus APIs interceptadas).
+- Seis stores de etiquetas/reglas mantienen hash exacto antes/después; cola y submissions operativas nuevas vacías; ninguna transacción Odoo, etiqueta, correo o envío real ejecutado por el despliegue.
+- LAB sigue en `test` y destino DEMO, con sus datos/configuración intactos.
+- Respaldo reversible: `/root/.openclaw/workspace/releases/incidents-production-20261027/rollback-20261028/`; contiene manifiesto, originales de los archivos modificados, web previa y configuración systemd previa. Los assets antiguos siguen disponibles.
+
+### GitHub y pendiente
+
+Todo el código está subido a `release/dashboard-current-incidents-20261027` en `rafitalxx-commits/Dashboard-`, incluyendo el snapshot productivo previo. La herramienta de creación de PR devolvió `user rejected MCP tool call`; no se intentó otra vía. `main` no se ha modificado. Pendiente: crear/revisar/integrar el PR cuando esa acción sea aceptada. No hay proceso de continuación activo ni cron reactivado.
+
+### Rollback
+
+Antes de revertir, comparar hashes actuales con `deployment-runtime.json` y comprobar cambios/intervenciones posteriores. Restaurar solo originales listados en el manifiesto; los archivos nuevos deben apartarse de forma recuperable, no borrarse. Restaurar `index.html` previo atómicamente conservando assets; apartar solo `90-incidents-production.conf`, recargar systemd y reiniciar el servicio. No restaurar todo el directorio de datos ni el libro Google: conservar incidencias/auditorías nuevas. Si hay transacciones posteriores, detenerse y conciliar antes de revertir. Reinstalar dependencias desde el lock previo solo si el rollback lo requiere.
