@@ -27,3 +27,7 @@ La inspección detectó tres usuarios activos de Expediciones sin permiso dashbo
 Directorio privado `/root/.openclaw/workspace/releases/expeditions-navigation-20261028/`: `baseline.json`, logs build, `candidate-ui.json`, capturas, `api-before.json`, hashes stores, scripts de validación. `rollback/web` contiene web previa completa; `rollback/source` los cinco archivos originales; Caddy guardado solo como evidencia, sin editarlo.
 
 Publicar assets con nombre nuevo primero, preservar los anteriores y sustituir index.html atómicamente solo al estar sano el backend. Antes de cada copia revalidar ausencia de drift contra originales. Para rollback restaurar index.html y únicamente los cinco originales si sus hashes siguen correspondiendo al despliegue, reiniciar servicio afectado. No restaurar datos/stores ni borrar assets previos. Registrar el resultado final y las identidades tras la verificación pública.
+
+## Corrección durante validación pública
+
+La inspección de la captura móvil detectó recorte interno al anidar Estadísticas en el grid de Expediciones: el documento no desbordaba porque el contenedor superior lo ocultaba. Se restauraron temporalmente HTML y los cinco archivos originales (sin restaurar stores). Se añadió dimensionado scoped al contenedor/grid y cabecera responsive, primero en los worktrees LAB/publicación. La QA exige ahora que nav, estadísticas, cabecera, controles, KPIs, gráficos y detalle queden dentro del viewport, además del ancho del documento. No afecta cálculos ni datos.
