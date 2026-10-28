@@ -29,4 +29,12 @@ Evidencia privada `/root/.openclaw/workspace/releases/expeditions-statistics-dai
 
 Publicación selectiva de3fuentes y assets nuevos; entradaHTML atómica. Respaldos estáticos completos y fuentes originales con metadatos. Revalidar hashes de entrada/assets y3fuentes originales. No reiniciar backend. Verificación pública auth+ambas APIs estadísticas reales con sesión existente,sin bypass; GET ajenos interceptados y mutaciones bloqueadas. No se afirma hardware/transacciones externas. Revertir HTML/fuentes si falla; nunca restaurar stores.
 
-Resultado final pendiente. Completar con deployment.json/production-verification.json; no interpretar este estado preparatorio como publicado.
+## Resultado final — TERMINADO
+
+Publicado y comprobado. Fuente `b36f679a8a0ba9a197c50150dd1ff876d1b70bbf`, JS `index-BjHn-TnB.js`, CSS `index-CfJLKXM5.css`. Hashes exactos en deployment.json. Backend HEAD9a343d2 y árbol sucio preservados; PID sin cambios, sin reinicio. Rama/commits locales, no push/merge remoto.
+
+Verificación pública auth/estadísticas reales GET exit0:56hoy/375semana/1628mes. Cinco filas laborables, suma de cada día y de todas las celdas igual al total semanal; teclado/táctil,clickdía/hora/vuelta,mes/QR/impresora/reglas/enlace antiguo,paneles dentro de1440/390px y alturas compactas. Capturas finales públicas desktop/móvil inspeccionadas. Cero erroresJS,mutaciones o lecturas estadísticas fallidas. APIs ajenas interceptadas, no prueba hardware/Odoo/transaccional.
+
+Once archivos de integridad (8stores+Caddy+2configs) idénticos. Ambos servicios gestionadosactive, ningún harness temporal restante. Rollback completo disponible en el directorio de evidencia; assets anteriores conservados. Reposición sigue únicamente LAB. Sin continuación automática.
+
+URL: https://dashboard.todoelectrico.net/#/expediciones/estadisticas .
