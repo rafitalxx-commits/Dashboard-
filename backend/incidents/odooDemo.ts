@@ -98,7 +98,7 @@ export class OdooDemoReader {
   const work=this.isolationQueue.then(async()=>{
    if(!/^INC-\d{4}-\d{5,}:(return:DEV-\d{4}-\d{5,}|reshipment|[^\s]+)$/.test(scope))throw Error('Operación DEMO sin referencia estable');
    const file=join(this.env.DASHBOARD_DATA_DIR||'.dashboard-data','incidents-smtp-isolation-pending.json');
-   
+
    await this.read('res.company','search_read',[[]],{fields:['id'],limit:1});
    const read=async(model:string,domain:unknown[],fields:string[],limit=250)=>this.rpc('object','execute_kw',[this.target.database,this.uid,this.target.apiKey,model,'search_read',[domain],{fields,limit}]);
    const maintain=async(model:string,id:number,values:object)=>this.rpc('object','execute_kw',[this.target.database,this.uid,this.target.apiKey,model,'write',[[id],values],{context:{tracking_disable:true,mail_notify_force_send:false}}]);
