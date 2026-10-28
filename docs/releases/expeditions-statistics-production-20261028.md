@@ -27,4 +27,10 @@ Rama local únicamente; no push/merge en este alcance. PR remoto anterior de bas
 
 ## Resultado
 
-Pendiente despliegue controlado y verificación pública. Véase deployment.json y production-verification.json para el resultado observado; no interpretar este estado preparatorio como publicación terminada.
+**TERMINADO — publicado y verificado.** Fuente `bab0a82c5dc5fbbbd3579693a8525b54e566bd3b`, backend HEAD sigue9a343d2 (árbol productivo sucio preservado). Solo los tres archivos declarados y estáticos. JS público `index-BK8q5T8N.js`, CSS `index-HNfcUXoK.css`; hashes exactos en deployment.json. No reinicio backend.
+
+Verificación pública autenticada GET con sesión existente y sin bypass: exit0,56pedidos hoy/375semana/1628mes. Contraste independiente de ledger,24horas,mes/día/operario/QR,enlace antiguo y recarga,móvil/escritorio. Cero erroresJS,mutaciones o fallos estadísticas. APIs ajenas interceptadas explícitamente; no se afirma prueba de hardware ni transacción real. Capturas públicas desktop/móvil inspeccionadas. Ambos servicios de producción y LAB activos.
+
+Once archivos de integridad (ocho stores+Caddy+dos configuraciones de entorno) idénticos antes/después. Sin cambios de datos/config/gates. Rollback original completo disponible, assets antiguos conservados. No hay procesos QA/continuación activos. La reposición continúa solo LAB, no publicada ni autorizada por la pregunta posterior.
+
+URL: https://dashboard.todoelectrico.net/#/expediciones/estadisticas .
