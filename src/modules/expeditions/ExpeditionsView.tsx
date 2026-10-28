@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 import {
   CheckCircle2,
   CircleAlert,
+  BarChart3,
   PackageCheck,
   Printer,
   ScanLine,
@@ -16,6 +17,7 @@ import "./settingsDemo.css";
 import { odooClient } from "../../services/odooClient";
 import type { Order } from "../../services/odooTypes";
 import { ShippingRulesManager } from "./ShippingRulesManager";
+import { WarehouseStatisticsView } from "../warehouseStats/WarehouseStatisticsView";
 import { getGlsService } from "../../../backend/gls/services";
 import { downloadWorkerQr as downloadWorkerQrFile } from "./workerQr";
 import {
@@ -950,7 +952,19 @@ type ExpeditionsViewProps = {
 };
 
 export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
-  const [section, setSection] = useState<"operativa" | "history" | "rules" | "station" | "integrations" | "workers">("operativa");
+  const [section, setSection] = useState<"operativa" | "history" | "rules" | "stats" | "workers">(() => {
+    const route = window.location.hash.replace(/^#\/?/, "").split("?")[0];
+    return route === "estadisticas" || route === "expediciones/estadisticas" ? "stats" : "operativa";
+  });
+  useEffect(() => {
+    const syncSectionFromRoute = () => {
+      const route = window.location.hash.replace(/^#\/?/, "").split("?")[0];
+      if (route === "estadisticas" || route === "expediciones/estadisticas") setSection("stats");
+      else if (route === "expediciones") setSection("operativa");
+    };
+    window.addEventListener("hashchange", syncSectionFromRoute);
+    return () => window.removeEventListener("hashchange", syncSectionFromRoute);
+  }, []);
   const [mode, setMode] = useState<Mode>("automatic");
   const [scan, setScan] = useState("");
   const [rexPreparation,setRexPreparation] = useState<ReturnType<typeof reshipmentPreparation>>(null);
@@ -2990,8 +3004,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
         <button className={section === "operativa" ? "active" : ""} onClick={() => setSection("operativa")} type="button"><ScanLine size={16} /> Operativa</button>
         <button className={section === "history" ? "active" : ""} onClick={() => setSection("history")} type="button"><PackageCheck size={16} /> Historial</button>
         <button className={section === "rules" ? "active" : ""} onClick={() => setSection("rules")} type="button"><Settings2 size={16} /> Reglas de envio</button>
-        <button className={section === "station" ? "active" : ""} onClick={() => setSection("station")} type="button"><Printer size={16} /> Puesto e impresion</button>
-        <button className={section === "integrations" ? "active" : ""} onClick={() => setSection("integrations")} type="button"><Truck size={16} /> Integraciones</button>
+        <button className={section === "stats" ? "active" : ""} onClick={() => setSection("stats")} type="button"><BarChart3 size={16} /> Estadísticas</button>
       </nav>
 
       {section === "operativa" ? <>
@@ -3154,7 +3167,9 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
             )}
           </section>
         </div>
-      )}</> : section === "workers" ? (
+      )}</> : section === "stats" ? (
+        <WarehouseStatisticsView />
+      ) : section === "workers" ? (
         <section className="expeditions-card" style={{ maxWidth: 880, margin: "28px auto" }}>
           <div className="card-heading"><div><span>Configuración</span><h3>Operarios de almacén</h3></div><span className="status-chip">QR obligatorio</span></div>
           <p className="carrier-help">Crea los operarios que necesites. Cada etiqueta nueva exige escanear un QR activo; una reimpresión no lo solicita.</p>
@@ -3164,7 +3179,6 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
           </div>
         </section>
       ) : <ExpeditionsSettingsDemo
-        connectors={expeditionsSettings.connectors}
         onCreateRule={createShippingRule}
         onDeleteRule={deleteShippingRule}
         onSaveRule={saveShippingRule}
@@ -3187,7 +3201,6 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
 
 function ExpeditionsSettingsDemo({
   amazonShipments,
-  connectors,
   generatedLabels,
   historyFilters,
   historyReturned,
@@ -3204,7 +3217,6 @@ function ExpeditionsSettingsDemo({
   section,
 }: {
   amazonShipments: AmazonShipmentRecord[];
-  connectors: ExpeditionsSettings["connectors"];
   generatedLabels: GeneratedShippingLabelRecord[];
   historyFilters: HistoryFilters;
   historyReturned: number;
@@ -3218,12 +3230,10 @@ function ExpeditionsSettingsDemo({
   onUpdateRule: (ruleId: string, patch: Partial<ShippingRule>) => void;
   rules: ShippingRule[];
   saving: boolean;
-  section: "history" | "rules" | "station" | "integrations";
+  section: "history" | "rules";
 }) {
   if (section === "history") return <ExpeditionsHistory labels={generatedLabels} amazonShipments={amazonShipments} filters={historyFilters} returned={historyReturned} total={historyTotal} onRefresh={onRefreshHistory} onUpdateFilters={onUpdateHistoryFilters} />;
-  if (section === "rules") return <ShippingRulesManager />;
-  if (section === "station") return <section className="settings-demo"><div className="settings-demo-head"><div><span>PUESTO DE TRABAJO</span><h3>Preparacion 1</h3><p>Esta configuracion se guardara en cada ordenador, no por usuario.</p></div><span className="station-ok">Conectada</span></div><div className="station-settings"><label>Modo de trabajo<select defaultValue="automatic"><option value="automatic">Automatico</option><option value="manual">Manual</option></select></label><label>Impresora de etiquetas<select defaultValue="Zebra ZD421"><option>Zebra ZD421</option><option>Honeywell PC42t</option></select></label><label>Impresora de albaranes<select defaultValue="Microsoft Print to PDF"><option>Microsoft Print to PDF</option><option>HP Office</option></select></label><label>Perfil de caja por defecto<select defaultValue="Caja estandar S"><option>Caja estandar S · 30 × 20 × 15</option><option>Caja estandar M · 40 × 30 × 20</option></select></label></div><div className="settings-demo-actions"><button className="secondary-action" type="button">Imprimir prueba</button><button className="primary-action" type="button">Guardar configuracion</button></div></section>;
-  return <section className="settings-demo"><div className="settings-demo-head"><div><span>INTEGRACIONES</span><h3>Conectores de envio</h3><p>Las reglas deciden que conector se usa para cada destino.</p></div></div><div className="integration-grid">{connectors.map((connector) => <article key={connector.id}><h4>{connector.label}</h4><p>{connector.id === "genei" ? "Agregador activo: permite elegir servicios de agencias integradas en Genei." : "Conector heredado pendiente de retirar del flujo nuevo."}</p><span className="integration-state">{connector.ready ? "Disponible" : "Preparado"}</span></article>)}<article><h4>MRW directo</h4><p>Conector SOAP SAGEC preparado para MRW 19, MRW 14, EtiquetaEnvio y CancelarEnvio.</p><span className="integration-state">Lab</span></article><article><h4>Correos Express / DHL</h4><p>Disponibles en el catalogo de reglas como transportistas futuros; generacion directa pendiente de credenciales/API.</p><span className="integration-state">Preparado</span></article><article><h4>Amazon SP-API</h4><p>Confirmacion real de tracking controlada por dry-run y allowlist.</p><span className="integration-state">Controlado</span></article></div><div className="settings-demo-note"><CircleAlert size={17} /> La activacion real de nuevos conectores se hara en lab y con aprobacion explicita antes de produccion.</div></section>;
+  return <ShippingRulesManager />;
 }
 
 function ExpeditionsHistory({

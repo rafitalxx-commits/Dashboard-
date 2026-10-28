@@ -40,7 +40,6 @@ import { money, orders as demoOrders, statusTone } from "./data/demoData";
 import { AmazonMessagesView } from "./modules/amazonMessages";
 import { ExpeditionsView } from "./modules/expeditions/ExpeditionsView";
 import { WarehouseWorkersSettings } from "./modules/expeditions/WarehouseWorkersSettings";
-import { WarehouseStatisticsView } from "./modules/warehouseStats/WarehouseStatisticsView";
 import { ProductsCatalogView } from "./modules/products/ProductsCatalogView";
 import { ProductLabelsView } from "./modules/products/ProductLabelsView";
 import { ProductLocationsView } from "./modules/products/ProductLocationsView";
@@ -100,12 +99,6 @@ const navItems = [
     icon: Send,
     view: "expeditions",
     permission: "expeditions",
-  },
-  {
-    label: "Estadísticas",
-    icon: BarChart3,
-    view: "warehouseStatistics",
-    permission: "dashboard",
   },
   {
     label: "Facturas cliente",
@@ -236,7 +229,6 @@ const viewRoutes: Record<ActiveView, string> = {
   orders: "pedidos",
   ordersV2: "pedidos-v2",
   expeditions: "expediciones",
-  warehouseStatistics: "estadisticas",
   customerInvoices: "facturacion",
   supplierInvoices: "facturas-proveedor",
   purchaseAnalytics: "compras/analitica",
@@ -259,6 +251,9 @@ const viewRoutes: Record<ActiveView, string> = {
 const routeViews = Object.fromEntries(
   Object.entries(viewRoutes).map(([view, route]) => [route, view]),
 ) as Record<string, ActiveView>;
+// Keep old statistics links working, but route them through Expeditions access control.
+routeViews.estadisticas = "expeditions";
+routeViews["expediciones/estadisticas"] = "expeditions";
 
 type DashboardUserRole = "viewer" | "printer" | "admin";
 type DashboardPermission =
@@ -1720,8 +1715,6 @@ function App() {
                   ? "Pedidos V2"
                 : activeView === "expeditions"
                   ? "Expediciones"
-                : activeView === "warehouseStatistics"
-                  ? "Estadísticas"
                 : activeView === "amazonMessages"
                     ? "Amazon Messages"
                   : activeView === "incidents"
@@ -1972,8 +1965,6 @@ function App() {
           <ExpeditionsView
             onRefreshOrders={() => setOrderRefreshKey((value) => value + 1)}
           />
-        ) : activeView === "warehouseStatistics" ? (
-          <WarehouseStatisticsView />
         ) : activeView === "products" ? (
           <ProductsCatalogView
             key="catalog"
