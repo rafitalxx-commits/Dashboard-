@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 
 export type ProductLocation = {
@@ -58,6 +59,7 @@ type Store = {
   locations: ProductLocation[];
   locationCatalog: LocationCatalogEntry[];
   changes: ProductLocationChange[];
+  transferRequests?: Record<string, string>;
   processedReceptionIds?: number[];
   odooMovementSync?: {
     baselineAt: string;
@@ -118,13 +120,27 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
         locations,
         locationCatalog: [...catalogByCode.values()],
         changes: stored.changes || [],
+        transferRequests: stored.transferRequests || {},
         processedReceptionIds: stored.processedReceptionIds || [],
         odooMovementSync: stored.odooMovementSync,
       };
     }
-    catch { return empty(); }
+    catch { throw new Error("No se pudieron leer las ubicaciones del Dashboard. Revisa el almacén antes de realizar un movimiento."); }
   };
-  const write = (store: Store) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 }); };
+  const write = (store: Store) => {
+    mkdirSync(dirname(file), { recursive: true });
+    const temp = `${file}.tmp-${process.pid}-${randomUUID()}`;
+    let fd: number | undefined;
+    try {
+      fd = openSync(temp, "wx", 0o600);
+      writeFileSync(fd, `${JSON.stringify(store, null, 2)}\n`);
+      fsyncSync(fd); closeSync(fd); fd = undefined;
+      renameSync(temp, file);
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+      if (existsSync(temp)) unlinkSync(temp);
+    }
+  };
   const catalog = (activeOnly = false) => read().locationCatalog
     .filter((item) => !activeOnly || item.active)
     .sort((left, right) => Number(right.active) - Number(left.active) || left.label.localeCompare(right.label, "es"));
@@ -208,11 +224,21 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     }
     write(store); return { locations: forProductFrom(store, productId) };
   };
-  const transfer = (input: { productId: number; fromCode: unknown; toCode: unknown; quantity: unknown }) => {
+  const transfer = (input: { productId: number; fromCode: unknown; toCode: unknown; quantity: unknown; requestId?: string }) => {
     const productId = Number(input.productId); const from = parseLocationCode(input.fromCode); const to = parseLocationCode(input.toCode); const quantity = Number(input.quantity);
     if (!Number.isInteger(productId) || productId <= 0 || !Number.isFinite(quantity) || quantity <= 0) throw new Error("Movimiento de reposición inválido");
     if (from.code === to.code) throw new Error("El origen y el destino deben ser distintos");
-    const store = read(); requireActive(store, from.code, "physical"); requireActive(store, to.code, "physical"); const fromIndex = store.locations.findIndex((item) => item.productId === productId && item.code === from.code);
+    const store = read();
+    const fingerprint = JSON.stringify([productId, from.code, to.code, quantity]);
+    if (input.requestId) {
+      if (!/^[a-zA-Z0-9-]{16,100}$/.test(input.requestId)) throw new Error("Identificador de movimiento inválido");
+      const previous = store.transferRequests?.[input.requestId];
+      if (previous) {
+        if (previous !== fingerprint) throw new Error("Este identificador ya corresponde a otro movimiento");
+        return { locations: forProductFrom(store, productId) };
+      }
+    }
+    requireActive(store, from.code, "physical"); requireActive(store, to.code, "physical"); const fromIndex = store.locations.findIndex((item) => item.productId === productId && item.code === from.code);
     if (fromIndex < 0) throw new Error("Ubicación de origen no encontrada");
     const source = store.locations[fromIndex]; if (source.quantity < quantity) throw new Error("No hay cantidad suficiente en la ubicación de origen");
     const toIndex = store.locations.findIndex((item) => item.productId === productId && item.code === to.code); const target = toIndex >= 0 ? store.locations[toIndex] : undefined; const now = new Date().toISOString();
@@ -220,6 +246,7 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     const destination: ProductLocation = target ? { ...target, quantity: target.quantity + quantity, updatedAt: now } : { productId, ...to, quantity, preferred: false, createdAt: now, updatedAt: now };
     if (toIndex >= 0) store.locations[toIndex] = destination; else store.locations.push(destination);
     store.changes.unshift({ id: `loc-${Date.now()}-to`, productId, code: to.code, previousQuantity: target?.quantity ?? 0, quantity: destination.quantity, reason: "replenishment", createdAt: now }, { id: `loc-${Date.now()}-from`, productId, code: from.code, previousQuantity: source.quantity, quantity: source.quantity - quantity, reason: "replenishment", createdAt: now });
+    if (input.requestId) store.transferRequests = { ...store.transferRequests, [input.requestId]: fingerprint };
     write(store); return { locations: forProductFrom(store, productId) };
   };
   type InventoryCountInput = { productId: number; locationCode: string; quantity: number };

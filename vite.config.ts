@@ -1,3 +1,5 @@
+import { createExpeditionReplenishment } from "./backend/expeditionReplenishment/service";
+import { registerExpeditionReplenishmentRoutes } from "./backend/expeditionReplenishment/routes";
 import {assertInternalAutomationNote} from './backend/incidents/automationAuthor';
 import {IncidentChatter} from './backend/incidents/chatter';
 import { enrichIncidentKits } from './backend/incidents/kits';
@@ -569,6 +571,16 @@ function odooReadOnlyApi(env: Record<string, string>) {
       const productLocations = createProductLocations({
         dataDir: env.DASHBOARD_DATA_DIR,
       });
+      // Review snapshots are confined to LAB. Production always reads catalog images normally.
+      const replenishmentPreviewFile = join(env.DASHBOARD_DATA_DIR || ".dashboard-data", "expedition-replenishment-lab-preview.json");
+      const replenishmentPreview = server.config.base.includes("lab") && existsSync(replenishmentPreviewFile)
+        ? JSON.parse(readFileSync(replenishmentPreviewFile, "utf8")) as { capturedAt: string; images: Record<string, string> }
+        : null;
+      registerExpeditionReplenishmentRoutes(server, auth,
+        createExpeditionReplenishment(productLocations, productCatalog),
+        (ids) => replenishmentPreview
+          ? Promise.resolve(Object.fromEntries(ids.filter((id) => replenishmentPreview.images[id]).map((id) => [id, replenishmentPreview.images[id]])))
+          : productCatalog.images(ids), replenishmentPreview?.capturedAt);
       let movementSyncInFlight: Promise<unknown> | null = null;
       const syncOdooMovements = (automatic = false) => {
         if (movementSyncInFlight) return movementSyncInFlight.then(() => syncOdooMovements(automatic));

@@ -1,3 +1,4 @@
+import { ReplenishmentAlerts } from "./ReplenishmentAlerts";
 import type {reshipmentPreparation} from '../../../backend/incidents/reshipment';
 import {downloadReshipmentDocumentByReference} from '../incidents/ReshipmentDocument';
 import {downloadDemoRexLabel} from './demoRexLabel';
@@ -3008,6 +3009,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       </nav>
 
       {section === "operativa" ? <>
+      <ReplenishmentAlerts />
       <section className="expeditions-toolbar">
         <div className="mode-toggle" aria-label="Modo de expedicion">
           <button className={mode === "automatic" ? "active" : ""} onClick={() => { setMode("automatic"); setParcels([automaticParcel]); setSelectedQuote(0); }} type="button">Automatico</button>
