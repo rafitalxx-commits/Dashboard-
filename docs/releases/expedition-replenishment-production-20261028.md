@@ -34,4 +34,11 @@ Rollback restaura entryHTML y solo los8archivos/caminos aprobados si siguen con 
 
 ## Resultado
 
-Pendiente publicación y verificación pública; completar con deployment.json/production-verification.json. No push/merge remoto en este alcance ni reintento del PR previamente rechazado.
+**TERMINADO — publicado y verificado.** Fuente `97f98444f8057e6a5d185438c06d9b3c05b48008`, backend HEAD sigue9a343d2 (árbol sucio ajeno preservado). Ocho fuentes desplegadas por hash, JS `index-BeXLOI9e.js`/CSS `index-32v5tlI0.css`; manifiesto completo deployment.json. Reinicio controlado del único backend afectado; Caddy/unidades/gates sin cambios. No push/merge remoto ni reintento del PR previamente rechazado.
+
+- Preflight real tras reinicio antes de cambiarHTML:auth/reposición/fotos GET exit0,22avisos,8fotos y correspondencia exacta independiente con ledger/catálogo.
+- Frontera pública final autenticada sinbypass exit0:22avisos (10negativos/12cero),fotos reales,posición y geometría1440/390,paginación/búsqueda,formulario abierto y cancelado sin confirmar,statssemanales/impresora conservados. Cero erroresJS,mutaciones o lecturasfeaturefallidas. Capturas públicas inspeccionadas. GETajenos interceptados;no se afirma prueba de transacciones Odoo/carrier/hardware.
+- **13archivos de integridad idénticos** (9stores+4configuraciones),incluidas ubicaciones/auditoría y catálogo. Ningún traslado real ejecutado;el flujo completo de traslado se validó únicamente en copia desechable.
+- Ambos servicios habituales producción/LAB activos,ningún harness temporal residual. Fuente atomic/failclosed y tests actualizados también en LAB;no se copiaron saldos/fotos/auth de LAB a producción. Rollback completo de código/HTML disponible,assets anteriores conservados.
+- URL https://dashboard.todoelectrico.net/#/expediciones . Ya no hay aprobación/publicación pendiente para esta tarjeta. No hay continuación automática.
+
