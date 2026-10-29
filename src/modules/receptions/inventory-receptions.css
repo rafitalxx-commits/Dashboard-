@@ -308,3 +308,29 @@
 .inventory-history-recovery > div { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; }
 .inventory-history-recovery span { overflow-wrap: anywhere; }
 .inventory-history-recovery button { background: #fff; border: 1px solid #c6ac6c; border-radius: 7px; cursor: pointer; font: inherit; min-height: 36px; padding: 7px 10px; }
+
+/* Tint the entire scrollable product row, including its allocation editor. */
+.inventory-reception-line.inventory-under-order-pending {
+  background: #fff0ef;
+  border-top-color: #edc5c1;
+}
+.inventory-under-order-pending .inventory-reception-line-main {
+  background: #fff0ef;
+  box-shadow: inset 4px 0 #d45a50;
+}
+.inventory-under-order-pending .inventory-location-plan {
+  background: #fff6f5;
+  border-top-color: #edc5c1;
+}
+/* Compact rows can scroll; keep their editor and save action in the drawer. */
+@media (max-width: 900px) {
+  .inventory-reception-drawer .inventory-location-plan {
+    box-sizing: border-box;
+    left: 0;
+    position: sticky;
+    width: min(92vw, 720px);
+  }
+}
+@media (max-width: 520px) {
+  .inventory-reception-drawer .inventory-location-plan { width: 100vw; }
+}

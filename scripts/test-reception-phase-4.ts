@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProductLocations, DISPATCH_PENDING_LOCATION } from "../backend/products/locations.ts";
 import { createPendingReceipts } from "../backend/receptions/pendingReceipts.ts";
-import { createLocationPlan, isLocationPlanBalanced, updateReceivedQuantity } from "../src/modules/receptions/locationPlan.ts";
+import { createLocationPlan, isLocationPlanBalanced, isUnderOrderReceiptPending, updateReceivedQuantity } from "../src/modules/receptions/locationPlan.ts";
 import type { InventoryReceptionLine } from "../src/services/odooTypes.ts";
 
 const testDir = mkdtempSync(join(tmpdir(), "dashboard-reception-phase-4-"));
@@ -49,6 +49,17 @@ try {
     saleOrderRefs: [],
     preferredLocation: "A101",
   };
+  // Priority tint follows confirmed local counts; suggested/default quantities do not count.
+  assert.equal(isUnderOrderReceiptPending(underOrder), true);
+  assert.equal(isUnderOrderReceiptPending(underOrder, { receivedQty: 1, allocations: [], ready: false }), true);
+  assert.equal(isUnderOrderReceiptPending(underOrder, { receivedQty: 0, allocations: [], ready: true }), true);
+  assert.equal(isUnderOrderReceiptPending(underOrder, { receivedQty: 0.5, allocations: [], ready: true }), true);
+  assert.equal(isUnderOrderReceiptPending(underOrder, { receivedQty: 1, allocations: [], ready: true }), false);
+  assert.equal(isUnderOrderReceiptPending({ ...underOrder, pendingQty: 0 }), false);
+  assert.equal(isUnderOrderReceiptPending(replenishment), false);
+  assert.equal(isUnderOrderReceiptPending({ ...underOrder, classification: "mixed", pendingShipmentQty: 0.5 }), true);
+  assert.equal(isUnderOrderReceiptPending({ ...underOrder, classification: "mixed", pendingShipmentQty: 0 }), false);
+
   const dispatchPlan = createLocationPlan(underOrder, activeLocations);
   assert.deepEqual(dispatchPlan.allocations, [{
     id: "P04875-line-zero-dispatch",
