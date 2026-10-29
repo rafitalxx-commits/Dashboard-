@@ -6,6 +6,7 @@ import {resolve,join} from 'node:path';
 // Entire application mounted from its compiled output. No API reaches a server.
 const {chromium}=createRequire('/usr/lib/node_modules/openclaw/package.json')('playwright-core');
 const origin='https://dashboard.todoelectrico.net';
+const publicAssets=process.argv.includes('--public-assets');
 const evidence=process.env.RECEPTION_SAVE_EVIDENCE||'/root/.openclaw/workspace/releases/reception-save-highlight-20261029';
 mkdirSync(evidence,{recursive:true});
 const line=(id,classification='under_order',qty=10)=>({id,productId:id,name:`Producto ${id}`,sku:`SKU-${id}`,barcode:'',expectedQty:qty,processedQty:0,pendingQty:qty,uom:'uds',classification,saleOrderRefs:classification==='replenishment'?[]:['S-QA'],preferredLocation:'A101',...(classification==='mixed'?{pendingShipmentQty:3,warehouseStockQty:7}:{})});
@@ -32,6 +33,7 @@ try{
    if(p==='/api/odoo/products/location-catalog')return send({locations});
    return send({items:[],orders:[],products:[],rules:[],labels:[],shipments:[],workers:[],incidents:[],entries:[],receipts:[],submissions:[],notifications:[],tasks:[],events:[],settings:{},total:0,mode:'live'});
   }
+  if(publicAssets)return route.continue();
   const file=resolve('dist',p==='/'?'index.html':p.slice(1));
   let body;try{body=readFileSync(file);}catch{return route.fulfill({status:404,body:''});}
   return route.fulfill({body,contentType:file.endsWith('.html')?'text/html':file.endsWith('.js')?'application/javascript':file.endsWith('.css')?'text/css':'application/octet-stream'});
@@ -86,7 +88,7 @@ try{
  await scroller.evaluate(el=>{el.scrollLeft=0;el.scrollTop=0;});await page.screenshot({path:join(evidence,'pending-mobile.png')});
  checks.push('Mobile: full-width soft-red row and editor, horizontally reachable controls, collapse and focus preserved');
  assert.deepEqual(errors,[]);assert.deepEqual(mutations,[]);
- const report={passed:true,checks,allApisIntercepted:true,liveRequests:0,mutations,errors,apiPaths:[...new Set(requests)]};
- writeFileSync(join(evidence,'fixture-report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report));
+ const report={passed:true,publicAssets,checks,allApisIntercepted:true,liveApiRequests:0,mutations,errors,apiPaths:[...new Set(requests)]};
+ writeFileSync(join(evidence,publicAssets?'public-fixture-report.json':'fixture-report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report));
 }catch(error){if(page){console.error((await page.locator('body').innerText()).slice(-2000));await page.screenshot({path:join(evidence,'fixture-failure.png')});}throw error;}
 finally{await browser.close();}
