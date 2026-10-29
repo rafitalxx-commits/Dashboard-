@@ -2,9 +2,9 @@
 
 ## Estado
 
-Implementación y validación local terminadas. **No publicado en producción.**
-Pendiente: aceptación de Rafa y aprobación explícita de promoción. No hay servidores
-ni agentes de continuación activos para esta tarea; los LAB gestionados permanecen apagados.
+**Publicado en producción el 2026-10-29 tras el OK explícito de Rafa.**
+Comprobación pública funcional, visual y autenticada terminada. No hay servidores,
+agentes ni continuación automática pendientes. Los LAB gestionados siguen apagados.
 
 ## Alcance
 
@@ -54,11 +54,46 @@ ni agentes de continuación activos para esta tarea; los LAB gestionados permane
   en base, 12 en candidato, cero nuevos. No se afirma typecheck global verde.
 - `git diff --check`: exit 0.
 
-## Próximo paso tras aprobación
+## Publicación y aceptación final
 
-Releer estado público y fuentes; abortar/rebasar si difieren del manifiesto.
-Crear backup reversible de fuentes y estáticos. Publicar selectivamente los tres
-archivos autorizados y assets, con HTML atómico, sin reiniciar backend. Repetir
-fixture sobre assets públicos y lectura autenticada únicamente; no iniciar ni
-validar sesiones reales para QA. Comparar stores/config antes/después. Actualizar
-este documento con hashes, rollback y resultado observado; no restaurar datos de negocio.
+- Revisión fuente publicada: `e4cdc5e067c6f3f0e8f3830940682496e639e68c`; la implementación es
+  `60f0292` y `e4cdc5e` añade soporte de aceptación de assets públicos a la prueba.
+- Solo se copiaron los tres archivos de `approved-files.txt`; no se promovió el
+  árbol sucio de producción ni se cambió backend/configuración/gates.
+- HTML SHA-256: `60a8ef76061839798260b216cd0ca7bf203809a44124a23a2ac2e8448e4334a6`.
+- JS público: `index-Y1_YUCRR.js`; CSS: `index-DrjHE60a.css`.
+  Todos los hashes de chunks/fuentes en `deployment.json`.
+- Backend HEAD `9a343d2d2263fd32e85392019355db8d9ee419bc`, PID `991369` activo e idéntico,
+  sin reinicio. HEAD backend no identifica la fuente frontend publicada.
+- Publicación con assets primero y HTML atómico; los assets anteriores se conservan.
+- `node scripts/test-reception-save-ui.mjs --public-assets`: exit 0, cinco grupos
+  de interacción correctos sobre el frontend realmente servido, APIs interceptadas,
+  cero mutaciones ni errores JavaScript. Incluye cero/parcial/completo, cierre/foco,
+  reapertura/recarga y botón móvil sin recorte.
+- `node releases/reception-save-highlight-20261029/verify-live.cjs --public`
+  (script alojado en la evidencia): exit 0. Lecturas autenticadas reales 200 para
+  auth, recepciones, sesiones, ubicaciones, pendientes e historial; 23 recepciones.
+  Caso observado recepción `120117`, línea `281192`: color coincide con la lectura
+  autorizada. Escritorio y móvil correctos; solo abrir/cerrar, sin iniciar operario,
+  contar, guardar reparto ni validar/cancelar una recepción real. GET adyacente de
+  incidencias de ubicación interceptado para no ejecutar sincronización incidental.
+- Assets públicos descargados y comparados exactamente con candidato.
+- `integrity-before.json` / `integrity-after.json`: los 15 archivos de datos y
+  configuración comparados permanecieron byte-idénticos durante la publicación final.
+- Primer intento: la comprobación HTTP de assets usó por error `response.ok()` de
+  Playwright sobre un `fetch` nativo. La prueba de interacción había pasado, pero
+  ese fallo activó rollback íntegro de código/HTML antes de corregir el verificador
+  a `response.ok` y repetir. Evidencia anterior en `attempt-1/`; no se restauraron datos.
+- `whole-release-integrity.json`: desde el primer intento hasta el cierre, 14/15
+  archivos byte-idénticos y únicamente avanzó `odooMovementSync.automaticLastSyncedAt`
+  en ubicaciones. Se reconstruyeron ambos SHA originales cambiando solo ese campo
+  en memoria (11:09:11.553Z → 11:10:11.558Z), acreditando saldos/auditoría de negocio
+  idénticos. Ningún dato fue escrito o restaurado para lograr esta verificación.
+- Capturas públicas inspeccionadas: `production-desktop.png`, `production-mobile.png`.
+
+## Rollback
+
+Copia reversible de estáticos y fuentes originales: `/root/.openclaw/workspace/releases/reception-save-highlight-20261029/rollback`.
+Restaurar solo la entrada HTML anterior y las tres fuentes si aún pertenecen a esta
+publicación; conservar assets antiguos. No restaurar stores de negocio ni configuración.
+Sin PR remoto/push/merge ejecutado; no quedan acciones pendientes para esta solicitud.
