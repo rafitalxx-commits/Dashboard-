@@ -1,4 +1,4 @@
-import {isUnsentMerchandiseRefund} from './economics.ts';
+import {customerWithdrawalProductValue,isSaleAdjustmentRefund} from './economics.ts';
 import {explicitlyEnteredIncidentCost,recordedIncidentCost} from './operatorWorkflow.ts';
 import type { Incident } from './types.ts';
 
@@ -26,7 +26,7 @@ export function incidentEconomics(i: Incident) {
   for (const c of i.costs) {
     if(c.direction==='cost'&&c.amount===0&&!recordedIncidentCost(i,c))continue;
     const amount = cents(c.amount);
-    if(isUnsentMerchandiseRefund(i,c)){saleAdjustments+=amount;continue;}
+    if(isSaleAdjustmentRefund(i,c)){saleAdjustments+=amount;continue;}
     if (c.direction === 'recovery') {
       if (c.state === 'confirmed') recovered += amount;
       else if (c.source !== 'carrier' && c.state !== 'assumed') pendingRecovery += amount;
@@ -38,7 +38,7 @@ export function incidentEconomics(i: Incident) {
   }
   // The cost ledger is authoritative for receipts. Do not add claim.recoveredAmount again.
   for (const c of i.claims) if (!['closed','compensated','rejected'].includes(c.status) && !c.assumed) pendingRecovery += Math.max(0,cents(c.claimedAmount || 0)-cents(c.recoveredAmount || 0));
-  return { gross:gross/100, recovered:recovered/100, net:(gross-recovered)/100, estimated:estimated/100, pendingRecovery:pendingRecovery/100, pendingLines, transport:transport/100, merchandise:merchandise/100, saleAdjustments:saleAdjustments/100 };
+  return { gross:gross/100, recovered:recovered/100, net:(gross-recovered)/100, estimated:estimated/100, pendingRecovery:pendingRecovery/100, pendingLines, transport:transport/100, merchandise:merchandise/100, saleAdjustments:saleAdjustments/100, customerReturnValue:customerWithdrawalProductValue(i) };
 }
 export function filterStatistics(incidents: Incident[], f: StatisticsFilters, dates = true) {
   return incidents.filter(i => (f.includeTests || !(f.testEnvironment || isTestIncident(i))) && (!dates || incidentDate(i) >= f.from && incidentDate(i) <= f.to)
@@ -48,9 +48,9 @@ export function filterStatistics(incidents: Incident[], f: StatisticsFilters, da
     && (!f.type || i.type === f.type) && (!f.channel || i.order.channel === f.channel) && (!f.status || i.status === f.status) && (!f.origin || i.origin === f.origin));
 }
 export function aggregateStatistics(rows: Incident[]) {
-  const total = { count:rows.length, gross:0, recovered:0, net:0, estimated:0, pendingRecovery:0, pendingLines:0, transport:0, merchandise:0, saleAdjustments:0, solved:0, preparation:0, unattributed:0 };
-  for (const i of rows) { const e=incidentEconomics(i); for (const key of ['gross','recovered','net','estimated','pendingRecovery','pendingLines','transport','merchandise','saleAdjustments'] as const) total[key] += e[key]; if (resolution(i)) total.solved++; if (isPreparationError(i)) {total.preparation++; if (!i.order.preparedBy?.trim()) total.unattributed++;} }
-  for (const key of ['gross','recovered','net','estimated','pendingRecovery','transport','merchandise','saleAdjustments'] as const) total[key] = Math.round(total[key]*100)/100;
+  const total = { count:rows.length, gross:0, recovered:0, net:0, estimated:0, pendingRecovery:0, pendingLines:0, transport:0, merchandise:0, saleAdjustments:0, customerReturnValue:0, solved:0, preparation:0, unattributed:0 };
+  for (const i of rows) { const e=incidentEconomics(i); for (const key of ['gross','recovered','net','estimated','pendingRecovery','pendingLines','transport','merchandise','saleAdjustments','customerReturnValue'] as const) total[key] += e[key]; if (resolution(i)) total.solved++; if (isPreparationError(i)) {total.preparation++; if (!i.order.preparedBy?.trim()) total.unattributed++;} }
+  for (const key of ['gross','recovered','net','estimated','pendingRecovery','transport','merchandise','saleAdjustments','customerReturnValue'] as const) total[key] = Math.round(total[key]*100)/100;
   return total;
 }
 export function groupStatistics(rows: Incident[], key: 'operator'|'carrier'|'resolver') {
