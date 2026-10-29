@@ -22,10 +22,12 @@ Se cambian únicamente los assets frontend estáticos; no se modifican APIs, run
 - QA visual previo LAB aislado con fixture sintética: tarjeta muestra 30,95 €; escritorio 1440 px y móvil 390 px, sin overflow ni errores de consola ni peticiones mutantes. Esa cifra es fixture/cálculo visual, no total real de producción.
 - `/api/auth/me` de producción respondió `authenticated:false` en esta sesión. No se verificó con usuario autenticado un importe agregado real; no debe afirmarse que la métrica live se comprobó o que un importe de cero significa ausencia de datos.
 
-## Publicación
+## Publicación verificada — 2026-10-29
 
-Pendiente al crear este documento. El destino es el root estático confirmado por Caddy `/var/www/odoo-v18-dashboard`; no reiniciar `odoo-v18-dashboard.service`. Antes de publicar, archivar HTML/assets previos, guardar hashes de API/config y stores locales, copiar los nuevos assets hashados y actualizar atómicamente solo la referencia de entrada. Verificar HTTP público, assets, estado del servicio, gates sin cambios y los mismos hashes de stores tras la publicación.
-
-## Rollback
-
-El rollback restaura el `index.html` previo desde el archivo de evidencia y conserva los assets anteriores (no eliminar assets). No cambiar Caddy, backend ni los stores de negocio.
+- Caddy sirve desde `/var/www/odoo-v18-dashboard`. Se publicó el bundle del commit fuente `2e165699ecfae95d1e802e706cd41b11d55025bb` desde el worktree aislado indicado arriba.
+- Solo se añadieron tres assets hashados: `index-D8AGridb.js`, `index.es-BUmesscK.js` y `jspdf.es.min-DofTpOOQ.js`. El CSS y las dependencias html2canvas/purify se conservaron byte por byte. `index.html` se reemplazó atómicamente cambiando solo `/assets/index-Y1_YUCRR.js` por `/assets/index-D8AGridb.js`; se conservaron los metadatos/icons y `location-incidents.js` existentes.
+- La URL pública respondió HTTP 200. El HTML y todos los assets referenciados se volvieron a descargar por HTTPS; coinciden byte por byte con el candidato (`public-after.sha256`). El bundle público contiene la etiqueta «Importe de producto».
+- `odoo-v18-dashboard.service` quedó activo, PID `1094042`, inicio `2026-10-29 17:42:34 CET`; no se reinició. Caddy config sigue con SHA256 `9a8d59dcff9ddb001682e494b17b775fb839553b106e3422d236bc4a76eef868`.
+- Los cinco archivos locales de estado Incidencias conservaron sus hashes antes/después. No se llamó a APIs de mutación ni se ejecutaron movimientos, reembolsos, etiquetas o envíos. Las puertas operativas existentes no se cambiaron.
+- La comprobación `/api/auth/me` devolvió HTTP 200 con `authenticated:false`; el importe total agregado en una sesión de operario no pudo comprobarse desde esta ejecución. La métrica usa solo precios unitarios guardados y cantidades DEV; un registro histórico sin precio queda fuera de la suma y no prueba valor cero.
+- Evidencia y rollback: `/root/.openclaw/workspace/releases/incidents-return-economics-20261029/`; `rollback-public.tar` SHA256 `04b6d141d38fe08ddfd8adcd1cc7f4d445c032a98bb03c4033eff90d029f89fc`. Para revertir, restaurar el `index.html` guardado; los assets anteriores permanecen en el root. No cambiar Caddy, backend ni stores.
