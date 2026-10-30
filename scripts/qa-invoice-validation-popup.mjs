@@ -106,7 +106,7 @@ try{
  await dialog.getByRole('alert').filter({hasText:'No se pudo comprobar Odoo; reintenta'}).first().waitFor();
  assert.equal(await dialog.getByRole('button',{name:'Confirmar envío con pendientes',exact:true}).isDisabled(),true);
  verifyMode='normal';await dialog.getByRole('button',{name:'Reintentar comprobación',exact:true}).click();
- await dialog.getByText('Problemas que impiden validar',{exact:true}).waitFor();assert.equal(saveCount,2,'Rechecking after saved data must not save again');
+ await dialog.getByText('Problemas que impiden validar',{exact:true}).waitFor();assert.equal(await dialog.getByRole('alert').count(),0,'Successful retry clears obsolete errors');assert.equal(saveCount,2,'Rechecking after saved data must not save again');
  assert.equal(saveCount,2);await dialog.getByLabel('Fecha contable',{exact:true}).fill('2026-10-30');
  assert.equal(await dialog.getByRole('button',{name:'Confirmar envío con pendientes',exact:true}).isDisabled(),true,'No send without explicit checkbox');
  await dialog.getByLabel('He revisado estos pendientes y autorizo crear el borrador para corregirlos en Odoo.',{exact:true}).check();

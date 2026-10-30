@@ -18,7 +18,7 @@ export function InvoiceReviewDialog({ doc, apiPath, review, taxes, accounts, onS
   const [editorPending,setEditorPending] = useState(Boolean(pendingEditor));
   const [busy,setBusy] = useState(''), [error,setError] = useState(''), [message,setMessage] = useState('');
   useEffect(()=>{ const node=dialog.current!; node.showModal(); return ()=>node.close(); },[]);
-  useEffect(()=>{setCheck(review);setAck(false);},[review]);
+  useEffect(()=>{setCheck(review);setAck(false);setError('');},[review]);
   const change = (k:string,v:string)=>{setFields(f=>({...f,[k]:v}));setDirty(true);setAck(false);};
   const refreshCheck = async (id:string) => {
     setCheck({fingerprint:null,blockers:[],loading:true});setAck(false);
