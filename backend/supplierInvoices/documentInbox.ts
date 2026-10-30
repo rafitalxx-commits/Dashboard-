@@ -807,15 +807,23 @@ export class DocumentInboxService {
     env: Record<string, string | undefined>,
     invoices: SupplierInvoiceStore["invoices"],
     poIndex: PoIndex[],
+    refreshPdf = false,
   ): Promise<InboxDocument> {
     const doc = this.getDocument(driveFileId);
     if (!doc || doc.sourcePresent === false) throw new Error("Documento no disponible en la bandeja de Drive");
     const cachedPath = `${this.cacheDir}/${doc.driveFileId}.pdf`;
-    if (doc.pdfCached && doc.extracted && existsSync(cachedPath)) {
+    if (!refreshPdf && doc.pdfCached && doc.extracted && existsSync(cachedPath)) {
       if (readFileSync(cachedPath).subarray(0, 5).toString() === "%PDF-") return doc;
     }
     const client = new DriveClient(env);
-    const pdfPath = await client.download(doc.driveFileId, this.cacheDir);
+    if (refreshPdf) {
+      const meta = await client.getFileMeta(doc.driveFileId);
+      if (meta.id !== doc.driveFileId || !meta.parents?.includes(env.SUPPLIER_INVOICES_DRIVE_FOLDER_ID ?? ""))
+        throw new Error("El PDF ya no está en la carpeta de bandeja configurada; se conserva el borrador anterior.");
+      doc.modifiedTime = meta.modifiedTime;
+      doc.size = meta.size;
+    }
+    const pdfPath = await client.download(doc.driveFileId, this.cacheDir, refreshPdf);
     const buf = readFileSync(pdfPath);
     if (buf.subarray(0, 5).toString() !== "%PDF-") throw new Error("El archivo de Drive no es un PDF válido");
     const parsed = await pdfParse(buf);

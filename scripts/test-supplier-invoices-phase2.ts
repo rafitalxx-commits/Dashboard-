@@ -385,6 +385,16 @@ async function testLocalManualTaxSaveRoute() {
     assert.equal(reopened.extracted?.lines.at(-1)?.productId, 44149);
     assert.equal(reopened.extracted?.total, 6986.35);
     assert.equal(validateAmounts(reopened.extracted?.base ?? null, reopened.extracted?.taxes ?? null, reopened.extracted?.total ?? null, reopened.extracted?.lines ?? [], []).ok, true);
+    const largeLines = Array.from({ length: 2438 }, (_, i) => ({ description: `Transporte ${i} ` + "detalle de albarán ".repeat(20), reference: String(i), quantity: 1, priceUnit: 1, discount: 0, taxNames: [], total: 1 }));
+    const saveLarge = (lines: unknown[]) => new Promise<{ status: number; body: string }>((resolve) => {
+      const request = Object.assign(Readable.from([JSON.stringify({ id: "TAX_TEST", lines })]), { method: "POST", headers: { cookie: "test" } });
+      const response = { writableEnded: false, statusCode: 200, setHeader() {}, end(body: string) { this.writableEnded = true; resolve({ status: this.statusCode, body }); } };
+      handler(request, response);
+    });
+    assert.equal((await saveLarge(largeLines)).status, 200);
+    assert.equal(new DocumentInboxService({ dataDir }).getDocument("TAX_TEST")!.extracted!.lines.length, 2438, "manual review save must retain the complete long invoice after reopening");
+    assert.equal((await saveLarge(Array.from({ length: 5001 }, () => largeLines[0]))).status, 400, "oversized line sets must be rejected, not truncated");
+    assert.equal(new DocumentInboxService({ dataDir }).getDocument("TAX_TEST")!.extracted!.lines.length, 2438);
     console.log("✅ testLocalManualTaxSaveRoute passed (store temporal, sin Odoo)");
   } finally { rmSync(dataDir, { recursive: true, force: true }); }
 }

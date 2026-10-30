@@ -26,7 +26,16 @@ export type LocationCatalogEntry = {
 
 export const DISPATCH_PENDING_LOCATION = "PENDIENTE_ENVIO";
 
-export type ProductLocationChange = {
+export type OdooMovementEvidence = {
+  odooMoveId?: number;
+  pickingReference?: string;
+  originReference?: string;
+  returnedMoveId?: number;
+};
+
+export type LocationMovement = OdooMovementEvidence & { id: number; productId: number; quantity: number; direction: "in" | "out" };
+
+export type ProductLocationChange = OdooMovementEvidence & {
   id: string;
   productId: number;
   code: string;
@@ -45,7 +54,7 @@ export type OdooMovementSyncResult = {
   lastSyncedAt?: string;
 };
 
-export type PendingLocationMovement = {
+export type PendingLocationMovement = OdooMovementEvidence & {
   id: number;
   productId: number;
   quantity: number;
@@ -69,6 +78,8 @@ type Store = {
     dismissedMovementAlertIds?: number[];
     automaticStartedAt?: string;
     automaticLastSyncedAt?: string;
+    customerReturnsStartedAt?: string;
+    customerReturnsLastSyncedAt?: string;
   };
 };
 type LocationSaveInput = { productId: number; code: unknown; quantity?: unknown; preferred?: unknown; replenishmentMin?: unknown; reason?: "manual" | "replenishment" };
@@ -340,16 +351,16 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     }
     store.processedReceptionIds = [...(store.processedReceptionIds || []), input.receptionId];
     if (!store.odooMovementSync) store.odooMovementSync = { baselineAt: now, lastSyncedAt: now, processedMoveIds: [] };
-    store.odooMovementSync.processedMoveIds = [...new Set([...store.odooMovementSync.processedMoveIds, ...input.moveIds])].slice(-50000);
+    store.odooMovementSync.processedMoveIds = [...new Set([...store.odooMovementSync.processedMoveIds, ...input.moveIds])];
     write(store);
     return { applied: true, locations: store.locations };
   };
-  const applyOdooMovements = (input: { moves: Array<{ id: number; productId: number; quantity: number; direction: "in" | "out" }>; syncedAt?: string; automatic?: boolean }): OdooMovementSyncResult => {
+  const applyOdooMovements = (input: { moves: LocationMovement[]; syncedAt?: string; automatic?: boolean; customerReturns?: boolean }): OdooMovementSyncResult => {
     const store = read(); const state = store.odooMovementSync;
     if (!state) throw new Error("Primero finaliza un inventario para crear la base de ubicaciones");
     const known = new Set(state.processedMoveIds); const warnings: string[] = []; let processed = 0; let applied = 0; let skipped = 0; const now = new Date().toISOString();
     const pendingBefore = new Map((state.pendingMovements || []).map((move) => [move.id, move]));
-    const incoming = new Map<number, { id: number; productId: number; quantity: number; direction: "in" | "out" }>();
+    const incoming = new Map<number, LocationMovement>();
     for (const move of state.pendingMovements || []) incoming.set(move.id, move);
     for (const move of input.moves) incoming.set(move.id, move);
     const pending: PendingLocationMovement[] = [];
@@ -357,7 +368,8 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
       if (!Number.isInteger(move.id) || known.has(move.id)) { skipped += 1; continue; }
       const quantity = Number(move.quantity);
       const locations = store.locations.filter((item) => item.productId === Number(move.productId));
-      const preferred = locations.find((item) => item.preferred);
+      const preferred = locations.find((item) => item.preferred && (move.direction !== "in" || store.locationCatalog.some((entry) => entry.code === item.code && entry.kind === "physical" && entry.active)));
+      const evidence: OdooMovementEvidence = { odooMoveId: move.id, pickingReference: move.pickingReference, originReference: move.originReference, returnedMoveId: move.returnedMoveId };
       // Odoo's aggregate stock remains authoritative when a product has no
       // Dashboard location. Consume completed outbound IDs without inventing
       // a physical balance or replaying the delivery if a location is added later.
@@ -366,14 +378,14 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
       }
       if (!Number.isFinite(quantity) || quantity <= 0 || !preferred) {
         const reason = !Number.isFinite(quantity) || quantity <= 0 ? "invalid_quantity" : "missing_preferred";
-        pending.push({ id: move.id, productId: Number(move.productId), quantity: Number.isFinite(quantity) ? quantity : 0, direction: move.direction, firstSeenAt: pendingBefore.get(move.id)?.firstSeenAt || now, reason });
+        pending.push({ ...evidence, id: move.id, productId: Number(move.productId), quantity: Number.isFinite(quantity) ? quantity : 0, direction: move.direction, firstSeenAt: pendingBefore.get(move.id)?.firstSeenAt || now, reason });
         warnings.push(`Movimiento ${move.id}: ${reason === "missing_preferred" ? "producto sin ubicación preferente" : "cantidad inválida"}; stock no ajustado.`);
         continue;
       }
       known.add(move.id); processed += 1;
       if (move.direction === "in") {
         preferred.quantity += quantity; preferred.updatedAt = now;
-        store.changes.unshift({ id: `odoo-${move.id}`, productId: preferred.productId, code: preferred.code, previousQuantity: preferred.quantity - quantity, quantity: preferred.quantity, reason: "odoo_movement", createdAt: now }); applied += 1;
+        store.changes.unshift({ ...evidence, id: `odoo-${move.id}`, productId: preferred.productId, code: preferred.code, previousQuantity: preferred.quantity - quantity, quantity: preferred.quantity, reason: "odoo_movement", createdAt: now }); applied += 1;
         continue;
       }
       // A delivered unit always leaves the preferred Dashboard location. Its
@@ -382,14 +394,15 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
       const before = preferred.quantity;
       preferred.quantity -= quantity;
       preferred.updatedAt = now;
-      store.changes.unshift({ id: `odoo-${move.id}-${preferred.code}`, productId: preferred.productId, code: preferred.code, previousQuantity: before, quantity: preferred.quantity, reason: "odoo_movement", createdAt: now });
+      store.changes.unshift({ ...evidence, id: `odoo-${move.id}-${preferred.code}`, productId: preferred.productId, code: preferred.code, previousQuantity: before, quantity: preferred.quantity, reason: "odoo_movement", createdAt: now });
       applied += 1;
     }
-    state.processedMoveIds = [...known].slice(-50000);
+    state.processedMoveIds = [...known];
     state.pendingMovements = pending;
     const pendingIds = new Set(pending.map((move) => move.id));
     state.dismissedMovementAlertIds = (state.dismissedMovementAlertIds || []).filter((id) => pendingIds.has(id));
-    if (input.automatic) state.automaticLastSyncedAt = input.syncedAt || now;
+    if (input.customerReturns) state.customerReturnsLastSyncedAt = input.syncedAt || now;
+    else if (input.automatic) state.automaticLastSyncedAt = input.syncedAt || now;
     else state.lastSyncedAt = input.syncedAt || now;
     write(store);
     return { processed, applied, skipped, warnings, baselineAt: state.baselineAt, lastSyncedAt: state.lastSyncedAt };
@@ -418,6 +431,18 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     state.dismissedMovementAlertIds = [...dismissed].slice(-50000);
     write(store);
     return { dismissed: ids, pending: (state.pendingMovements || []).length, alerts: pendingMovementAlerts().length };
+  };
+  const startCustomerReturnMovements = (startedAt = new Date().toISOString()) => {
+    const store = read(); const state = store.odooMovementSync;
+    if (!state) throw new Error("Primero finaliza un inventario para crear la base de ubicaciones");
+    if (!state.customerReturnsStartedAt) {
+      // Do not replay unaudited returns before this feature's cutover.
+      const cutover = new Date(Math.max(new Date(startedAt).getTime(), new Date(state.baselineAt).getTime())).toISOString();
+      state.customerReturnsStartedAt = cutover;
+      state.customerReturnsLastSyncedAt = cutover;
+      write(store);
+    }
+    return state.customerReturnsStartedAt;
   };
   const startAutomaticOdooMovements = (startedAt = new Date().toISOString()) => {
     const store = read();
@@ -453,6 +478,7 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     pendingMovementAlerts,
     dismissPendingMovementAlerts,
     startAutomaticOdooMovements,
+    startCustomerReturnMovements,
     summary: () => read(),
   };
 }

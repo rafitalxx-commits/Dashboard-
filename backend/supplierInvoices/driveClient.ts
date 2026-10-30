@@ -113,11 +113,11 @@ export class DriveClient {
     return await this.request<DriveFileMeta>(`/files/${encodeURIComponent(fileId)}?fields=id,name,mimeType,size,modifiedTime,parents,webViewLink&supportsAllDrives=true`);
   }
 
-  async download(fileId: string, cacheDir: string): Promise<string> {
+  async download(fileId: string, cacheDir: string, refresh = false): Promise<string> {
     // Devuelve la ruta local del PDF (lectura unica de Drive; bytes cacheados en el LAB).
     mkdirSync(cacheDir, { recursive: true });
     const target = join(cacheDir, `${fileId}.pdf`);
-    if (existsSync(target)) return target;
+    if (!refresh && existsSync(target)) return target;
     if (!this.accessToken) await this.refreshAccessToken();
     const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`, {
       headers: { Authorization: `Bearer ${this.accessToken!}` },
@@ -127,6 +127,7 @@ export class DriveClient {
       throw new Error(`Descarga Drive ${response.status}: ${text}`);
     }
     const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.subarray(0, 5).toString() !== "%PDF-") throw new Error("La descarga Drive no contiene un PDF válido");
     writeFileSync(target, bytes);
     return target;
   }

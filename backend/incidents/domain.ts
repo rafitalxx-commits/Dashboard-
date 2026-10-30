@@ -1,6 +1,6 @@
 import {requiresExtraOutbound,extraOutboundRecorded} from './excessMerchandise.ts';
 import {requiresOmittedStockCorrection} from './omittedMerchandise.ts';
-import {isSaleAdjustmentRefund} from './economics.ts';
+import {isUnsentMerchandiseRefund} from './economics.ts';
 import {hasRecordedIncidentCost} from './operatorWorkflow.ts';
 import {incidentShipments} from './shipmentConfirmation.ts';
 import type { Incident, IncidentClosureChecklist } from "./types.ts";
@@ -74,7 +74,7 @@ export function getIncidentClosureChecklist(incident: Incident): IncidentClosure
 /** Net loss is extraordinary costs minus recoveries/indemnities. */
 export function getIncidentNetLoss(incident: Incident): number {
   return incident.costs.reduce((total, cost) => {
-    if(isSaleAdjustmentRefund(incident,cost))return total;
+    if(isUnsentMerchandiseRefund(incident,cost))return total;
     const amount = Math.abs(cost.amount);
     return total + (cost.direction === "cost" ? amount : -amount);
   }, 0);
