@@ -1,3 +1,5 @@
+import { correctedReview, reviewFingerprint, exceptionRequestError } from "./reviewCorrections.ts";
+import { normalizeInvoiceVat, validInvoiceDate } from "../../shared/supplierInvoiceEvidence.ts";
 // Rutas Fase 2: bandeja documental (Drive + extraccion + cotejo) y pedidos sin facturar.
 // El escaneo Facturas escribe sólo el registro documental local; las escrituras
 // Odoo/Drive son rutas separadas con permisos y puertas de configuración propias.
@@ -347,6 +349,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     if (!allowed.includes(body.status)) return sendJson(response, 400, { message: "Estado no permitido" });
     const current = inboxService.getDocument(body.id);
     if (!current) return sendJson(response, 404, { message: "Documento no encontrado" });
+    if (draftInFlight.has(current.driveFileId)) return sendJson(response, 409, { message: "Hay un envío Odoo en curso." });
     if (current.odooDraftMoveId && body.status !== "VALIDADA") return sendJson(response, 409, { message: "El borrador Odoo ya existe; el documento no puede volver a cotejo." });
     if (body.status === "VALIDADA") {
       const ex = current.extracted;
@@ -421,6 +424,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
         qtyInvoiced: source.qtyInvoiced, qtyPending: source.qtyPending,
       });
     }
+    if (draftInFlight.has(current.driveFileId)) return sendJson(response, 409, { message: "Hay un envío Odoo en curso." });
     const doc = inboxService.setStatus(body.id, body.status as any, user.name, body.notes);
     if (!doc) return sendJson(response, 404, { message: "Documento no encontrado" });
     // Validar confirma exclusivamente el cotejo humano. La única escritura es el botón explícito.
@@ -455,6 +459,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     if (!body.id || !Array.isArray(body.lines)) return sendJson(response, 400, { message: "Faltan id o lines" });
     const doc = inboxService.getDocument(body.id);
     if (!doc) return sendJson(response, 404, { message: "Documento no encontrado" });
+    if (draftInFlight.has(doc.driveFileId)) return sendJson(response, 409, { message: "Hay un envío Odoo en curso." });
     if (!doc.extracted) return sendJson(response, 400, { message: "El documento no tiene datos extraidos" });
     if (body.lines.filter((line) => isWebAdjustmentProductId(line.productId)).length > 1) return sendJson(response, 409, { message: "Solo se admite un Ajuste Web por factura." });
     for (const [index, line] of body.lines.entries()) {
@@ -576,6 +581,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     if (!body.id || !body.fields || typeof body.fields !== "object") return sendJson(response, 400, { message: "Faltan id o fields" });
     const doc = inboxService.getDocument(body.id);
     if (!doc) return sendJson(response, 404, { message: "Documento no encontrado" });
+    if (draftInFlight.has(doc.driveFileId)) return sendJson(response, 409, { message: "Hay un envío Odoo en curso." });
     if (!doc.extracted) return sendJson(response, 400, { message: "El documento no tiene datos extraidos" });
     const f = body.fields;
     const str = (v: unknown, max = 200) => (typeof v === "string" ? v.trim().slice(0, max) || null : null);
@@ -610,7 +616,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
       doc.invoiceBranch = f.invoiceBranch;
     }
     ex.supplier = str(f.supplier) ?? ex.supplier;
-    ex.supplierVat = str(f.supplierVat, 20)?.toUpperCase() ?? ex.supplierVat;
+    if (f.supplierVat !== undefined) ex.supplierVat = normalizeInvoiceVat(f.supplierVat) || null;
     ex.country = str(f.country, 20)?.toUpperCase() ?? ex.country;
     ex.invoiceNumber = str(f.invoiceNumber, 60) ?? ex.invoiceNumber;
     const dInv = str(f.invoiceDate, 10);
@@ -1074,7 +1080,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     const ex = doc.extracted;
     const priorSupplier = ex.supplier, priorVat = ex.supplierVat;
     ex.supplier = String(verifiedPartner.name ?? "").trim() || ex.supplier;
-    ex.supplierVat = String(verifiedPartner.vat ?? "").trim().toUpperCase() || ex.supplierVat;
+    ex.supplierVat = normalizeInvoiceVat(verifiedPartner.vat) || null;
     ex.country = text(f.country, 20)?.toUpperCase() ?? ex.country;
     ex.invoiceNumber = text(f.invoiceNumber, 60) ?? ex.invoiceNumber;
     if (text(f.invoiceDate, 10)) ex.invoiceDate = parseDate(String(f.invoiceDate));
@@ -1432,6 +1438,30 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     response.end();
   });
 
+  const currentFingerprint = (doc: import("./phase2Types.ts").InboxDocument) => {
+    if (!/^[A-Za-z0-9_-]+$/.test(doc.driveFileId)) throw new Error("ID inválido");
+    const path = `${deps.dataDir.replace(/\/$/, "")}/supplier-invoices/inbox/${doc.driveFileId}.pdf`;
+    const bytes = readFileSync(path);
+    if (bytes.subarray(0,5).toString() !== "%PDF-") throw new Error("No se conserva un PDF válido");
+    return reviewFingerprint(doc, createHash("sha256").update(bytes).digest("hex"));
+  };
+  server.middlewares.use("/api/odoo/supplier-invoices/inbox/review-corrections", async (request: any, response: any) => {
+    const user = requireUser(request, response); if (!user) return;
+    if (request.method !== "POST") return sendJson(response, 405, { message: "Usa POST" });
+    try {
+      const body = JSON.parse(await readBody(request) || "{}");
+      const doc = inboxService.getDocument(body.id);
+      if (!doc) return sendJson(response, 404, { message: "Documento no encontrado" });
+      if (draftInFlight.has(doc.driveFileId)) return sendJson(response, 409, { message: "Hay un envío Odoo en curso." });
+      if (body.fingerprint !== currentFingerprint(doc)) return sendJson(response, 409, { message: "La factura cambió. Vuelve a abrir la corrección." });
+      const next = correctedReview(doc, body, user.name);
+      const original = structuredClone(doc);
+      Object.assign(doc, next);
+      if (!inboxService.save()) { Object.assign(doc, original); return sendJson(response, 500, { message: "No se pudo guardar la corrección en disco." }); }
+      sendJson(response, 200, { document: doc, fingerprint: currentFingerprint(doc) });
+    } catch (error) { sendJson(response, 400, { message: error instanceof Error ? error.message : "Corrección inválida" }); }
+  });
+
   server.middlewares.use("/api/odoo/supplier-invoices/inbox/verification", async (request: any, response: any) => {
     const user = requireUser(request, response);
     if (!user) return;
@@ -1440,7 +1470,10 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     if (!id || !/^[A-Za-z0-9_-]+$/.test(id)) return sendJson(response, 400, { message: "ID de PDF inválido" });
     const verification = await verifyCurrentDocument(id);
     if (!verification) return sendJson(response, 404, { message: "Documento no encontrado" });
-    sendJson(response, 200, { verification });
+    const doc = inboxService.getDocument(id)!;
+    let fingerprint: string | null = null;
+    try { fingerprint = currentFingerprint(doc); } catch { /* Cannot approve a missing PDF. */ }
+    sendJson(response, 200, { verification, fingerprint });
   });
 
   server.middlewares.use("/api/odoo/supplier-invoices/inbox/odoo-draft-capability", (request: any, response: any) => {
@@ -1460,23 +1493,33 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     if (!odooDraftCreationEnabled(deps.env)) {
       return sendJson(response, 403, { message: "Creación de borradores de facturas proveedor deshabilitada (SUPPLIER_INVOICES_ODOO_DRAFT_CREATE_ENABLED)." });
     }
-    let body: { id?: string; accountingDate?: string; requireVerified?: boolean } = {};
+    let body: { id?: string; accountingDate?: string; requireVerified?: boolean; exception?: { acknowledged: boolean; reason: string; fingerprint: string; blockers: string[] } } = {};
     try { body = JSON.parse(await readBody(request) || "{}"); } catch { /* body vacio */ }
     if (!body.id) return sendJson(response, 400, { message: "Falta id" });
-    if (!body.accountingDate || !/^\d{4}-\d{2}-\d{2}$/.test(body.accountingDate)) return sendJson(response, 400, { message: "Selecciona y confirma la fecha contable del borrador." });
+    if (!body.accountingDate || !validInvoiceDate(body.accountingDate)) return sendJson(response, 400, { message: "Selecciona y confirma la fecha contable del borrador." });
     if (deps.env.SUPPLIER_INVOICES_ODOO_ALLOWED_FILE_ID && body.id !== deps.env.SUPPLIER_INVOICES_ODOO_ALLOWED_FILE_ID) return sendJson(response, 403, { message: "La autorización de escritura está limitada a otra factura." });
     const doc = inboxService.getDocument(body.id);
     if (!doc) return sendJson(response, 404, { message: "Documento no encontrado" });
     const anyDoc = doc as any;
     if (anyDoc.odooDraftMoveId) return sendJson(response, 400, { message: `Ya existe el borrador ${anyDoc.odooDraftName ?? anyDoc.odooDraftMoveId} en Odoo` });
-    if (doc.status !== "VALIDADA") return sendJson(response, 400, { message: `La factura debe estar VALIDADA primero (estado actual: ${doc.status})` });
-    if (body.requireVerified) {
-      const verification = await verifyCurrentDocument(body.id);
-      if (!verification?.ready) return sendJson(response, 409, { message: "El verificador no autoriza crear el borrador.", verification });
-    }
+    if (!body.exception && doc.status !== "VALIDADA") return sendJson(response, 400, { message: `La factura debe estar VALIDADA primero (estado actual: ${doc.status})` });
+    let beforeVerification: string;
+    try { beforeVerification = currentFingerprint(doc); }
+    catch { return sendJson(response, 409, { message: "Falta un PDF válido: no se puede enviar." }); }
+    const verification = await verifyCurrentDocument(body.id);
+    if (currentFingerprint(doc) !== beforeVerification) return sendJson(response, 409, { message: "La factura cambió durante el cotejo. Revisa de nuevo." });
+    if (body.exception) {
+      const error = exceptionRequestError(doc, body.exception, beforeVerification, verification?.blockers ?? ["Verificación incompleta"]);
+      if (error) return sendJson(response, 409, { message: error, verification });
+    } else if (!verification?.ready) return sendJson(response, 409, { message: "Cotejo pendiente: corrige los datos o confirma expresamente el envío con pendientes.", verification });
     if (draftInFlight.has(body.id)) return sendJson(response, 409, { message: "Ya se está creando un borrador para esta factura." });
     draftInFlight.add(body.id);
     try {
+    if (body.exception) {
+      doc.draftExceptions = [...(doc.draftExceptions || []), { fingerprint: beforeVerification, blockers: verification!.blockers,
+        reason: body.exception.reason.trim().slice(0,1000), by: user.name, at: new Date().toISOString(), outcome: "requested" }];
+      if (!inboxService.save()) return sendJson(response, 500, { message: "No se pudo guardar la autorización: no se envió nada a Odoo." });
+    }
     let session: { config: import("./odooClient.ts").OdooConfig; uid: number };
     try {
       session = await odooSession(deps.env);
@@ -1503,15 +1546,19 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
       lines: o.lines.map((l) => ({ productId: l.productId, productName: l.productName, qtyOrdered: l.qtyOrdered, qtyReceived: l.qtyReceived, qtyInvoiced: l.qtyInvoiced, qtyPending: l.qtyPending, priceUnit: l.priceUnit, subtotal: l.subtotal, taxIds: l.taxIds ?? [] })),
     }));
     try {
-      const result: DraftResult = await createSupplierDraft(session.config, session.uid, doc as any, orders, body.accountingDate!);
+      if (currentFingerprint(doc) !== beforeVerification) return sendJson(response, 409, { message: "La factura cambió antes del envío. Revisa de nuevo." });
+      const result: DraftResult = await createSupplierDraft(session.config, session.uid, structuredClone(doc) as any, orders, body.accountingDate!, body.exception ? {
+        allowIncompleteAccounting: true, pending: verification!.blockers, reason: body.exception.reason, by: user.name,
+      } : undefined);
       if (!result.ok) return sendJson(response, 400, { message: result.message, warnings: result.warnings ?? [] });
+      if (body.exception && doc.draftExceptions?.length) Object.assign(doc.draftExceptions.at(-1)!, { outcome: "created", moveId: result.moveId });
       anyDoc.odooDraftMoveId = result.moveId;
       anyDoc.odooDraftName = result.name;
       anyDoc.odooDraftState = result.state;
       anyDoc.odooDraftActual = result.actual ?? null;
       doc.notes = [...(doc.notes ? [doc.notes] : []), `Borrador Odoo ${result.name} creado por ${user.name}`].join("; ").slice(0, 400);
-      inboxService.save();
-      sendJson(response, 200, { status: "ok", result, document: doc });
+      const persisted = inboxService.save();
+      sendJson(response, 200, { status: "ok", result, document: doc, ...(persisted ? {} : { warning: "Borrador creado en Odoo, pero fallo de guardado local: no repitas el envío; reconcilia la referencia." }) });
     } catch (e) {
       sendJson(response, 502, { message: e instanceof Error ? e.message : "Error creando borrador en Odoo" });
     }

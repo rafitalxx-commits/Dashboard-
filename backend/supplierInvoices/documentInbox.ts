@@ -1,3 +1,4 @@
+import { parseInvoiceDate } from "../../shared/supplierInvoiceEvidence.ts";
 // Bandeja documental Fase 2: extraccion local de PDF (pdf-parse), cotejo contra cache Odoo
 // y registro documental persistente. SOLO LECTURA de Drive/Odoo. La IA/OCR externa queda
 // para una fase posterior; aqui se usan heuristicas locales deterministas.
@@ -50,18 +51,7 @@ const unitPrice3 = (value: string): number | null => {
   return price == null ? null : Math.round(price * 1000) / 1000;
 };
 
-export function parseDate(s: string): string | null {
-  // dd/mm/yyyy, dd-mm-yyyy, yyyy-mm-dd
-  if (!s) return null;
-  const m1 = s.match(/(\d{1,2})[/-](\d{1,2})[/-](\d{4})/);
-  if (m1) {
-    const [_, dd, mm, yyyy] = m1;
-    return `${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}`;
-  }
-  const m2 = s.match(/(\d{4})-(\d{2})-(\d{2})/);
-  if (m2) return s.slice(0, 10);
-  return null;
-}
+export function parseDate(s: string): string | null { return parseInvoiceDate(s); }
 
 export function normalizeSupplierName(s: string | null): string {
   if (!s) return "";
@@ -211,6 +201,8 @@ function extractDates(text: string): { invoiceDate: string | null; dueDate: stri
   let dueDate: string | null = null;
   const mInvoice = text.match(/(?:fecha|date|emisi[oó]n|factura\s*:)?\s*:?\s*(\d{1,2}\/\d{1,2}\/\d{4})/i);
   if (mInvoice) invoiceDate = parseDate(mInvoice[1]);
+  const labeledIssue = text.split(/\r?\n/).find(row => /(?:issue\s*date|invoice\s*date|fecha\s*(?:de\s*)?(?:factura|emisi[oó]n))/i.test(row));
+  if (labeledIssue) invoiceDate = parseDate(labeledIssue) ?? invoiceDate;
   // Buscar el vencimiento junto a una etiqueta explícita. Algunos PDF extraen
   // primero el importe+fecha y después la etiqueta «VENCIMIENTOS».
   const rows = text.split(/\r?\n/);

@@ -1,3 +1,4 @@
+import { InvoiceReviewDialog } from "./InvoiceReviewDialog";
 // Fase 2 · Bandeja documental y Pedidos sin facturar — sub-vistas de Facturas de proveedor.
 // Se integra en SupplierInvoicesView mediante tabs. UI con feedback de carga en cada acción.
 
@@ -109,6 +110,7 @@ type Match = {
 };
 
 type Doc = {
+  lastAiScan?: { at: string };
   driveFileId: string;
   confirmedOdooPartnerId?: number | null;
   invoiceBranch?: "goods" | "services" | null;
@@ -753,6 +755,8 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
   // Fase 3: puente con Odoo (borrador + contabilizar)
   const [odooBusy, setOdooBusy] = useState(false);
   const [odooMsg, setOdooMsg] = useState("");
+  const [correctionReview, setCorrectionReview] = useState<{fingerprint:string|null;blockers:string[]} | null>(null);
+  const correctionLock = useRef(false);
   const [draftConfirmation, setDraftConfirmation] = useState(false);
   const [draftCreated, setDraftCreated] = useState<{ id: number; reference: string; dueDate: string | null; total: number | null } | null>(null);
   const [validatingDraft, setValidatingDraft] = useState(false);
@@ -888,16 +892,6 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
   useEffect(() => {
     setLines((doc.extracted?.lines ?? []).map((l) => ({ ...l })));
   }, [doc.driveFileId, doc.extracted?.lines]);
-  useEffect(() => {
-    if (!taxOptions.length) return;
-    if (!lines.some((line) => line.taxId && line.taxAmount == null && line.total != null && taxOptions.some((tax) => tax.id === line.taxId && tax.type === "percent"))) return;
-    setLines((current) => current.map((line) => {
-      const tax = taxOptions.find((item) => item.id === line.taxId);
-      if (!tax || tax.type !== "percent" || line.taxAmount != null || line.total == null) return line;
-      const taxAmount = Math.round(line.total * tax.rate) / 100;
-      return { ...line, taxRate: tax.rate, taxAmount, totalWithTax: Math.round((line.total + taxAmount) * 100) / 100 };
-    }));
-  }, [taxOptions, lines]);
   useEffect(() => {
     const loadOptions = async () => {
       try {
@@ -1469,6 +1463,15 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
     }
   };
 
+  const openCorrections = async () => {
+    if(correctionLock.current) return; correctionLock.current=true; setValidatingDraft(true);
+    try {
+      const r=await fetch(`${apiPath}/verification?id=${encodeURIComponent(doc.driveFileId)}`,{cache:"no-store"});
+      const x=await r.json(); if(!r.ok)throw new Error(x.message||"No se pudo leer el cotejo");
+      setCorrectionReview({fingerprint:x.fingerprint,blockers:x.verification?.blockers||[]});
+    } catch(e) {setOdooMsg(e instanceof Error?e.message:"Error leyendo cotejo");}
+    finally {correctionLock.current=false;setValidatingDraft(false);}
+  };
   const validateAndReviewDraft = async () => {
     if (validatingDraft || odooBusy) return;
     if (invoiceBranch !== (doc.invoiceBranch ?? "goods") || confirmedPartnerId !== (doc.confirmedOdooPartnerId ?? null) ||
@@ -1491,7 +1494,7 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
       const checked = await fetch(`${apiPath}/verification?id=${encodeURIComponent(doc.driveFileId)}`, { cache: "no-store" });
       const check = await checked.json();
       if (!checked.ok) throw new Error(check.message || "No se pudo verificar el PDF y Odoo");
-      if (!check.verification?.ready) throw new Error(`Cotejo pendiente: ${(check.verification?.blockers ?? ["verificación incompleta"]).slice(0, 5).join(" · ")}`);
+      if (!check.verification?.ready) { setCorrectionReview({fingerprint:check.fingerprint,blockers:check.verification?.blockers ?? ["Verificación incompleta"]}); return; }
       if (doc.status !== "VALIDADA") {
         const r = await fetch(`${apiPath}/status`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: doc.driveFileId, status: "VALIDADA" }) });
         const x = await r.json();
@@ -1574,7 +1577,8 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
         <div className="si-drawer-split" style={{ gridTemplateColumns: `${splitPct}% 12px minmax(0, 1fr)` }}>
           <div className="si-pdf-pane">
             <h3><FileText size={14} /> PDF · streaming directo desde Drive</h3>
-            <iframe className="si-pdf-frame" src={previewUrl} title={`Visor PDF: ${doc.name}`} />
+            {correctionReview ? <p className="si-note">Visor en pausa mientras completas la factura. El PDF volverá a mostrarse al cerrar la ventana.</p>
+              : <iframe className="si-pdf-frame" src={previewUrl} title={`Visor PDF: ${doc.name}`} />}
             <a className="si-primary si-pdf-open" href={previewUrl} target="_blank" rel="noopener noreferrer">
               <FileText size={14} /> Abrir PDF
             </a>
@@ -1968,6 +1972,7 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
                 ) : (
                   <>
                     <p className="si-note">Este paso comprueba el cotejo y muestra una confirmación con el cálculo previsto por línea. Sólo «Aceptar y crear borrador» escribe en Odoo.</p>
+                    <button className="si-editor-add" disabled={odooBusy || validatingDraft || saving || savingFields} onClick={()=>void openCorrections()} type="button">Completar datos o enviar con pendientes</button>
                     <button className="si-editor-add" disabled={odooBusy || validatingDraft || saving || savingFields} onClick={() => void validateAndReviewDraft()} type="button">
                       {validatingDraft ? <RefreshCw className="spin" size={14} /> : <Plus size={14} />} {validatingDraft ? "Validando factura…" : "Validar y revisar borrador Odoo"}
                     </button>
@@ -1977,6 +1982,9 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
               </section>
             )}
 
+            {correctionReview && <InvoiceReviewDialog doc={doc} apiPath={apiPath} review={correctionReview} taxes={taxOptions} accounts={accountOptions}
+              onClose={()=>setCorrectionReview(null)} onSaved={updated=>{onDocUpdated(updated);setLines(updated.extracted.lines);setFields(f=>({...f,...Object.fromEntries(Object.entries(updated.extracted).filter(([k])=>k in f).map(([k,v])=>[k,v==null?"":String(v)]))}));}}
+              onCreated={(updated,result)=>{onDocUpdated(updated);setOdooMsg(`Borrador Odoo ${result.result?.moveId} creado con pendientes. PDF sin archivar. ${result.warning||"Revisa y completa los datos directamente en Odoo."}`);}} />}
             {draftConfirmation && <div className="si-draft-confirm-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !odooBusy) setDraftConfirmation(false); }}>
               <div className="si-draft-confirm" role="dialog" aria-modal="true" aria-labelledby="si-draft-confirm-title" aria-busy={odooBusy}>
                 <h3 id="si-draft-confirm-title">¿Quieres crear el borrador en Odoo?</h3>
