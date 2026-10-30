@@ -553,6 +553,7 @@ export function InboxView({ base }: { base: string }) {
 
       {selected && (
         <DocDetail
+          key={selected.driveFileId}
           doc={selected}
           close={() => setSelected(null)}
           extracting={extracting}
@@ -755,7 +756,9 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
   // Fase 3: puente con Odoo (borrador + contabilizar)
   const [odooBusy, setOdooBusy] = useState(false);
   const [odooMsg, setOdooMsg] = useState("");
-  const [correctionReview, setCorrectionReview] = useState<{fingerprint:string|null;blockers:string[]} | null>(null);
+  const [correctionReview, setCorrectionReview] = useState<{fingerprint:string|null;blockers:string[];loading?:boolean;error?:string} | null>(null);
+  const [correctionHasEditorChanges, setCorrectionHasEditorChanges] = useState(false);
+  const correctionRequest = useRef(0);
   const correctionLock = useRef(false);
   const [draftConfirmation, setDraftConfirmation] = useState(false);
   const [draftCreated, setDraftCreated] = useState<{ id: number; reference: string; dueDate: string | null; total: number | null } | null>(null);
@@ -1185,7 +1188,7 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
     }
   };
 
-  const saveFields = async () => {
+  const saveFields = async (fromReview = false) => {
     if (savingFields || saving) return;
     setSavingFields(true);
     setFieldsMsg("Guardando proveedor y productos del borrador local…");
@@ -1203,15 +1206,17 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
       });
       const lineResult = await lineResponse.json();
       if (!lineResponse.ok) {
-        if (x.document) onDocUpdated(x.document);
+        if (x.document && !fromReview) onDocUpdated(x.document);
         throw new Error(`Proveedor guardado, pero no las líneas: ${lineResult.message || "reintenta Guardar líneas"}`);
       }
       if (lineResult.document) onDocUpdated(lineResult.document);
       setFieldsMsg(x.mapping?.learned
         ? `Datos y productos guardados. Proveedor «${x.mapping.supplierName}» y equivalencias recordados para próximas facturas.`
         : "Datos y productos guardados.");
+      return lineResult.document;
     } catch (e) {
       setFieldsMsg(e instanceof Error ? e.message : "Error guardando datos");
+      if (fromReview) throw e;
     } finally {
       setSavingFields(false);
     }
@@ -1463,19 +1468,11 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
     }
   };
 
-  const openCorrections = async () => {
-    if(correctionLock.current) return; correctionLock.current=true; setValidatingDraft(true);
-    try {
-      const r=await fetch(`${apiPath}/verification?id=${encodeURIComponent(doc.driveFileId)}`,{cache:"no-store"});
-      const x=await r.json(); if(!r.ok)throw new Error(x.message||"No se pudo leer el cotejo");
-      setCorrectionReview({fingerprint:x.fingerprint,blockers:x.verification?.blockers||[]});
-    } catch(e) {setOdooMsg(e instanceof Error?e.message:"Error leyendo cotejo");}
-    finally {correctionLock.current=false;setValidatingDraft(false);}
-  };
-  const validateAndReviewDraft = async () => {
-    if (validatingDraft || odooBusy) return;
-    if (invoiceBranch !== (doc.invoiceBranch ?? "goods") || confirmedPartnerId !== (doc.confirmedOdooPartnerId ?? null) ||
+  const hasEditorChanges = () => (invoiceBranch !== (doc.invoiceBranch ?? "goods") || confirmedPartnerId !== (doc.confirmedOdooPartnerId ?? null) ||
         JSON.stringify(lines) !== JSON.stringify(doc.extracted?.lines ?? []) ||
+        fields.country !== (doc.extracted?.country ?? "") ||
+        fields.billingAddress !== (doc.extracted?.billingAddress ?? "") ||
+        fields.docType !== (doc.extracted?.docType ?? "") ||
         fields.supplier !== (doc.extracted?.supplier ?? "") ||
         fields.supplierVat !== (doc.extracted?.supplierVat ?? "") ||
         fields.invoiceNumber !== (doc.extracted?.invoiceNumber ?? "") ||
@@ -1484,17 +1481,38 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
         fields.currency !== (doc.extracted?.currency ?? "") ||
         fields.base !== (doc.extracted?.base == null ? "" : String(doc.extracted.base)) ||
         fields.taxes !== (doc.extracted?.taxes == null ? "" : String(doc.extracted.taxes)) ||
-        fields.total !== (doc.extracted?.total == null ? "" : String(doc.extracted.total))) {
-      setOdooMsg("Guarda primero los campos y las líneas modificados antes de validar.");
-      return;
-    }
+        fields.total !== (doc.extracted?.total == null ? "" : String(doc.extracted.total)));
+  const closeCorrections = () => {
+    correctionRequest.current++; correctionLock.current=false;
+    setValidatingDraft(false);setCorrectionReview(null);
+  };
+  const openCorrections = async () => {
+    if(correctionLock.current)return;
+    correctionLock.current=true; const request=++correctionRequest.current;
+    setCorrectionHasEditorChanges(hasEditorChanges());
+    setCorrectionReview({fingerprint:null,blockers:[],loading:true});setValidatingDraft(true);
+    try {
+      const r=await fetch(`${apiPath}/verification?id=${encodeURIComponent(doc.driveFileId)}`,{cache:"no-store"});
+      const x=await r.json();if(!r.ok)throw new Error(x.message||"No se pudo leer el cotejo");
+      if(request===correctionRequest.current)setCorrectionReview({fingerprint:x.fingerprint,blockers:x.verification?.blockers||[]});
+    }catch(e){if(request===correctionRequest.current)setCorrectionReview({fingerprint:null,blockers:[],error:e instanceof Error?e.message:"Error leyendo cotejo"});}
+    finally{if(request===correctionRequest.current){correctionLock.current=false;setValidatingDraft(false);}}
+  };
+  const validateAndReviewDraft = async () => {
+    if(validatingDraft||odooBusy||correctionLock.current)return;
+    if(hasEditorChanges()){await openCorrections();return;}
+    correctionLock.current=true;const request=++correctionRequest.current;
+    setCorrectionHasEditorChanges(false);
+    setCorrectionReview({fingerprint:null,blockers:[],loading:true});
     setValidatingDraft(true);
     setOdooMsg("");
     try {
       const checked = await fetch(`${apiPath}/verification?id=${encodeURIComponent(doc.driveFileId)}`, { cache: "no-store" });
       const check = await checked.json();
+      if(request!==correctionRequest.current)return;
       if (!checked.ok) throw new Error(check.message || "No se pudo verificar el PDF y Odoo");
       if (!check.verification?.ready) { setCorrectionReview({fingerprint:check.fingerprint,blockers:check.verification?.blockers ?? ["Verificación incompleta"]}); return; }
+      setCorrectionReview(null);
       if (doc.status !== "VALIDADA") {
         const r = await fetch(`${apiPath}/status`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: doc.driveFileId, status: "VALIDADA" }) });
         const x = await r.json();
@@ -1507,9 +1525,10 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
       setDraftWriteEnabled(access.enabled === true);
       setDraftConfirmation(true);
     } catch (e) {
-      setOdooMsg(e instanceof Error ? e.message : "Error validando la factura");
+      const error=e instanceof Error ? e.message : "Error validando la factura";
+      if(request===correctionRequest.current)setCorrectionReview({fingerprint:null,blockers:[],error});
     } finally {
-      setValidatingDraft(false);
+      if(request===correctionRequest.current){correctionLock.current=false;setValidatingDraft(false);}
     }
   };
 
@@ -1983,7 +2002,9 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
             )}
 
             {correctionReview && <InvoiceReviewDialog doc={doc} apiPath={apiPath} review={correctionReview} taxes={taxOptions} accounts={accountOptions}
-              onClose={()=>setCorrectionReview(null)} onSaved={updated=>{onDocUpdated(updated);setLines(updated.extracted.lines);setFields(f=>({...f,...Object.fromEntries(Object.entries(updated.extracted).filter(([k])=>k in f).map(([k,v])=>[k,v==null?"":String(v)]))}));}}
+              onClose={closeCorrections} onRetry={()=>void openCorrections()}
+              pendingEditor={correctionHasEditorChanges ? async()=>{const updated=await saveFields(true);if(!updated)throw new Error("No se pudieron guardar los cambios del editor.");setCorrectionHasEditorChanges(false);return updated;} : undefined}
+              onSaved={updated=>{onDocUpdated(updated);setLines(updated.extracted.lines);setFields(f=>({...f,...Object.fromEntries(Object.entries(updated.extracted).filter(([k])=>k in f).map(([k,v])=>[k,v==null?"":String(v)]))}));}}
               onCreated={(updated,result)=>{onDocUpdated(updated);setOdooMsg(`Borrador Odoo ${result.result?.moveId} creado con pendientes. PDF sin archivar. ${result.warning||"Revisa y completa los datos directamente en Odoo."}`);}} />}
             {draftConfirmation && <div className="si-draft-confirm-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !odooBusy) setDraftConfirmation(false); }}>
               <div className="si-draft-confirm" role="dialog" aria-modal="true" aria-labelledby="si-draft-confirm-title" aria-busy={odooBusy}>
