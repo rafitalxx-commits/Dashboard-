@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { normalizeInvoiceVat } from '../../../shared/supplierInvoiceEvidence';
 
 type Review = { fingerprint: string | null; blockers: string[]; loading?:boolean; error?:string };
+const DRAFT_SEND_TIMEOUT_MS = 120_000;
 type Props = {
   doc: any; apiPath: string; review: Review;
   taxes: Array<{id:number;name:string}>; accounts: Array<{id:number;name:string;code?:string}>;
@@ -17,6 +18,7 @@ export function InvoiceReviewDialog({ doc, apiPath, review, taxes, accounts, onS
   const [date,setDate] = useState(''), [ack,setAck] = useState(false), [dirty,setDirty] = useState(false);
   const [editorPending,setEditorPending] = useState(Boolean(pendingEditor));
   const [busy,setBusy] = useState(''), [error,setError] = useState(''), [message,setMessage] = useState('');
+  const [uncertainSend,setUncertainSend] = useState(false), [retryAfterCheck,setRetryAfterCheck] = useState(false);
   useEffect(()=>{ const node=dialog.current!; node.showModal(); return ()=>node.close(); },[]);
   useEffect(()=>{setCheck(review);setAck(false);setError('');},[review]);
   const change = (k:string,v:string)=>{setFields(f=>({...f,[k]:v}));setDirty(true);setAck(false);};
@@ -28,9 +30,36 @@ export function InvoiceReviewDialog({ doc, apiPath, review, taxes, accounts, onS
       setCheck({fingerprint:result.fingerprint,blockers:result.verification?.blockers||[]});
     }catch(e){const error=e instanceof Error?e.message:'No se pudo actualizar el cotejo.';setCheck({fingerprint:null,blockers:[],error});throw new Error(error);}
   };
-  const run = async (action: 'save'|'send'|'editor')=>{
+  const reconcileDraft = async () => {
+    const response = await fetch(`${apiPath}/odoo-draft-reconcile`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id:current.driveFileId}) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message || 'No se pudo comprobar el estado en Odoo.');
+    if (result.status === 'created') {
+      setUncertainSend(false); setRetryAfterCheck(false);
+      const found = result.document || { ...current, odooDraftMoveId:result.result?.moveId, odooDraftName:result.result?.name, odooDraftState:result.result?.state };
+      onCreated(found, {result:result.result, warning:result.warning});
+      onClose();
+      return;
+    }
+    if (result.status === 'in_progress') {
+      setMessage('El servidor aún procesa este envío. No lo repitas; vuelve a comprobar el estado en un momento.');
+      return;
+    }
+    if (result.status === 'not_created' && result.safeToRetry) {
+      setUncertainSend(false); setRetryAfterCheck(false);
+      setMessage(`${result.message} Ya puedes volver a confirmar el envío si sigue siendo necesario.`);
+      return;
+    }
+    setUncertainSend(true); setRetryAfterCheck(false);
+    setMessage(result.message || 'No hay confirmación del resultado. No repitas el envío sin revisar Odoo.');
+  };
+  const run = async (action: 'save'|'send'|'editor'|'reconcile')=>{
     if(lock.current)return; lock.current=true;setBusy(action);setError('');setMessage('');
     try {
+      if(action==='reconcile') {
+        await reconcileDraft();
+        return;
+      }
       if(check.loading||check.error||!check.fingerprint)throw new Error('Completa primero la comprobación de la factura.');
       if(action==='editor') {
         if(!pendingEditor)throw new Error('No hay cambios del editor pendientes.');
@@ -50,8 +79,21 @@ export function InvoiceReviewDialog({ doc, apiPath, review, taxes, accounts, onS
         await refreshCheck(result.document.driveFileId);
       } else {
         if(editorPending||dirty||!ack||reason.trim().length<10||!date)throw new Error('Guarda los cambios y confirma los pendientes, el motivo y la fecha contable.');
-        const response=await fetch(`${apiPath}/odoo-draft`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:current.driveFileId,accountingDate:date,exception:{acknowledged:true,reason,fingerprint:check.fingerprint,blockers:check.blockers}})});
-        const result=await response.json();if(!response.ok)throw new Error(result.message||'Odoo no aceptó el borrador');
+        if(uncertainSend&&!retryAfterCheck)throw new Error('Comprueba el estado en Odoo antes de volver a enviar.');
+        let response:Response;
+        try {
+          response=await fetch(`${apiPath}/odoo-draft`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:current.driveFileId,accountingDate:date,retryUncertain:retryAfterCheck,exception:{acknowledged:true,reason,fingerprint:check.fingerprint,blockers:check.blockers,retryUncertain:retryAfterCheck}}),signal:AbortSignal.timeout(DRAFT_SEND_TIMEOUT_MS)});
+        } catch {
+          // Any transport failure after dispatch can hide a successful server write.
+          setUncertainSend(true);setRetryAfterCheck(false);
+          setMessage('No se recibió respuesta del servidor. El borrador podría haberse creado; no repitas el envío. Comprueba el estado en Odoo.');
+          return;
+        }
+        const result=await response.json();
+        if(!response.ok) {
+          if(result.uncertain){setUncertainSend(true);setRetryAfterCheck(false);setMessage(result.message||'El resultado es incierto. Comprueba el estado en Odoo antes de repetir.');return;}
+          throw new Error(result.message||'Odoo no aceptó el borrador');
+        }
         onCreated(result.document,result);onClose();
       }
     }catch(e){setError(e instanceof Error?e.message:'Error de operación');}finally{lock.current=false;setBusy('');}
@@ -95,7 +137,12 @@ export function InvoiceReviewDialog({ doc, apiPath, review, taxes, accounts, onS
       <label className="si-review-check"><input type="checkbox" checked={ack} disabled={Boolean(busy)||editorPending||dirty||check.loading||Boolean(check.error)||!check.fingerprint} onChange={e=>setAck(e.target.checked)}/> He revisado estos pendientes y autorizo crear el borrador para corregirlos en Odoo.</label>
       {dirty&&<p role="status">Guarda los cambios de esta ventana para habilitar la confirmación de envío.</p>}
       {error&&<p role="alert" className="error">{error}</p>}
-      <div className="si-draft-confirm-actions"><button type="button" disabled={Boolean(busy)} onClick={onClose}>Cerrar</button><button type="button" className="si-primary" disabled={Boolean(busy)||editorPending||check.loading||Boolean(check.error)||dirty||!ack||!date||reason.trim().length<10||!check.fingerprint||!current.confirmedOdooPartnerId} onClick={()=>void run('send')}>{busy==='send'?'Enviando a Odoo…':'Confirmar envío con pendientes'}</button></div>
+      {message&&uncertainSend&&<div className="si-review-pending" role="alert">
+        <p>{message}</p>
+        <button type="button" disabled={Boolean(busy)} onClick={()=>void run('reconcile')}>{busy==='reconcile'?'Comprobando Odoo…':'Comprobar estado en Odoo'}</button>
+        <label className="si-review-check"><input type="checkbox" checked={retryAfterCheck} disabled={Boolean(busy)} onChange={e=>setRetryAfterCheck(e.target.checked)}/> He comprobado en Odoo que no existe esta factura y autorizo reintentar.</label>
+      </div>}
+      <div className="si-draft-confirm-actions"><button type="button" disabled={Boolean(busy)} onClick={onClose}>Cerrar</button><button type="button" className="si-primary" disabled={Boolean(busy)||editorPending||check.loading||Boolean(check.error)||dirty||!ack||!date||reason.trim().length<10||!check.fingerprint||!current.confirmedOdooPartnerId||(uncertainSend&&!retryAfterCheck)} onClick={()=>void run('send')}>{busy==='send'?'Enviando a Odoo…':'Confirmar envío con pendientes'}</button></div>
     </section>
   </dialog>;
 }

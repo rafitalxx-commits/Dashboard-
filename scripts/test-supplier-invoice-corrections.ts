@@ -9,6 +9,7 @@ import { verifyInvoiceForAutomation } from '../backend/supplierInvoices/autoVeri
 import { DocumentInboxService } from '../backend/supplierInvoices/documentInbox.ts';
 import { registerSupplierInvoicesPhase2Routes } from '../backend/supplierInvoices/phase2Routes.ts';
 import { DriveClient } from '../backend/supplierInvoices/driveClient.ts';
+import { odooJsonRpc } from '../backend/supplierInvoices/odooClient.ts';
 
 for(const date of ['13 October 2026','October 13, 2026','13th Oct 2026','13/10/2026','2026-10-13'])assert.equal(parseInvoiceDate(date),'2026-10-13');
 for(const date of ['31 February 2026','2026-02-29','2026-13-01','10/30/2026'])assert.equal(parseInvoiceDate(date),null);
@@ -43,10 +44,17 @@ assert.ok(exceptionRequestError(missing,exception,'changed-pdf',blockers));
 assert.ok(exceptionRequestError(missing,exception,fingerprint,['Otro pendiente']));
 
 // Real route composition, disposable disk, external RPC mocked (no credentials / network).
-const dir=mkdtempSync(join(tmpdir(),'invoice-corrections-'));const store=new DocumentInboxService({dataDir:dir});store.getStore().documents.push(missing);assert.ok(store.save());
+const dir=mkdtempSync(join(tmpdir(),'invoice-corrections-'));const store=new DocumentInboxService({dataDir:dir});
+const recoveryBase:any={...structuredClone(missing),name:'recovery.pdf',draftAttempt:{state:'uncertain',by:'Operario',at:new Date().toISOString(),updatedAt:new Date().toISOString(),fingerprint:'recovery-fingerprint',accountingDate:'2026-10-30'}};
+store.getStore().documents.push(missing,
+ {...structuredClone(recoveryBase),driveFileId:'recovery_pdf',extracted:{...structuredClone(missing.extracted),invoiceNumber:'RECOVERY-1'}},
+ {...structuredClone(recoveryBase),driveFileId:'recovery_pdf_2',extracted:{...structuredClone(missing.extracted),invoiceNumber:'RECOVERY-2'}},
+ {...structuredClone(recoveryBase),driveFileId:'recovery_pdf_3',extracted:{...structuredClone(missing.extracted),invoiceNumber:'RECOVERY-3'}},
+ {...structuredClone(recoveryBase),driveFileId:'recovery_pdf_4',extracted:{...structuredClone(missing.extracted),invoiceNumber:'RECOVERY-4'}});
+assert.ok(store.save());
 mkdirSync(join(dir,'supplier-invoices/inbox'),{recursive:true});writeFileSync(join(dir,'supplier-invoices/inbox/test_pdf.pdf'),'%PDF-synthetic');
 const env:any={ODOO_URL:'http://synthetic.invalid',ODOO_DATABASE:'synthetic',ODOO_USERNAME:'test',ODOO_API_KEY:'test',SUPPLIER_INVOICES_DRIVE_FOLDER_ID:'folder',SUPPLIER_INVOICES_ODOO_DRAFT_CREATE_ENABLED:'true'};
-const routes=new Map<string,any>();let human=true;let duplicate=false;let creates=0;let payload:any;let pause:Promise<void>|null=null;
+const routes=new Map<string,any>();let human=true;let duplicate=false;let reconcileRows:any[]=[];let creates=0;let payload:any;let pause:Promise<void>|null=null;
 const originalFetch=globalThis.fetch, originalMeta=DriveClient.prototype.getFileMeta;
 DriveClient.prototype.getFileMeta=async()=>({id:'test_pdf',name:'invoice.pdf',parents:['folder']}) as any;
 globalThis.fetch=async(_url,init)=>{
@@ -56,7 +64,7 @@ globalThis.fetch=async(_url,init)=>{
   const [,,,model,method,args]=a;
   if(model==='res.partner')result=[{id:42,active:true,name:'Muhammad Shoaib',vat:false}];
   else if(model==='res.currency')result=[{id:1}];
-  else if(model==='account.move'&&method==='search_read')result=duplicate?[{id:90,name:'DUPLICATE'}]:[];
+  else if(model==='account.move'&&method==='search_read')result=duplicate?[{id:90,name:'DUPLICATE'}]:reconcileRows;
   else if(model==='account.move'&&method==='create'){creates++;payload=args[0];if(pause)await pause;result=91;}
   else if(model==='account.move'&&method==='read')result=[{id:91,name:'draft',state:'draft',ref:'MS-2026-1013',amount_untaxed:45,amount_tax:0,amount_total:45,invoice_line_ids:[92]}];
   else if(model==='account.move.line')result=[{id:92,name:'Support services',quantity:1,price_unit:45,price_subtotal:45,price_total:45}];
@@ -84,7 +92,8 @@ try{
  env.SUPPLIER_INVOICES_ODOO_DRAFT_CREATE_ENABLED='false';assert.equal((await call('/odoo-draft',body)).status,403);env.SUPPLIER_INVOICES_ODOO_DRAFT_CREATE_ENABLED='true';
  duplicate=true;assert.equal((await call('/odoo-draft',body)).status,400);assert.equal(creates,0);duplicate=false;
  let release!:()=>void;pause=new Promise(r=>release=r);const pending=call('/odoo-draft',body);
- await new Promise(r=>setTimeout(r,20));assert.equal((await call('/odoo-draft',body)).status,409);
+ await new Promise(r=>setTimeout(r,20));const blocked=await call('/odoo-draft',body);assert.equal(blocked.status,409,JSON.stringify(blocked.body));
+ const inProgress=await call('/odoo-draft-reconcile',{id:'test_pdf'});assert.equal(inProgress.body.status,'in_progress');assert.equal(creates,1,'reconciliation during active create must not start another create');
  assert.equal((await call('/status',{id:'test_pdf',status:'INCIDENCIA'})).status,409);
  assert.equal(new DocumentInboxService({dataDir:dir}).getDocument('test_pdf')?.status,'PENDIENTE_COTEJO','blocked status must not mutate persisted state');
  release();
@@ -94,5 +103,20 @@ try{
  const fresh=new DocumentInboxService({dataDir:dir}).getDocument('test_pdf')!;
  assert.equal(fresh.status,'PENDIENTE_COTEJO');assert.equal(fresh.odooDraftMoveId,91);assert.equal(fresh.draftExceptions?.at(-1)?.by,'Operario');assert.equal(fresh.draftExceptions?.at(-1)?.outcome,'created');assert.equal(fresh.movedTo,undefined);
  assert.equal((await call('/odoo-draft',body)).status,400,'repeat blocked after durable success');
- console.log('PASS: dates/amounts/VAT, attestation, local save/reopen, stale edits, auth, gates, duplicate, double submit, mocked incomplete Odoo draft, audit and no Drive move.');
+ assert.equal((await call('/odoo-draft-reconcile',{id:'test_pdf'})).body.status,'created','durable local success is immediately discoverable');
+
+ reconcileRows=[{id:92,name:'BILL/2026/0092',state:'draft',ref:'RECOVERY-1',partner_id:[42,'Muhammad Shoaib'],move_type:'in_invoice',create_date:new Date(Date.now()+1000).toISOString()}];
+ const reconciled=await call('/odoo-draft-reconcile',{id:'recovery_pdf'});assert.equal(reconciled.body.status,'created',JSON.stringify(reconciled.body));assert.equal(reconciled.body.reconciled,true);assert.equal(creates,1,'reconciliation must never create another Odoo move');
+ assert.equal(new DocumentInboxService({dataDir:dir}).getDocument('recovery_pdf')?.odooDraftMoveId,92,'reconciled link survives store reopen');
+ reconcileRows=[];const notFound=await call('/odoo-draft-reconcile',{id:'recovery_pdf_2'});assert.equal(notFound.body.status,'not_found');assert.equal(notFound.body.safeToRetry,false,'an empty Odoo search alone never authorizes automatic retry');
+ reconcileRows=[{id:93,name:'BILL/93',state:'draft',ref:'RECOVERY-3',create_date:new Date().toISOString()},{id:94,name:'BILL/94',state:'draft',ref:'RECOVERY-3',create_date:new Date().toISOString()}];
+ const multiple=await call('/odoo-draft-reconcile',{id:'recovery_pdf_3'});assert.equal(multiple.body.status,'ambiguous');assert.equal(new DocumentInboxService({dataDir:dir}).getDocument('recovery_pdf_3')?.odooDraftMoveId,undefined);
+ reconcileRows=[{id:95,name:'BILL/95',state:'draft',ref:'RECOVERY-4',create_date:'2026-01-01 00:00:00'}];
+ assert.equal((await call('/odoo-draft-reconcile',{id:'recovery_pdf_4'})).body.status,'existing_conflict','old same-reference move is never attributed to this attempt');
+
+ const savedFetch=globalThis.fetch;
+ globalThis.fetch=async(_url,init)=>new Promise((_resolve,reject)=>{const keepAlive=setInterval(()=>{},50);init?.signal?.addEventListener('abort',()=>{clearInterval(keepAlive);reject(new DOMException('aborted','AbortError'));},{once:true});});
+ await assert.rejects(odooJsonRpc('http://synthetic.invalid','object','execute_kw',[],5),/resultado puede ser incierto/);
+ globalThis.fetch=savedFetch;
+ console.log('PASS: dates/amounts/VAT, attestation, local save/reopen, stale edits, auth, gates, duplicate, double submit, RPC timeout, in-progress recovery, unique/empty/ambiguous/old Odoo reconciliation, no duplicate create or Drive move.');
 }finally{globalThis.fetch=originalFetch;DriveClient.prototype.getFileMeta=originalMeta;}

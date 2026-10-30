@@ -143,6 +143,8 @@ export interface InboxDocument {
   operatorLinesEdited?: boolean;
   issuerVatAbsence?: { partnerId: number; supplier: string | null; country: string | null; reason: string; by: string; at: string } | null;
   draftExceptions?: Array<{ fingerprint: string; blockers: string[]; reason: string; by: string; at: string; outcome: "requested" | "created" | "failed"; moveId?: number }>;
+  /** Persistent, per-document guard for slow or lost Odoo-draft responses. */
+  draftAttempt?: { state: "verifying" | "creating" | "uncertain" | "failed" | "created"; by: string; at: string; updatedAt: string; fingerprint: string; accountingDate: string; message?: string; moveId?: number };
   invoiceBranch?: "goods" | "services" | null;
   /** Aceptación humana de las líneas leídas del PDF cuando no existe pedido. */
   pdfLinesAccepted?: boolean;

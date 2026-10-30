@@ -16,7 +16,7 @@ try{
  let doc={driveFileId:'test_pdf',name:'Invoice_MS-2026-1013_Todoelectrico.pdf',invoiceBranch:'services',pdfLinesAccepted:true,confirmedOdooPartnerId:42,status:'PENDIENTE_COTEJO',assignedPurchaseOrderIds:[],odooDraftMoveId:null,match:null,
   extracted:{supplier:'Muhammad Shoaib',supplierVat:'FALSE',invoiceNumber:'MS-2026-1013',invoiceDate:'2026-10-13',dueDate:null,country:'PAKISTAN',currency:'EUR',base:45,taxes:0,total:45,docType:'factura',warnings:[],lines:[{description:'Support services – checkout and payment module fixing',quantity:1,priceUnit:45,total:45,discount:null,reference:null,taxNames:[],taxId:null,accountId:null,taxAmount:null}]}};
  let verifyMode='normal',releaseVerify=null,fieldsCount=0,linesCount=0,editorFailure='fields';
- let saveCount=0,sendCount=0,failSave=true,releaseSave=null;let verification={ready:false,blockers:['NIF del emisor sin evidencia en el PDF.','Línea 1: impuesto o cuenta contable sin confirmar.']};
+ let saveCount=0,sendCount=0,failSave=true,releaseSave=null,sendMode='normal',releaseSend=null,reconcileCount=0;let verification={ready:false,blockers:['NIF del emisor sin evidencia en el PDF.','Línea 1: impuesto o cuenta contable sin confirmar.']};
  const requests=[];
  await page.route('**/*',async route=>{
   const req=route.request(),url=new URL(req.url()),path=url.pathname;
@@ -46,7 +46,8 @@ try{
    if(failSave)return route.fulfill({status:500,json:{message:'Fallo de disco simulado'}});
    const data=req.postDataJSON();doc={...doc,extracted:{...doc.extracted,...data.fields,lines:doc.extracted.lines.map((l,i)=>({...l,...data.lineCorrections[i]}))},issuerVatAbsence:{by:'Operario',reason:data.reason}};
    body={document:doc,fingerprint:'fingerprint'};verification={ready:false,blockers:['Línea 1: impuesto o cuenta contable sin confirmar.']};
-  }else if(path.endsWith('/odoo-draft')){sendCount++;await new Promise(r=>setTimeout(r,150));body={document:{...doc,odooDraftMoveId:91},result:{moveId:91}};}
+  }else if(path.endsWith('/odoo-draft-reconcile')){reconcileCount++;body=reconcileCount===1?{status:'in_progress',message:'El servidor sigue procesando; no repitas.'}:{status:'not_found',safeToRetry:false,message:'Odoo no muestra una coincidencia. Compruébalo manualmente antes de reintentar.'};}
+  else if(path.endsWith('/odoo-draft')){sendCount++;if(sendMode==='hold')await new Promise(r=>{releaseSend=r;});else await new Promise(r=>setTimeout(r,30));body={document:{...doc,odooDraftMoveId:91},result:{moveId:91}};try{await route.fulfill({json:body});}catch{}return;}
   else if(path.endsWith('/line-options'))body={taxes:[{id:14,name:'Servicios extracomunitarios',rate:21,type:'percent'}],accounts:[{id:383,code:'629000',name:'Otros servicios'}]};
   else if(path.endsWith('/purchase-orders'))body={orders:[],candidates:[]};
   else if(path.endsWith('/supplier-invoices/inbox'))body={mode:'live',total:1,items:[doc],kpis:{sinRevisar:1,pendientesCotejo:1,pedidosSinFacturar:0,importePedidosSinFacturar:0,importePendienteCotejo:45,sinCoincidenciaOdoo:0}};
@@ -120,8 +121,15 @@ try{
   const b=await button.boundingBox();assert.ok(b.x>=0&&b.x+b.width<=390.5&&b.y>=0&&b.y+b.height<=844.5,'mobile actions visible and reachable');
  }
  await dialog.screenshot({path:join(evidence,'mobile-actions.png')});
- await dialog.getByRole('button',{name:'Confirmar envío con pendientes',exact:true}).dblclick();
- await dialog.waitFor({state:'hidden'});assert.equal(sendCount,1);
+ await page.evaluate(()=>{const original=AbortSignal.timeout.bind(AbortSignal);AbortSignal.timeout=()=>original(180);});
+ sendMode='hold';await dialog.getByRole('button',{name:'Confirmar envío con pendientes',exact:true}).click();
+ await dialog.getByRole('alert').filter({hasText:'El borrador podría haberse creado'}).waitFor();assert.equal(sendCount,1,'timeout must not auto-submit a second create');
+ const send=dialog.getByRole('button',{name:'Confirmar envío con pendientes',exact:true});assert.equal(await send.isDisabled(),true,'uncertain timeout keeps send blocked');
+ await dialog.getByRole('button',{name:'Comprobar estado en Odoo',exact:true}).click();await dialog.getByRole('alert').filter({hasText:'El servidor aún procesa'}).waitFor();assert.equal(sendCount,1,'in-progress status must not retry');
+ await new Promise(r=>setTimeout(r,220));releaseSend();
+ await dialog.getByRole('button',{name:'Comprobar estado en Odoo',exact:true}).click();await dialog.getByRole('alert').filter({hasText:'Compruébalo manualmente antes de reintentar'}).waitFor();assert.equal(await send.isDisabled(),true,'not-found response alone does not authorize retry');
+ await dialog.getByLabel('He comprobado en Odoo que no existe esta factura y autorizo reintentar.',{exact:true}).check();assert.equal(await send.isDisabled(),false,'manual Odoo attestation is required to unlock retry');
+ sendMode='normal';await send.click();await dialog.waitFor({state:'hidden'});assert.equal(sendCount,2);assert.equal(reconcileCount,2);
  assert.equal(requests.filter(x=>/drive\/move|\/status$/.test(x.path)&&x.method==='POST').length,0);
- assert.deepEqual(errors,[]);console.log(JSON.stringify({result:'PASS',saveCount,sendCount,evidence,checks:['Validate opens popup before slow read','Escape suppresses late response','verification error and retry in modal','unsaved editor saved in modal','field and line failures keep pending state','double save once','real SupplierInvoicesView parent','popup fields','double submit','slow save','failure preserves edits','save local','explicit incomplete draft','desktop/mobile overflow','no Drive move/status validation','no page errors']}));
+ assert.deepEqual(errors,[]);console.log(JSON.stringify({result:'PASS',saveCount,sendCount,reconcileCount,evidence,checks:['Validate opens popup before slow read','Escape suppresses late response','verification error and retry in modal','unsaved editor saved in modal','field and line failures keep pending state','double save once','real SupplierInvoicesView parent','popup fields','double submit','slow save','failure preserves edits','save local','explicit incomplete draft','lost response shows uncertain state','in-progress prevents duplicate retry','not-found requires manual Odoo attestation','desktop/mobile overflow','no Drive move/status validation','no page errors']}));
 }catch(error){if(browser){const p=browser.contexts()[0]?.pages()[0];if(p){console.error((await p.locator('body').innerText()).slice(-2500));await p.screenshot({path:join(evidence,'failure.png')});}}throw error;}finally{await browser?.close();}
