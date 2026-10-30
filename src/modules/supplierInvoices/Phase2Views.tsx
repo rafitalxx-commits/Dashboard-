@@ -1462,12 +1462,18 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
           body: JSON.stringify({ id: doc.driveFileId, targetFolderId: driveTarget.id, expectedFolderPath: driveTarget.path, acceptNonRecommendedDestination: Boolean(archiveDestinationWarning) }),
         });
         const moved = await moveResponse.json();
+        if (moveResponse.status === 409 && moved.confirmationRequired) {
+          setDriveConfirmOtherDestination(true);
+          setDriveMsg(moved.message || `El destino ${driveTarget.path} no es el recomendado. Confirma si quieres guardar aquí.`);
+          setOdooMsg(`Borrador Odoo ${res.moveId} creado, pero el PDF no se archivó. Confirma el destino en Drive para reintentar solo el traslado; no vuelvas a crear el borrador.`);
+          return;
+        }
         if (!moveResponse.ok) throw new Error(moved.message || "No se pudo archivar el PDF");
         if (moved.document) onDocUpdated(moved.document);
         setDraftCreated({ id: Number(res.moveId), reference: actual?.reference ?? doc.extracted?.invoiceNumber ?? "", dueDate: actual?.dueDate ?? null, total: actual?.total ?? null });
         setOdooMsg(`Borrador Odoo ${res.moveId} creado y PDF archivado en ${moved.targetFolderPath}.`);
       } catch (moveError) {
-        setOdooMsg(`Borrador Odoo ${res.moveId} creado, pero el PDF NO se archivó: ${moveError instanceof Error ? moveError.message : "error de Drive"}. No repitas la creación; usa «Guardar PDF aquí» para reintentar solo el traslado.`);
+        setOdooMsg(`Borrador Odoo ${res.moveId} creado, pero el PDF NO se archivó: ${moveError instanceof Error ? moveError.message : "error de Drive"}. No repitas la creación; usa el control de Drive para reintentar solo el traslado.`);
         setDriveMsg("Borrador creado; traslado pendiente. Reintenta solo «Guardar PDF aquí».");
       }
     } catch (e) {
@@ -1818,7 +1824,17 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
                     <button className="si-editor-add" onClick={() => void openDrive()} type="button" disabled={driveLoading || creatingFolder || moving}>
                       {driveLoading ? <RefreshCw className="spin" size={14} /> : <Folder size={14} />} {driveLoading ? "Cargando carpetas…" : driveOpen ? "Ocultar navegador" : "Abrir navegador de Drive"}
                     </button>
-                    {driveMsg && <p className={driveMsg.startsWith("PDF guardado") || driveMsg.startsWith("Carpeta creada") || driveMsg.startsWith("Destino seleccionado") ? "si-msg" : "error"} role="status">{driveMsg}</p>}
+                    {driveMsg && <p className={driveMsg.startsWith("PDF guardado") || driveMsg.startsWith("Carpeta creada") || driveMsg.startsWith("Destino seleccionado") ? "si-msg" : driveConfirmOtherDestination ? "si-warn" : "error"} role={driveConfirmOtherDestination ? "alert" : "status"}>{driveMsg}</p>}
+                    {driveConfirmOtherDestination && driveTarget && (
+                      <div className="si-drive-confirm-destination" role="group" aria-label="Confirmar destino alternativo de Drive">
+                        <p>Para continuar, confirma explícitamente este destino:</p>
+                        <b>{driveTarget.path}</b>
+                        <button className="si-primary" type="button" disabled={!doc.odooDraftMoveId || driveLoading || creatingFolder || moving} onClick={() => void movePdf(true)}>
+                          {moving ? <><RefreshCw className="spin" size={14} /> Guardando PDF…</> : "Acepto, guardar PDF aquí"}
+                        </button>
+                        {!doc.odooDraftMoveId && <small>Primero debe existir el borrador Odoo; no se repetirá su creación desde este botón.</small>}
+                      </div>
+                    )}
                     {driveOpen && (
                       <div className="si-drive-nav">
                         <div className="si-drive-crumb">
@@ -1846,15 +1862,9 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
                         </div>
                         <div className="si-pick">
                           <button className="si-editor-add" type="button" disabled={driveLoading || creatingFolder || moving || !drivePath.length} onClick={selectCurrentFolder}>Usar carpeta actual</button>
-                          {!driveConfirmOtherDestination ? (
-                            <button className="si-editor-add" type="button" disabled={!doc.odooDraftMoveId || !driveTarget || driveLoading || creatingFolder || moving} onClick={() => void movePdf()}>
-                              {moving ? <RefreshCw className="spin" size={14} /> : <CheckCircle2 size={14} />} {moving ? "Guardando PDF…" : "Guardar PDF aquí"}
-                            </button>
-                          ) : (
-                            <button className="si-editor-add" type="button" disabled={!doc.odooDraftMoveId || !driveTarget || driveLoading || creatingFolder || moving} onClick={() => void movePdf(true)}>
-                              {moving ? <RefreshCw className="spin" size={14} /> : <CheckCircle2 size={14} />} {moving ? "Guardando PDF…" : "Acepto, guardar aquí"}
-                            </button>
-                          )}
+                          <button className="si-editor-add" type="button" disabled={!doc.odooDraftMoveId || !driveTarget || driveLoading || creatingFolder || moving} onClick={() => void movePdf()}>
+                            {moving ? <RefreshCw className="spin" size={14} /> : <CheckCircle2 size={14} />} {moving ? "Guardando PDF…" : "Guardar PDF aquí"}
+                          </button>
                         </div>
                         {driveTarget && <p className="si-note">Destino seleccionado: <b>{driveTarget.path}</b></p>}
                       </div>

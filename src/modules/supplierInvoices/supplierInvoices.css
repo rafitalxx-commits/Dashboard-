@@ -754,6 +754,20 @@
 .si-editor-add:hover {
   background: #eef5f8;
 }
+.si-drive-confirm-destination {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  margin: 8px 0 12px;
+  padding: 12px;
+  border: 1px solid #f0c36d;
+  border-radius: 8px;
+  background: #fffaf0;
+  color: #6b3f08;
+}
+.si-drive-confirm-destination p { margin: 0; }
+.si-drive-confirm-destination button { min-height: 40px; }
+.si-drive-confirm-destination small { font-size: 12px; }
 .si-odoo {
   display: inline-flex;
   align-items: center;
