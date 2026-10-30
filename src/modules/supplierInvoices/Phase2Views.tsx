@@ -26,7 +26,7 @@ import {
 } from "lucide-react";
 import type { CatalogProduct } from "../../services/odooTypes";
 import { WEB_ADJUSTMENT_PRODUCT_ID, isWebAdjustmentProductId, calculateWebAdjustment, discountedBase, taxFromBase } from "../../../shared/supplierInvoiceDiscounts";
-import { archiveMismatch } from "../../../shared/supplierInvoiceArchiveGate";
+import { archiveMismatch, isRecommendedInvoiceArchivePath } from "../../../shared/supplierInvoiceArchiveGate";
 
 async function readSaveResponse(response: Response): Promise<Record<string, any>> {
   const body = await response.text();
@@ -750,6 +750,7 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
   const [drivePath, setDrivePath] = useState<{ id: string; name: string }[]>([]);
   const [driveFilter, setDriveFilter] = useState("");
   const [driveTarget, setDriveTarget] = useState<{ id: string; path: string } | null>(null);
+  const [driveConfirmOtherDestination, setDriveConfirmOtherDestination] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [moving, setMoving] = useState(false);
@@ -1349,13 +1350,13 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
 
   const enterFolder = async (folder: { id: string; name: string }) => {
     const ok = await loadFolders(folder.id);
-    if (ok) { setDrivePath((p) => [...p, folder]); setDriveTarget(null); setDriveFilter(""); }
+    if (ok) { setDrivePath((p) => [...p, folder]); setDriveTarget(null); setDriveConfirmOtherDestination(false); setDriveFilter(""); }
   };
 
   const goUp = async () => {
     const parent = drivePath.length > 1 ? drivePath[drivePath.length - 2].id : null;
     const ok = await loadFolders(parent);
-    if (ok) { setDrivePath((p) => p.slice(0, -1)); setDriveTarget(null); setDriveFilter(""); }
+    if (ok) { setDrivePath((p) => p.slice(0, -1)); setDriveTarget(null); setDriveConfirmOtherDestination(false); setDriveFilter(""); }
   };
 
   const createFolderHere = async () => {
@@ -1377,6 +1378,7 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
       if (ok) {
         setDrivePath((p) => [...p, { id: x.folder.id, name: x.folder.name ?? name }]);
         setDriveTarget(null);
+        setDriveConfirmOtherDestination(false);
         setDriveFilter("");
         setDriveMsg(`Carpeta creada: ${x.path}. Selecciona «Usar carpeta actual» para archivar el PDF.`);
       }
@@ -1391,10 +1393,11 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
     if (!drivePath.length) { setDriveMsg("Navega hasta una subcarpeta de FACTURAS."); return; }
     const path = "/FACTURAS/" + drivePath.map((c) => c.name).join("/");
     setDriveTarget({ id: drivePath[drivePath.length - 1].id, path });
+    setDriveConfirmOtherDestination(false);
     setDriveMsg(`Destino seleccionado: ${path}. Pulsa «Guardar PDF aquí» para moverlo.`);
   };
 
-  const movePdf = async () => {
+  const movePdf = async (acceptNonRecommendedDestination = false) => {
     if (!driveTarget) return;
     setMoving(true);
     setDriveMsg("");
@@ -1402,11 +1405,17 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
       const r = await fetch(`${apiPath}/drive/move`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: doc.driveFileId, targetFolderId: driveTarget.id, expectedFolderPath: driveTarget.path }),
+        body: JSON.stringify({ id: doc.driveFileId, targetFolderId: driveTarget.id, expectedFolderPath: driveTarget.path, acceptNonRecommendedDestination }),
       });
       const x = await r.json();
+      if (r.status === 409 && x.confirmationRequired) {
+        setDriveConfirmOtherDestination(true);
+        setDriveMsg(x.message || `El destino ${driveTarget.path} no es el recomendado. ¿Aceptas guardar aquí?`);
+        return;
+      }
       if (!r.ok) throw new Error(x.message || "No se pudo mover el PDF");
       if (x.document) onDocUpdated(x.document);
+      setDriveConfirmOtherDestination(false);
       setDriveMsg(`PDF guardado en ${x.targetFolderPath}.`);
     } catch (e) {
       setDriveMsg(e instanceof Error ? e.message : "Error moviendo el PDF");
@@ -1450,7 +1459,7 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
         const moveResponse = await fetch(`${apiPath}/drive/move`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: doc.driveFileId, targetFolderId: driveTarget.id, expectedFolderPath: driveTarget.path }),
+          body: JSON.stringify({ id: doc.driveFileId, targetFolderId: driveTarget.id, expectedFolderPath: driveTarget.path, acceptNonRecommendedDestination: Boolean(archiveDestinationWarning) }),
         });
         const moved = await moveResponse.json();
         if (!moveResponse.ok) throw new Error(moved.message || "No se pudo archivar el PDF");
@@ -1559,12 +1568,11 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
   const invoiceYear = ex?.invoiceDate?.slice(0, 4);
   const invoiceMonth = Number(ex?.invoiceDate?.slice(5, 7));
   const invoiceQuarter = invoiceMonth >= 1 && invoiceMonth <= 12 ? Math.ceil(invoiceMonth / 3) : null;
-  const archiveParts = driveTarget?.path.split("/").filter(Boolean) ?? [];
-  const archiveDestinationError = !driveTarget ? "Selecciona primero FACTURAS / proveedor / AÑO / TRIMESTRE en Drive."
+  const archiveDestinationError = !driveTarget ? "Selecciona una carpeta dentro de FACTURAS en Drive."
     : !invoiceYear || !invoiceQuarter ? "Falta una fecha de factura válida para comprobar año y trimestre."
-    : archiveParts.length !== 4 || archiveParts[0] !== "FACTURAS" || !archiveParts[1]
-      || archiveParts[2] !== `AÑO ${invoiceYear}` || archiveParts[3] !== `TRIMESTRE ${invoiceQuarter}`
-      ? `El destino debe ser FACTURAS / proveedor / AÑO ${invoiceYear} / TRIMESTRE ${invoiceQuarter}.` : "";
+    : "";
+  const archiveDestinationWarning = driveTarget && invoiceYear && invoiceQuarter && !isRecommendedInvoiceArchivePath(ex?.invoiceDate, driveTarget.path)
+    ? `El destino ${driveTarget.path} no es el recomendado para esta factura (año ${invoiceYear}, trimestre ${invoiceQuarter}). ¿Aceptas guardar ahí?` : "";
   let webAdjustmentPreview: ReturnType<typeof calculateWebAdjustment> | null = null;
   let webAdjustmentError = "";
   try {
@@ -1838,9 +1846,15 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
                         </div>
                         <div className="si-pick">
                           <button className="si-editor-add" type="button" disabled={driveLoading || creatingFolder || moving || !drivePath.length} onClick={selectCurrentFolder}>Usar carpeta actual</button>
-                          <button className="si-editor-add" type="button" disabled={!doc.odooDraftMoveId || !driveTarget || driveLoading || creatingFolder || moving} onClick={() => void movePdf()}>
-                            {moving ? <RefreshCw className="spin" size={14} /> : <CheckCircle2 size={14} />} {moving ? "Guardando PDF…" : "Guardar PDF aquí"}
-                          </button>
+                          {!driveConfirmOtherDestination ? (
+                            <button className="si-editor-add" type="button" disabled={!doc.odooDraftMoveId || !driveTarget || driveLoading || creatingFolder || moving} onClick={() => void movePdf()}>
+                              {moving ? <RefreshCw className="spin" size={14} /> : <CheckCircle2 size={14} />} {moving ? "Guardando PDF…" : "Guardar PDF aquí"}
+                            </button>
+                          ) : (
+                            <button className="si-editor-add" type="button" disabled={!doc.odooDraftMoveId || !driveTarget || driveLoading || creatingFolder || moving} onClick={() => void movePdf(true)}>
+                              {moving ? <RefreshCw className="spin" size={14} /> : <CheckCircle2 size={14} />} {moving ? "Guardando PDF…" : "Acepto, guardar aquí"}
+                            </button>
+                          )}
                         </div>
                         {driveTarget && <p className="si-note">Destino seleccionado: <b>{driveTarget.path}</b></p>}
                       </div>
@@ -2020,10 +2034,11 @@ function DocDetail({ doc, close, extracting, onAiExtract, onDocUpdated, base }: 
                 {amountReviewWarnings.length > 0 && <p className="si-warn" role="alert"><b>Hay diferencias de importes.</b> Resuelve las diferencias antes de crear el borrador y archivar el PDF. {amountReviewWarnings.join(" · ")}</p>}
                 <p>Destino Drive: <b>{driveTarget?.path ?? "Sin seleccionar"}</b>.</p>
                 {archiveDestinationError && <p className="si-warn" role="alert">{archiveDestinationError}</p>}
+                {archiveDestinationWarning && <p className="si-warn" role="alert">{archiveDestinationWarning}</p>}
                 {!draftWriteEnabled && <p className="si-warn" role="status">{draftCapabilityChecking ? "Comprobando permiso para crear el borrador…" : draftCapabilityError || "La creación de borradores no está habilitada para esta factura. La previsualización no modifica Odoo."}</p>}
                 {!driveWriteEnabled && <p className="si-warn" role="status">El traslado a Drive no está habilitado para esta factura.</p>}
                 {odooMsg && <p className="error" role="alert">{odooMsg}</p>}
-                <div className="si-draft-confirm-actions"><button type="button" disabled={odooBusy} onClick={() => setDraftConfirmation(false)}>Cancelar</button><button type="button" className="si-primary" disabled={odooBusy || !accountingDate || !draftWriteEnabled || !driveWriteEnabled || !!archiveDestinationError || amountReviewWarnings.length > 0} onClick={() => void createOdooDraft()}>{odooBusy ? <><RefreshCw className="spin" size={14}/> Creando borrador y archivando PDF…</> : "Crear borrador y archivar PDF"}</button></div>
+                <div className="si-draft-confirm-actions"><button type="button" disabled={odooBusy} onClick={() => setDraftConfirmation(false)}>Cancelar</button><button type="button" className="si-primary" disabled={odooBusy || !accountingDate || !draftWriteEnabled || !driveWriteEnabled || !!archiveDestinationError || amountReviewWarnings.length > 0} onClick={() => void createOdooDraft()}>{odooBusy ? <><RefreshCw className="spin" size={14}/> Creando borrador y archivando PDF…</> : archiveDestinationWarning ? "Acepto el destino y crear borrador" : "Crear borrador y archivar PDF"}</button></div>
               </div>
             </div>}
             {draftCreated && <div className="si-draft-confirm-backdrop">

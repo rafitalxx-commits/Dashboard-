@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { archiveMismatch } from "../shared/supplierInvoiceArchiveGate.ts";
+import { archiveMismatch, isRecommendedInvoiceArchivePath } from "../shared/supplierInvoiceArchiveGate.ts";
+
+assert.equal(isRecommendedInvoiceArchivePath("2026-10-13", "/FACTURAS/Proveedor/AÑO 2026/TRIMESTRE 4"), true);
+assert.equal(isRecommendedInvoiceArchivePath("2026-10-13", "/FACTURAS/Otra carpeta"), false);
+assert.equal(isRecommendedInvoiceArchivePath(null, "/FACTURAS/Proveedor/AÑO 2026/TRIMESTRE 4"), false);
 
 const pdf = { invoiceNumber: "INV-7", dueDate: "2026-10-31", base: 100, taxes: 21, total: 121,
   lines: [{ description: "Producto impreso", productId: 17, sourcePurchaseLineId: 99, quantity: 2, priceUnit: 50, total: 100, taxAmount: 21 }] };

@@ -30,7 +30,7 @@ import { cotejarPdfConPedidos, preserveOperatorProductSelections, productReferen
 import { authenticate, executeKw, getOdooConfig, hasOdooConfig, readRows, searchIds, paginatedRead, searchRead } from "./odooClient.ts";
 import { chooseSupplierPrice, type SupplierPriceRow } from "../purchases/supplierPricing.ts";
 import { isWebAdjustmentProductId, discountedBase, effectiveDiscount } from "../../shared/supplierInvoiceDiscounts.ts";
-import { archiveMismatch } from "../../shared/supplierInvoiceArchiveGate.ts";
+import { archiveMismatch, isRecommendedInvoiceArchivePath } from "../../shared/supplierInvoiceArchiveGate.ts";
 
 type MiddlewareServer = {
   middlewares: {
@@ -1355,7 +1355,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     const user = requireUser(request, response);
     if (!user) return;
     if ((request.method ?? "POST").toUpperCase() !== "POST") return sendJson(response, 405, { message: "Usa POST" });
-    let body: { id?: string; targetFolderId?: string; expectedFolderPath?: string } = {};
+    let body: { id?: string; targetFolderId?: string; expectedFolderPath?: string; acceptNonRecommendedDestination?: boolean } = {};
     try { body = JSON.parse(await readBody(request) || "{}"); } catch { /* body vacio */ }
     if (!driveWriteEnabled(body.id)) return sendJson(response, 403, { message: "Escritura en Drive no autorizada para esta factura." });
     if (!body.id || !body.targetFolderId || !body.expectedFolderPath) return sendJson(response, 400, { message: "Faltan id, targetFolderId o la ruta de Drive confirmada." });
@@ -1400,13 +1400,13 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
       if (body.targetFolderId === client.getArchiveFolderId()) return sendJson(response, 400, { message: "Selecciona una subcarpeta dentro de FACTURAS." });
       if (body.expectedFolderPath && body.expectedFolderPath !== targetFolderPath) return sendJson(response, 409, { message: "La carpeta de Drive cambió desde su selección; vuelve a comprobar el destino." });
       if (body.expectedFolderPath) {
-        const date = doc.extracted?.invoiceDate;
-        const month = Number(date?.slice(5, 7));
-        const parts = targetFolderPath.split("/").filter(Boolean);
-        if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || month < 1 || month > 12 ||
-            parts.length !== 4 || parts[0] !== "FACTURAS" || !parts[1] ||
-            parts[2] !== `AÑO ${date.slice(0, 4)}` || parts[3] !== `TRIMESTRE ${Math.ceil(month / 3)}`) {
-          return sendJson(response, 409, { message: "Destino incorrecto para la fecha de factura: selecciona FACTURAS / proveedor / AÑO / TRIMESTRE." });
+        const recommended = isRecommendedInvoiceArchivePath(doc.extracted?.invoiceDate, targetFolderPath);
+        if (!recommended && !body.acceptNonRecommendedDestination) {
+          return sendJson(response, 409, {
+            confirmationRequired: true,
+            targetFolderPath,
+            message: `El destino seleccionado no es el recomendado para la fecha de factura. ¿Aceptas guardar en ${targetFolderPath}?`,
+          });
         }
       }
       await client.moveFile(doc.driveFileId, body.targetFolderId);

@@ -5,6 +5,15 @@ type OdooDraft = { reference: string; dueDate: string | null; base: number; taxe
 
 const cents = (value: number) => Math.round(value * 100);
 
+/** Recomienda la carpeta proveedor/año/trimestre sin impedir destinos elegidos por el usuario. */
+export function isRecommendedInvoiceArchivePath(invoiceDate: string | null | undefined, path: string): boolean {
+  const month = Number(invoiceDate?.slice(5, 7));
+  const parts = path.split("/").filter(Boolean);
+  return Boolean(invoiceDate && /^\d{4}-\d{2}-\d{2}$/.test(invoiceDate) && month >= 1 && month <= 12 &&
+    parts.length === 4 && parts[0] === "FACTURAS" && parts[1] &&
+    parts[2] === `AÑO ${invoiceDate.slice(0, 4)}` && parts[3] === `TRIMESTRE ${Math.ceil(month / 3)}`);
+}
+
 /** No se archiva un PDF sólo porque Odoo devolvió HTTP 200: coteja el borrador releído. */
 export function archiveMismatch(pdf: PdfInvoice | null | undefined, draft: OdooDraft | null | undefined, warnings: string[] = [], branch: "goods" | "services" = "goods"): string | null {
   if (!pdf || !draft) return "Falta el PDF o la relectura del borrador Odoo.";
