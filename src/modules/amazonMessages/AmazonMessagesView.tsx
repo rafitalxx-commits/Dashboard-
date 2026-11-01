@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Archive,
@@ -209,6 +209,21 @@ type BackendMessageRecord = {
   amazonMetadata?: Record<string, string | number | boolean | null>;
 };
 
+type BackendMessageTranslationRecord = {
+  translationId: string;
+  conversationId: string;
+  messageId: string;
+  sourceLanguage?: string;
+  targetLanguage: "es";
+  sourceContentHash: string;
+  translatedText: string;
+  provider: "AI" | "ORIGINAL_ES";
+  model?: string;
+  createdAt: string;
+  updatedAt: string;
+  externalSend: false;
+};
+
 type BackendAttachmentRecord = {
   attachmentId: string;
   conversationId: string;
@@ -246,6 +261,7 @@ type BackendConversationDetail = {
   conversation: BackendConversationRecord;
   context?: AmazonConversationContext;
   messages?: BackendMessageRecord[];
+  messageTranslations?: BackendMessageTranslationRecord[];
   attachments?: BackendAttachmentRecord[];
   classifications?: BackendClassificationRecord[];
   auditLogs?: BackendAuditLogRecord[];
@@ -483,6 +499,17 @@ type AmazonModuleTab =
 
 type InternalDraft = NonNullable<AmazonConversation["draft"]>;
 
+const INBOX_PAGE_SIZE = 15;
+
+type MessageTranslationUiState = {
+  status: "idle" | "loading" | "success" | "error";
+  translatedText?: string;
+  sourceLanguage?: string;
+  provider?: "AI" | "ORIGINAL_ES";
+  model?: string;
+  error?: string;
+};
+
 const moduleTabs: Array<{
   id: AmazonModuleTab;
   label: string;
@@ -556,6 +583,7 @@ export function AmazonMessagesView({ orders, currentUser }: Props) {
   const [activeTab, setActiveTab] = useState<AmazonModuleTab>("inbox");
   const [activeFilter, setActiveFilter] = useState<AmazonInboxFilter>("all");
   const [query, setQuery] = useState("");
+  const [inboxPage, setInboxPage] = useState(1);
   const [selectedId, setSelectedId] = useState(conversations[0]?.id ?? "");
   const [statsRange, setStatsRange] = useState<AmazonStatsRange>("last_7_days");
   const [workflowDrafts, setWorkflowDrafts] = useState<Record<string, AmazonWorkflowStatus>>({});
@@ -576,6 +604,8 @@ export function AmazonMessagesView({ orders, currentUser }: Props) {
   const [gmailSyncMessage, setGmailSyncMessage] = useState("Auto-sync cada 30 min.");
   const [manualSyncRunning, setManualSyncRunning] = useState(false);
   const [agentRequestRunning, setAgentRequestRunning] = useState(false);
+  const [historicalCutoverRunning, setHistoricalCutoverRunning] = useState(false);
+  const [historicalCutoverMessage, setHistoricalCutoverMessage] = useState("");
 
   async function fetchBackendConversationList() {
     const response = await fetch("/api/amazon-messages/conversations");
@@ -592,6 +622,31 @@ export function AmazonMessagesView({ orders, currentUser }: Props) {
           new Date(right.lastActivityAt).getTime() -
           new Date(left.lastActivityAt).getTime(),
       );
+  }
+
+  async function resolveHistoricalBacklog() {
+    if (historicalCutoverRunning) return;
+    if (!window.confirm("Se marcarán como resueltas las conversaciones actuales del Dashboard. No se borrará ni enviará ningún mensaje en Amazon/Gmail. ¿Continuar?")) return;
+    setHistoricalCutoverRunning(true);
+    setHistoricalCutoverMessage("Cerrando histórico local…");
+    try {
+      const response = await fetch("/api/amazon-messages/historical-cutover", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "Cierre inicial de histórico Amazon aprobado por Rafa", externalSend: false }),
+      });
+      const result = (await response.json()) as { resolved?: number; message?: string };
+      if (!response.ok) throw new Error(result.message || `API ${response.status}`);
+      const refreshed = await fetchBackendConversationList();
+      setRealConversations(refreshed);
+      setConversationSourceMode("real");
+      setActiveFilter("workflow_new");
+      setHistoricalCutoverMessage(`Histórico cerrado: ${result.resolved ?? 0} conversaciones resueltas. Las siguientes recibidas aparecerán como nuevas.`);
+    } catch (error) {
+      setHistoricalCutoverMessage(error instanceof Error ? `No se pudo cerrar el histórico: ${error.message}` : "No se pudo cerrar el histórico.");
+    } finally {
+      setHistoricalCutoverRunning(false);
+    }
   }
 
   async function refreshGmailSyncStatus() {
@@ -866,6 +921,22 @@ export function AmazonMessagesView({ orders, currentUser }: Props) {
       .toLowerCase();
     return value.includes(query.toLowerCase().trim());
   });
+
+  const orderedConversations = [...filteredConversations].sort(compareInboxUrgency);
+  const inboxPageCount = Math.max(1, Math.ceil(orderedConversations.length / INBOX_PAGE_SIZE));
+  const safeInboxPage = Math.min(inboxPage, inboxPageCount);
+  const pagedConversations = orderedConversations.slice(
+    (safeInboxPage - 1) * INBOX_PAGE_SIZE,
+    safeInboxPage * INBOX_PAGE_SIZE,
+  );
+
+  useEffect(() => {
+    setInboxPage(1);
+  }, [activeFilter, query]);
+
+  useEffect(() => {
+    if (inboxPage !== safeInboxPage) setInboxPage(safeInboxPage);
+  }, [inboxPage, safeInboxPage]);
 
   const selected =
     decoratedConversations.find((conversation) => conversation.id === selectedId) ??
@@ -1796,6 +1867,12 @@ export function AmazonMessagesView({ orders, currentUser }: Props) {
         <aside className="amazon-inbox">
           <div className="amazon-inbox-toolbar">
             <div className="amazon-source-note">{conversationSourceMessage}</div>
+            <div className="amazon-historical-cutover">
+              <button disabled={historicalCutoverRunning || conversationSourceMode !== "real"} onClick={() => void resolveHistoricalBacklog()} type="button">
+                {historicalCutoverRunning ? "Cerrando histórico…" : "Cerrar histórico actual"}
+              </button>
+              <small aria-live="polite">{historicalCutoverMessage || "Marca el histórico actual como resuelto; no borra ni envía mensajes."}</small>
+            </div>
             <label className="amazon-search">
               <Search size={16} />
               <input
@@ -1820,7 +1897,7 @@ export function AmazonMessagesView({ orders, currentUser }: Props) {
           </div>
 
           <div className="amazon-conversation-list">
-            {filteredConversations.map((conversation) => (
+            {pagedConversations.map((conversation) => (
               <button
                 className={`amazon-conversation-row ${
                   selected?.id === conversation.id ? "active" : ""
@@ -1841,6 +1918,27 @@ export function AmazonMessagesView({ orders, currentUser }: Props) {
               </button>
             ))}
           </div>
+          {orderedConversations.length > INBOX_PAGE_SIZE ? (
+            <nav className="amazon-pagination" aria-label="Paginacion de conversaciones">
+              <button
+                disabled={safeInboxPage === 1}
+                onClick={() => setInboxPage((page) => Math.max(1, page - 1))}
+                type="button"
+              >
+                Anterior
+              </button>
+              <span aria-live="polite">
+                Pagina {safeInboxPage} de {inboxPageCount} · {orderedConversations.length} conversaciones
+              </span>
+              <button
+                disabled={safeInboxPage === inboxPageCount}
+                onClick={() => setInboxPage((page) => Math.min(inboxPageCount, page + 1))}
+                type="button"
+              >
+                Siguiente
+              </button>
+            </nav>
+          ) : null}
         </aside>
 
         {selected ? (
@@ -2038,6 +2136,8 @@ function ConversationDetail({
     AmazonAuditEvent[]
   >([]);
   const [finalSendModalOpen, setFinalSendModalOpen] = useState(false);
+  const [orderDetailsOpen, setOrderDetailsOpen] = useState(false);
+  const orderDialogRef = useRef<HTMLDialogElement>(null);
   const currentWorkflowStatus = workflowStatusOf(conversation);
   const canMarkResolved =
     currentWorkflowStatus !== "RESUELTO" && currentWorkflowStatus !== "CERRADO";
@@ -2047,10 +2147,40 @@ function ConversationDetail({
   const [finalSendConfirmations, setFinalSendConfirmations] = useState<
     Record<string, boolean>
   >({});
-  const [translatedCustomerMessages, setTranslatedCustomerMessages] = useState<
-    Record<string, string>
+  const [messageTranslations, setMessageTranslations] = useState<
+    Record<string, MessageTranslationUiState>
   >({});
   const [translatedDraftBody, setTranslatedDraftBody] = useState("");
+
+  useEffect(() => {
+    const dialog = orderDialogRef.current;
+    if (!dialog) return;
+    if (orderDetailsOpen && !dialog.open) dialog.showModal();
+    if (!orderDetailsOpen && dialog.open) dialog.close();
+  }, [orderDetailsOpen]);
+
+  useEffect(() => {
+    setOrderDetailsOpen(false);
+  }, [conversation.id]);
+
+  useEffect(() => {
+    setMessageTranslations(
+      Object.fromEntries(
+        sortedMessages
+          .filter((message) => message.spanishTranslation)
+          .map((message) => [
+            message.id,
+            {
+              status: "success" as const,
+              translatedText: message.spanishTranslation?.translatedText,
+              sourceLanguage: message.spanishTranslation?.sourceLanguage,
+              provider: message.spanishTranslation?.provider,
+              model: message.spanishTranslation?.model,
+            },
+          ]),
+      ),
+    );
+  }, [conversation.id, conversation.messages]);
 
   const pendingReply = conversation.pendingReply;
   const canUseFinalSend = Boolean(
@@ -2089,14 +2219,50 @@ function ConversationDetail({
     setFinalSendModalOpen(false);
   }
 
-  function translateCustomerMessage(messageToTranslate: AmazonSupportMessage) {
-    setTranslatedCustomerMessages((current) => ({
+  async function translateCustomerMessage(messageToTranslate: AmazonSupportMessage) {
+    setMessageTranslations((current) => ({
       ...current,
-      [messageToTranslate.id]: translateMessageToSpanish(
-        messageToTranslate.bodyText,
-        conversation.extracted.language,
-      ),
+      [messageToTranslate.id]: { status: "loading" },
     }));
+    try {
+      const response = await fetch(
+        `/api/amazon-messages/conversations/${encodeURIComponent(conversation.id)}/messages/${encodeURIComponent(messageToTranslate.id)}/translation`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ externalSend: false }),
+        },
+      );
+      const payload = (await response.json()) as
+        | (BackendMessageTranslationRecord & { cached?: boolean })
+        | { message?: string };
+      if (!response.ok || !("translatedText" in payload)) {
+        throw new Error("message" in payload && payload.message
+          ? payload.message
+          : `API ${response.status}`);
+      }
+      setMessageTranslations((current) => ({
+        ...current,
+        [messageToTranslate.id]: {
+          status: "success",
+          translatedText: payload.translatedText,
+          sourceLanguage: payload.sourceLanguage,
+          provider: payload.provider,
+          model: payload.model,
+        },
+      }));
+    } catch (error) {
+      setMessageTranslations((current) => ({
+        ...current,
+        [messageToTranslate.id]: {
+          status: "error",
+          error:
+            error instanceof Error
+              ? error.message
+              : "No se pudo traducir el mensaje",
+        },
+      }));
+    }
   }
 
   function translateDraftToCustomerLanguage() {
@@ -2248,21 +2414,64 @@ function ConversationDetail({
                   <strong>{messageAuthorLabel(threadMessage)}</strong>
                   <span>{formatDateTime(threadMessage.receivedAt)}</span>
                 </div>
-                <p>{threadMessage.bodyText}</p>
+                <div className="amazon-message-section-label">
+                  <strong>Mensaje original</strong>
+                  <span>{conversation.extracted.language ?? "Idioma sin detectar"}</span>
+                </div>
+                <p className="amazon-message-original">{threadMessage.bodyText}</p>
                 {threadMessage.direction === "inbound" ? (
                   <div className="amazon-translation-actions">
                     <button
+                      aria-busy={
+                        messageTranslations[threadMessage.id]?.status === "loading"
+                      }
+                      disabled={
+                        messageTranslations[threadMessage.id]?.status === "loading" ||
+                        messageTranslations[threadMessage.id]?.status === "success"
+                      }
                       onClick={() => translateCustomerMessage(threadMessage)}
                       type="button"
                     >
-                      Traducir al español
+                      {messageTranslations[threadMessage.id]?.status === "success" ? (
+                        <CheckCircle2 size={14} />
+                      ) : (
+                        <RefreshCw
+                          className={
+                            messageTranslations[threadMessage.id]?.status === "loading"
+                              ? "amazon-agent-spinner"
+                              : undefined
+                          }
+                          size={14}
+                        />
+                      )}
+                      {messageTranslations[threadMessage.id]?.status === "loading"
+                        ? "Traduciendo…"
+                        : messageTranslations[threadMessage.id]?.status === "success"
+                          ? "Traducción guardada"
+                          : "Traducir al español"}
                     </button>
                   </div>
                 ) : null}
-                {translatedCustomerMessages[threadMessage.id] ? (
-                  <div className="amazon-translation-result">
-                    <strong>Español</strong>
-                    <p>{translatedCustomerMessages[threadMessage.id]}</p>
+                {messageTranslations[threadMessage.id]?.status === "success" ? (
+                  <div
+                    aria-live="polite"
+                    className="amazon-translation-result"
+                  >
+                    <div className="amazon-message-section-label">
+                      <strong>Traducción al español</strong>
+                      <span>
+                        {messageTranslations[threadMessage.id]?.provider === "AI"
+                          ? `IA${messageTranslations[threadMessage.id]?.model ? ` · ${messageTranslations[threadMessage.id]?.model}` : ""}`
+                          : "Original ya en español"}
+                      </span>
+                    </div>
+                    <p>{messageTranslations[threadMessage.id]?.translatedText}</p>
+                  </div>
+                ) : null}
+                {messageTranslations[threadMessage.id]?.status === "error" ? (
+                  <div aria-live="assertive" className="amazon-translation-error" role="alert">
+                    <AlertTriangle size={14} />
+                    {messageTranslations[threadMessage.id]?.error}
                   </div>
                 ) : null}
                 {threadMessage.attachmentNames.length > 0 && (
@@ -2779,29 +2988,6 @@ function ConversationDetail({
 
         <aside className="amazon-context-panel">
           <PanelTitle icon={<Package size={17} />} title="Pedido Odoo" />
-          <InfoLine label="ASIN" value={conversation.extracted.asin ?? "No extraido"} />
-          <InfoLine label="SKU" value={conversation.extracted.sku ?? "No extraido"} />
-          <InfoLine
-            label="Cantidad"
-            value={conversation.extracted.quantity?.toString() ?? "No extraida"}
-          />
-          <InfoLine
-            label="Importe"
-            value={
-              conversation.extracted.amount
-                ? `${conversation.extracted.amount.toFixed(2)} ${conversation.extracted.currency ?? "EUR"}`
-                : "No extraido"
-            }
-          />
-          <InfoLine label="Motivo" value={conversation.extracted.reason ?? "No extraido"} />
-          <InfoLine
-            label="Riesgo devolucion"
-            value={
-              conversation.extracted.isInternationalReturnAddressRisk
-                ? "Direccion internacional/local"
-                : "No detectado"
-            }
-          />
           {conversation.context.order ? (
             <>
               <InfoLine label="Odoo" value={conversation.context.order.odooRef} />
@@ -2813,76 +2999,229 @@ function ConversationDetail({
                   "Sin referencia"
                 }
               />
-              <InfoLine label="Canal" value={conversation.context.order.channel} />
-              <InfoLine label="Cliente" value={conversation.context.order.client} />
+              <InfoLine label="Estado" value={conversation.context.order.status} />
               <InfoLine label="Total" value={`${conversation.context.order.total.toFixed(2)} EUR`} />
-              <div className="amazon-products">
-                {conversation.context.order.items.slice(0, 3).map((item) => (
-                  <span key={`${item.sku}-${item.name}`}>
-                    {item.quantity}x {item.name}
-                  </span>
-                ))}
-              </div>
+              <InfoLine
+                label="Tracking"
+                value={
+                  conversation.context.tracking?.status ??
+                  conversation.context.order.deliveryStatus ??
+                  "Sin seguimiento"
+                }
+              />
+              <button
+                className="amazon-order-details-button"
+                onClick={() => setOrderDetailsOpen(true)}
+                type="button"
+              >
+                <Eye size={15} />
+                Ver pedido completo
+              </button>
             </>
           ) : (
             <EmptyPanel text="No hay pedido vinculado. El operador debera enlazarlo manualmente." />
           )}
-
-          <PanelTitle icon={<Truck size={17} />} title="Tracking Sendcloud" />
-          {conversation.context.tracking ? (
-            <>
-              <InfoLine label="Transportista" value={conversation.context.tracking.carrier} />
-              <InfoLine label="Estado" value={conversation.context.tracking.status} />
-              <InfoLine
-                label="Tracking"
-                value={conversation.context.tracking.trackingNumber ?? "Sin tracking"}
-              />
-              {conversation.context.tracking.trackingUrl ? (
-                <a
-                  className="amazon-tracking-link"
-                  href={conversation.context.tracking.trackingUrl}
-                  rel="noreferrer"
-                  target="_blank"
-                >
-                  Abrir Sendcloud
-                </a>
-              ) : null}
-              <InfoLine label="Ultimo evento" value={conversation.context.tracking.lastEvent} />
-              <InfoLine
-                label="Actualizado"
-                value={formatDateTime(conversation.context.tracking.updatedAt)}
-              />
-            </>
-          ) : (
-            <EmptyPanel text="Sin seguimiento encontrado." />
-          )}
-
-          <PanelTitle icon={<FileText size={17} />} title="Factura Odoo" />
-          {conversation.context.invoice ? (
-            <>
-              <InfoLine label="Referencia" value={conversation.context.invoice.ref} />
-              <InfoLine label="Estado" value={conversation.context.invoice.status} />
-              <InfoLine
-                label="PDF"
-                value={conversation.context.invoice.pdfAvailable ? "Disponible" : "No disponible"}
-              />
-            </>
-          ) : (
-            <EmptyPanel text="Sin factura localizada." />
-          )}
-
           <div className="amazon-context-note">
             <CheckCircle2 size={16} />
             Contexto mostrado en lectura. No modifica Odoo ni Sendcloud.
           </div>
+        </aside>
 
-          <TraceabilityPanel
+        <dialog
+          aria-labelledby="amazon-order-dialog-title"
+          className="amazon-order-dialog"
+          onCancel={() => setOrderDetailsOpen(false)}
+          onClose={() => setOrderDetailsOpen(false)}
+          ref={orderDialogRef}
+        >
+          <div className="amazon-order-dialog-header">
+            <div>
+              <span>Contexto de solo lectura</span>
+              <h3 id="amazon-order-dialog-title">Pedido Odoo completo</h3>
+            </div>
+            <button
+              aria-label="Cerrar detalle del pedido"
+              autoFocus
+              onClick={() => setOrderDetailsOpen(false)}
+              type="button"
+            >
+              <X size={18} />
+            </button>
+          </div>
+          <OrderDetailsContent
             conversation={conversation}
             draftSourceMessage={draftSourceMessage}
             draftSourceMode={draftSourceMode}
           />
-        </aside>
+        </dialog>
       </div>
+    </div>
+  );
+}
+
+type OrderDetailTab = "summary" | "products" | "shipping" | "invoice" | "customer";
+
+function OrderDetailsContent({
+  conversation,
+  draftSourceMessage,
+  draftSourceMode,
+}: {
+  conversation: AmazonConversation;
+  draftSourceMessage: string;
+  draftSourceMode: DraftSourceMode;
+}) {
+  const [activeTab, setActiveTab] = useState<OrderDetailTab>("summary");
+  const order = conversation.context.order;
+  const tabs: Array<{ id: OrderDetailTab; label: string }> = [
+    { id: "summary", label: "Resumen" },
+    { id: "products", label: `Productos${order ? ` (${order.items.length})` : ""}` },
+    { id: "shipping", label: "Envío / tracking" },
+    { id: "invoice", label: "Factura" },
+    { id: "customer", label: "Cliente" },
+  ];
+
+  return (
+    <div className="amazon-order-dialog-body">
+      <div aria-label="Secciones del pedido" className="amazon-order-tabs" role="tablist">
+        {tabs.map((tab) => (
+          <button
+            aria-controls={`amazon-order-panel-${tab.id}`}
+            aria-selected={activeTab === tab.id}
+            className={activeTab === tab.id ? "active" : undefined}
+            id={`amazon-order-tab-${tab.id}`}
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            role="tab"
+            type="button"
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      <section
+        aria-labelledby={`amazon-order-tab-${activeTab}`}
+        className="amazon-order-tab-panel"
+        id={`amazon-order-panel-${activeTab}`}
+        role="tabpanel"
+      >
+        {activeTab === "summary" ? (
+          <div className="amazon-order-modal-grid">
+            <InfoLine label="Pedido Odoo" value={order?.odooRef ?? "Sin pedido vinculado"} />
+            <InfoLine
+              label="Pedido Amazon"
+              value={order?.externalRef ?? conversation.amazonOrderId ?? "Sin referencia"}
+            />
+            <InfoLine label="Fecha" value={order?.date ? formatDateTime(order.date) : "Sin fecha"} />
+            <InfoLine label="Canal" value={order?.channel ?? conversation.marketplace} />
+            <InfoLine label="Estado pedido" value={order?.status ?? "Sin estado"} />
+            <InfoLine label="Estado entrega" value={order?.deliveryStatus ?? "Sin estado"} />
+            <InfoLine label="Estado factura" value={order?.invoiceStatus ?? "Sin estado"} />
+            <InfoLine label="Total" value={order ? `${order.total.toFixed(2)} EUR` : "Sin total"} />
+            <InfoLine
+              label="Impuestos"
+              value={order?.taxTotal !== undefined ? `${order.taxTotal.toFixed(2)} EUR` : "Sin dato"}
+            />
+            <InfoLine label="Gestión logística" value={order?.fulfillmentBy || "Sin dato"} />
+            <InfoLine label="ASIN extraído" value={conversation.extracted.asin ?? "No extraído"} />
+            <InfoLine label="SKU extraído" value={conversation.extracted.sku ?? "No extraído"} />
+            <InfoLine
+              label="Cantidad extraída"
+              value={conversation.extracted.quantity?.toString() ?? "No extraída"}
+            />
+            <InfoLine label="Motivo" value={conversation.extracted.reason ?? "No extraído"} />
+          </div>
+        ) : null}
+
+        {activeTab === "products" ? (
+          order?.items.length ? (
+            <div className="amazon-order-products-table-wrap">
+              <table className="amazon-order-products-table">
+                <thead>
+                  <tr>
+                    <th>SKU</th>
+                    <th>Producto</th>
+                    <th>Cantidad</th>
+                    <th>Precio</th>
+                    <th>Subtotal</th>
+                    <th>Stock</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {order.items.map((item) => (
+                    <tr key={`${item.sku}-${item.name}`}>
+                      <td>{item.sku || "Sin SKU"}</td>
+                      <td>{item.name}</td>
+                      <td>{item.quantity}</td>
+                      <td>{item.price.toFixed(2)} EUR</td>
+                      <td>{(item.subtotal ?? item.price * item.quantity).toFixed(2)} EUR</td>
+                      <td>{item.stock}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <EmptyPanel text="No hay líneas de producto disponibles." />
+          )
+        ) : null}
+
+        {activeTab === "shipping" ? (
+          <div className="amazon-order-modal-grid">
+            <InfoLine label="Estado entrega" value={order?.deliveryStatus ?? "Sin estado"} />
+            <InfoLine label="Transportista" value={conversation.context.tracking?.carrier ?? "Sin dato"} />
+            <InfoLine label="Estado tracking" value={conversation.context.tracking?.status ?? "Sin seguimiento"} />
+            <InfoLine label="Número tracking" value={conversation.context.tracking?.trackingNumber ?? "Sin tracking"} />
+            <InfoLine label="Último evento" value={conversation.context.tracking?.lastEvent ?? "Sin evento"} />
+            <InfoLine
+              label="Actualizado"
+              value={conversation.context.tracking?.updatedAt ? formatDateTime(conversation.context.tracking.updatedAt) : "Sin fecha"}
+            />
+            <InfoLine label="Albarán impreso" value={order?.deliveryPrinted ? "Sí" : "No"} />
+            <InfoLine label="Veces impreso" value={String(order?.deliveryPrintCount ?? 0)} />
+            {conversation.context.tracking?.trackingUrl ? (
+              <a className="amazon-tracking-link" href={conversation.context.tracking.trackingUrl} rel="noreferrer" target="_blank">
+                Abrir seguimiento en Sendcloud
+              </a>
+            ) : null}
+          </div>
+        ) : null}
+
+        {activeTab === "invoice" ? (
+          <div className="amazon-order-modal-grid">
+            <InfoLine label="Estado Odoo" value={order?.invoiceStatus ?? "Sin estado"} />
+            <InfoLine label="Referencia" value={conversation.context.invoice?.ref ?? "Sin factura"} />
+            <InfoLine label="Estado documento" value={conversation.context.invoice?.status ?? "Sin estado"} />
+            <InfoLine
+              label="PDF"
+              value={conversation.context.invoice?.pdfAvailable ? "Disponible" : "No disponible"}
+            />
+          </div>
+        ) : null}
+
+        {activeTab === "customer" ? (
+          <div className="amazon-order-modal-grid">
+            <InfoLine label="Cliente" value={order?.client ?? conversation.customerDisplayName} />
+            <InfoLine label="Destinatario" value={order?.shippingRecipient ?? "Sin dato"} />
+            <InfoLine label="Dirección" value={order?.shippingAddress ?? "Sin dato"} />
+            <InfoLine label="Ciudad" value={order?.city ?? "Sin dato"} />
+            <InfoLine label="Código postal" value={order?.shippingPostalCode ?? "Sin dato"} />
+            <InfoLine label="País" value={order?.shippingCountryCode ?? "Sin dato"} />
+            <InfoLine label="Teléfono" value={order?.shippingPhone ?? "Sin dato"} />
+            <InfoLine label="Email" value={order?.shippingEmail ?? "Sin dato"} />
+          </div>
+        ) : null}
+      </section>
+
+      <div className="amazon-order-dialog-footer">
+        <CheckCircle2 size={16} />
+        Solo lectura: esta ventana no modifica Odoo, Gmail ni Sendcloud.
+      </div>
+      <TraceabilityPanel
+        conversation={conversation}
+        draftSourceMessage={draftSourceMessage}
+        draftSourceMode={draftSourceMode}
+      />
     </div>
   );
 }
@@ -4048,6 +4387,11 @@ function adaptBackendConversation(
           detail.attachments?.filter(
             (attachment) => attachment.messageId === message.messageId,
           ) ?? [],
+          detail.messageTranslations?.find(
+            (translation) =>
+              translation.messageId === message.messageId &&
+              translation.targetLanguage === "es",
+          ),
         ),
       )
     : [buildPlaceholderMessage(record)];
@@ -4116,6 +4460,7 @@ function moduleDescription(source: ConversationSourceMode) {
 function adaptBackendMessage(
   message: BackendMessageRecord,
   attachments: BackendAttachmentRecord[],
+  translation?: BackendMessageTranslationRecord,
 ): AmazonSupportMessage {
   const attachmentMetadata = attachments.map(adaptBackendAttachment);
   return {
@@ -4126,6 +4471,15 @@ function adaptBackendMessage(
     externalMessageId: message.gmailMessageId ?? message.messageId,
     subject: extractSubject(message.content) ?? "Mensaje Amazon",
     bodyText: extractReadableEmailBody(message.content),
+    spanishTranslation: translation
+      ? {
+          translatedText: translation.translatedText,
+          sourceLanguage: translation.sourceLanguage,
+          provider: translation.provider,
+          model: translation.model,
+          updatedAt: translation.updatedAt,
+        }
+      : undefined,
     fromLabel: displayNameFromSender(message.sender),
     toLabel: "Amazon Messages",
     receivedAt: message.createdAt,
@@ -4570,16 +4924,20 @@ function extractReadableEmailBody(content = "") {
 }
 
 function decodeQuotedPrintableEmail(content: string) {
-  const normalized = content.replace(/=\r?\n/g, "");
-  try {
-    return decodeURIComponent(
-      normalized.replace(/=([A-Fa-f0-9]{2})/g, "%$1"),
-    );
-  } catch {
-    return normalized.replace(/=([A-Fa-f0-9]{2})/g, (_, hex: string) =>
-      String.fromCharCode(Number.parseInt(hex, 16)),
-    );
+  const compact = content.replace(/=\r?\n/g, "");
+  const bytes: number[] = [];
+  for (let index = 0; index < compact.length; index += 1) {
+    if (
+      compact[index] === "=" &&
+      /^[0-9a-f]{2}$/i.test(compact.slice(index + 1, index + 3))
+    ) {
+      bytes.push(Number.parseInt(compact.slice(index + 1, index + 3), 16));
+      index += 2;
+      continue;
+    }
+    bytes.push(compact.charCodeAt(index));
   }
+  return new TextDecoder("utf-8").decode(new Uint8Array(bytes));
 }
 
 function cleanEmailText(value: string) {
@@ -4803,6 +5161,33 @@ function filterCount(
   conversations: AmazonConversation[],
 ) {
   return conversations.filter((conversation) => matchesFilter(conversation, filter)).length;
+}
+
+/** Keeps buyer conversations in the order in which their 24-hour reply window expires. */
+function compareInboxUrgency(left: AmazonConversation, right: AmazonConversation) {
+  const leftClosed = isClosedWorkflow(left);
+  const rightClosed = isClosedWorkflow(right);
+  if (leftClosed !== rightClosed) return leftClosed ? 1 : -1;
+
+  const leftDeadline = responseDeadline(left);
+  const rightDeadline = responseDeadline(right);
+  if (leftDeadline !== rightDeadline) return leftDeadline - rightDeadline;
+  return new Date(left.lastMessageAt).getTime() - new Date(right.lastMessageAt).getTime();
+}
+
+function isClosedWorkflow(conversation: AmazonConversation) {
+  const workflow = workflowStatusOf(conversation);
+  return workflow === "RESUELTO" || workflow === "CERRADO";
+}
+
+function responseDeadline(conversation: AmazonConversation) {
+  const latestInbound = conversation.messages
+    .filter((message) => message.direction === "inbound")
+    .map((message) => new Date(message.receivedAt).getTime())
+    .filter(Number.isFinite)
+    .sort((left, right) => right - left)[0];
+  const receivedAt = latestInbound ?? new Date(conversation.lastMessageAt).getTime();
+  return receivedAt + 24 * 60 * 60 * 1000;
 }
 
 function formatRelative(value: string) {

@@ -34,6 +34,15 @@ type ShippingRulesStore = { rules: ShippingRule[]; catalogs: ShippingRuleCatalog
 type RuleEvaluation = { ruleId: string; ruleName: string; priority: number; matched: boolean; forced: boolean; reasons: string[]; carrier: string; service: string };
 type RuleResolution = { appliedRule: ShippingRule | null; carrier: string; service: string; usedDefault: boolean; evaluations: RuleEvaluation[] };
 type RuleDraft = ShippingRule & { isNew?: boolean };
+type RexRuleDispatch = {
+  reference: string;
+  orderReference: string;
+  pickingName: string;
+  pickingId: number;
+  state: string;
+  destination: { postalCode: string; country: string };
+  lines: Array<{ sku: string; quantity: number }>;
+};
 
 const emptyStore: ShippingRulesStore = { rules: [], catalogs: { channels: [], carriers: [], countries: [] } };
 
@@ -52,6 +61,7 @@ export function ShippingRulesManager() {
   const [diagnosticRef, setDiagnosticRef] = useState("");
   const [diagnosticOrder, setDiagnosticOrder] = useState<Order | null>(null);
   const [diagnostic, setDiagnostic] = useState<RuleResolution | null>(null);
+  const [diagnosticTitle, setDiagnosticTitle] = useState("");
 
   const loadRules = async () => {
     const response = await fetch("/api/shipping/rules");
@@ -178,14 +188,42 @@ export function ShippingRulesManager() {
 
   const diagnose = async (focusRule?: ShippingRule) => {
     setSaving(true);
+    setDiagnostic(null);
+    setDiagnosticOrder(null);
+    setDiagnosticTitle("");
     try {
-      const detail = await odooClient.getOrderDetail(diagnosticRef);
+      const reference = diagnosticRef.trim().toUpperCase();
+      const isRex = /^REX-\d{4}-\d{5,}-\d{2}$/.test(reference);
+      let rexDispatch: RexRuleDispatch | null = null;
+      let orderReference = reference;
+      if (isRex) {
+        const rexResponse = await fetch(`${import.meta.env.BASE_URL}api/incidents/reshipments/resolve?reference=${encodeURIComponent(reference)}`);
+        const rexPayload = await rexResponse.json();
+        if (!rexResponse.ok || !rexPayload.dispatch) throw new Error(rexPayload.message || "No se pudo verificar el albarán REX en TEST");
+        rexDispatch = rexPayload.dispatch as RexRuleDispatch;
+        orderReference = rexDispatch.orderReference;
+      }
+      const detail = await odooClient.getOrderDetail(orderReference);
       if (!detail.order) throw new Error("Pedido no encontrado");
-      setDiagnosticOrder(detail.order);
+      const order = rexDispatch ? {
+        ...detail.order,
+        externalRef: rexDispatch.reference,
+        shippingPostalCode: rexDispatch.destination.postalCode,
+        shippingCountryCode: rexDispatch.destination.country,
+        items: rexDispatch.lines.map((line) => ({
+          sku: line.sku,
+          name: line.sku,
+          quantity: line.quantity,
+          price: 0,
+          stock: 0,
+        })),
+      } : detail.order;
+      setDiagnosticOrder(order);
+      setDiagnosticTitle(rexDispatch ? `Reexpedición ${rexDispatch.reference} · picking ${rexDispatch.pickingName} (#${rexDispatch.pickingId}) · ${rexDispatch.state === "done" ? "salida validada" : "reservada"}` : "");
       const response = await fetch("/api/shipping/rules/diagnose", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ order: mapOrderForRules(detail.order) }),
+        body: JSON.stringify({ order: mapOrderForRules(order) }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.message || "No se pudo probar reglas");
@@ -241,11 +279,11 @@ export function ShippingRulesManager() {
         <div className="settings-demo-head">
           <div><span>PROBAR REGLAS</span><h3>Diagnostico por pedido</h3></div>
           <div className="diagnostic-search">
-            <input onChange={(event) => setDiagnosticRef(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void diagnose(); }} placeholder="S88466 / Amazon / Odoo" value={diagnosticRef} />
+            <input onChange={(event) => setDiagnosticRef(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void diagnose(); }} placeholder="Pedido S88466 o albarán REX-2026-00001-01" value={diagnosticRef} />
             <button className="primary-action" disabled={saving || !diagnosticRef.trim()} onClick={() => void diagnose()} type="button"><PlayCircle size={16} /> Probar reglas</button>
           </div>
         </div>
-        <DiagnosticResult order={diagnosticOrder} resolution={diagnostic} />
+        <DiagnosticResult order={diagnosticOrder} resolution={diagnostic} title={diagnosticTitle} />
       </div>
 
       {editingRule ? (
@@ -334,8 +372,8 @@ function RuleDrawer({ catalogs, disabled, draft, onCancel, onChange, onDelete, o
         <div className="rule-drawer-fields">
           <label>Prioridad<input disabled={disabled || draft.isDefault} inputMode="numeric" onChange={(event) => patch({ priority: Number(event.target.value) || 0 })} value={draft.priority} /></label>
           <label>Nombre<input disabled={disabled} onChange={(event) => patch({ name: event.target.value })} value={draft.name} /></label>
-          <MultiSelect label="Canal" options={catalogs.channels.map((channel) => ({ value: channel, label: channel }))} values={draft.conditions.channels || []} onChange={(channels) => patchConditions({ channels })} />
-          <MultiSelect label="Pais" options={catalogs.countries.map((country) => ({ value: country.code, label: country.label }))} values={draft.conditions.countries || []} onChange={(countries) => patchConditions({ countries })} />
+          <MultiSelect disabled={disabled} label="Canales" options={catalogs.channels.map((channel) => ({ value: channel, label: channel }))} values={draft.conditions.channels || []} onChange={(channels) => patchConditions({ channels })} />
+          <MultiSelect disabled={disabled} label="Países" options={catalogs.countries.map((country) => ({ value: country.code, label: country.label }))} values={draft.conditions.countries || []} onChange={(countries) => patchConditions({ countries })} />
           <label>Codigo postal operador<select disabled={disabled} onChange={(event) => patchConditions({ postalCode: { operator: event.target.value as PostalCodeCondition["operator"], value: postalCode?.value || "" }, postalCodeStartsWith: "" })} value={postalCode?.operator || "matches"}><option value="matches">Coincide con</option><option value="not_matches">No coincide con</option></select></label>
           <label>Codigo postal patron<input disabled={disabled} onChange={(event) => patchConditions({ postalCode: event.target.value ? { operator: postalCode?.operator || "matches", value: event.target.value } : null, postalCodeStartsWith: "" })} placeholder="03, 03*, 07*, 35*, 38*" value={postalCode?.value || ""} /></label>
           <label>Peso desde<input disabled={disabled} inputMode="decimal" onChange={(event) => patchConditions({ weightFromKg: numericOrNull(event.target.value) })} value={draft.conditions.weightFromKg ?? ""} /></label>
@@ -345,8 +383,8 @@ function RuleDrawer({ catalogs, disabled, draft, onCancel, onChange, onDelete, o
           <label>Metodo de envio<input disabled={disabled} onChange={(event) => patchConditions({ shippingMethods: splitValues(event.target.value) })} placeholder="Next Day, Express..." value={(draft.conditions.shippingMethods || []).join(", ")} /></label>
           <label>Transportista<select disabled={disabled} onChange={(event) => { const nextCarrier = catalogs.carriers.find((item) => item.id === event.target.value); patch({ carrier: event.target.value, service: nextCarrier?.services[0]?.id || "" }); }} value={draft.carrier}><option value="">Sin seleccionar</option>{catalogs.carriers.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
           <label>Servicio<select disabled={disabled || !draft.carrier} onChange={(event) => patch({ service: event.target.value })} value={draft.service}><option value="">Sin seleccionar</option>{serviceOptions.map((service) => <option key={service.id} value={service.id}>{service.label}</option>)}</select></label>
-          <label className="odoo-auto-validate"><input checked={draft.forceCarrier} disabled={disabled || draft.isDefault} onChange={(event) => patch({ forceCarrier: event.target.checked })} type="checkbox" /> Forzar transportista</label>
-          <label className="odoo-auto-validate"><input checked={draft.active} disabled={disabled} onChange={(event) => patch({ active: event.target.checked })} type="checkbox" /> Regla activa</label>
+          <div className="rule-switch-row"><SwitchField checked={draft.forceCarrier} disabled={disabled || draft.isDefault} label="Forzar transportista" onChange={(forceCarrier)=>patch({forceCarrier})}/>
+          <SwitchField checked={draft.active} disabled={disabled} label="Regla activa" onChange={(active)=>patch({active})}/></div>
         </div>
         <footer>
           <button className="primary-action" disabled={disabled} onClick={onSave} type="button">Guardar cambios</button>
@@ -359,17 +397,47 @@ function RuleDrawer({ catalogs, disabled, draft, onCancel, onChange, onDelete, o
   );
 }
 
-function MultiSelect({ label, onChange, options, values }: { label: string; onChange: (values: string[]) => void; options: Array<{ value: string; label: string }>; values: string[] }) {
-  return <label>{label}<select multiple onChange={(event) => onChange(Array.from(event.currentTarget.selectedOptions).map((option) => option.value))} value={values}>{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>;
+function MultiSelect({ disabled, label, onChange, options, values }: { disabled?: boolean; label: string; onChange: (values: string[]) => void; options: Array<{ value: string; label: string }>; values: string[] }) {
+  const selected = options.filter((option) => values.includes(option.value));
+  return (
+    <div className="rule-multi-select">
+      <span className="rule-field-label">{label}</span>
+      <details className="rule-select-popover">
+        <summary aria-label={`Elegir ${label.toLowerCase()}`} aria-disabled={disabled}>
+          <span>{selected.length ? selected.map((option) => option.label).join(", ") : `Todos los ${label.toLowerCase()}`}</span>
+          <span className="rule-select-count">{selected.length || "Todos"}</span>
+        </summary>
+        <div className="rule-select-options">
+          {options.map((option) => (
+            <label key={option.value}>
+              <input checked={values.includes(option.value)} disabled={disabled} onChange={(event) => onChange(event.target.checked ? [...values, option.value] : values.filter((value) => value !== option.value))} type="checkbox" />
+              <span>{option.label}</span>
+            </label>
+          ))}
+          {!options.length ? <p>No hay opciones disponibles.</p> : null}
+        </div>
+      </details>
+    </div>
+  );
 }
 
-function DiagnosticResult({ order, resolution }: { order: Order | null; resolution: RuleResolution | null }) {
+function SwitchField({ checked, disabled, label, onChange }: { checked: boolean; disabled?: boolean; label: string; onChange: (checked: boolean) => void }) {
+  return (
+    <button aria-checked={checked} aria-label={label} className={`rule-setting-switch ${checked ? "on" : ""}`} disabled={disabled} onClick={() => onChange(!checked)} role="switch" type="button">
+      <span className="rule-setting-switch-track"><span /></span>
+      <span>{label}</span>
+      <strong>{checked ? "Sí" : "No"}</strong>
+    </button>
+  );
+}
+
+function DiagnosticResult({ order, resolution, title }: { order: Order | null; resolution: RuleResolution | null; title: string }) {
   if (!resolution) return <div className="amazon-history-empty">Selecciona un pedido para ver que reglas se evaluan.</div>;
   const products = order?.items?.map((item) => item.name || item.sku).filter(Boolean) || [];
   return (
     <div className="diagnostic-result">
       <div className="diagnostic-order">
-        <strong>Pedido {order?.id || order?.odooRef}</strong>
+        <strong>{title || `Pedido ${order?.id || order?.odooRef}`}</strong>
         <span>Canal: {order?.channel || "-"}</span><span>Pais: {order?.shippingCountryCode || "-"}</span><span>CP: {order?.shippingPostalCode || "-"}</span><span>Metodo envio: {(order as unknown as { shippingMethod?: string })?.shippingMethod || "-"}</span><span>Productos: {products.length ? products.join(" | ") : "-"}</span>
       </div>
       <div className="diagnostic-evaluations">

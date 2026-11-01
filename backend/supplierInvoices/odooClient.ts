@@ -8,6 +8,8 @@ export type OdooConfig = {
   apiKey: string;
 };
 
+export const ODOO_RPC_TIMEOUT_MS = 30_000;
+
 export function getOdooConfig(env: Record<string, string | undefined>): OdooConfig {
   return {
     url: env.ODOO_URL ?? "",
@@ -21,18 +23,41 @@ export function hasOdooConfig(config: OdooConfig): boolean {
   return Boolean(config.url && config.database && config.username && config.apiKey);
 }
 
-async function rpc(url: string, service: string, method: string, args: unknown[]): Promise<unknown> {
-  const response = await fetch(`${url}/jsonrpc`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", method: "call", params: { service, method, args } }),
-  });
-  const json = (await response.json()) as { error?: unknown; result?: unknown };
-  if (json.error) {
-    const message = JSON.stringify(json.error).slice(0, 400);
-    throw new Error(`Odoo RPC error: ${message}`);
+export async function odooJsonRpc(
+  url: string,
+  service: string,
+  method: string,
+  args: unknown[],
+  timeoutMs = ODOO_RPC_TIMEOUT_MS,
+): Promise<unknown> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  timer.unref?.();
+  try {
+    const response = await fetch(`${url}/jsonrpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "call", params: { service, method, args } }),
+      signal: controller.signal,
+    });
+    const json = (await response.json()) as { error?: unknown; result?: unknown };
+    if (json.error) {
+      const message = JSON.stringify(json.error).slice(0, 400);
+      throw new Error(`Odoo RPC error: ${message}`);
+    }
+    return json.result;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`Odoo no respondió en ${Math.ceil(timeoutMs / 1000)} s; si era un envío, el resultado puede ser incierto. Comprueba el estado antes de reintentar.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-  return json.result;
+}
+
+async function rpc(url: string, service: string, method: string, args: unknown[]): Promise<unknown> {
+  return odooJsonRpc(url, service, method, args);
 }
 
 export async function authenticate(config: OdooConfig): Promise<number> {

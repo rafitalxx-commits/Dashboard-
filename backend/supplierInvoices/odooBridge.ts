@@ -1,3 +1,4 @@
+import { normalizeInvoiceVat, validInvoiceDate } from "../../shared/supplierInvoiceEvidence.ts";
 // Fase 3: puente Dashboard -> Odoo (facturas de proveedor).
 // Crea un BORRADOR de factura (account.move in_invoice) en Odoo desde un documento
 // VALIDADA, y permite contabilizarlo despues. NUNCA escribe si la puerta
@@ -24,12 +25,35 @@ export interface DraftResult {
   message: string;
   warnings: string[];
   taxDetail?: { lineIndex: number; taxId: number; taxName: string; rate: number }[];
-  actual?: { reference: string; dueDate: string | null; base: number; taxes: number; total: number; lines: { productId: number | null; purchaseLineId: number | null; quantity: number; priceUnit: number; base: number; total: number }[] };
+  actual?: { reference: string; dueDate: string | null; base: number; taxes: number; total: number; lines: { description: string; productId: number | null; purchaseLineId: number | null; quantity: number; priceUnit: number; base: number; total: number }[] };
+}
+
+export function quantityMismatchConfirmationMatches(
+  confirmation: { purchaseOrderId: number; productId: number; invoiceQuantity: number; qtyOrdered: number; qtyReceived: number; qtyInvoiced: number; confirmedBy: string; confirmedAt: string; scope: "quantity-discrepancy-not-receipt" } | null | undefined,
+  line: { quantity: number | null; productId?: number | null },
+  source: { qtyOrdered: number; qtyReceived: number; qtyInvoiced: number },
+  purchaseOrderId: number,
+): boolean {
+  return Boolean(confirmation && line.quantity != null
+    && confirmation.scope === "quantity-discrepancy-not-receipt"
+    && confirmation.purchaseOrderId === purchaseOrderId
+    && confirmation.productId === Number(line.productId)
+    && Math.abs(confirmation.invoiceQuantity - line.quantity) < 0.0001
+    && Math.abs(confirmation.qtyOrdered - source.qtyOrdered) < 0.0001
+    && Math.abs(confirmation.qtyReceived - source.qtyReceived) < 0.0001
+    && Math.abs(confirmation.qtyInvoiced - source.qtyInvoiced) < 0.0001
+    && Math.abs(line.quantity - Math.max(0, source.qtyReceived - source.qtyInvoiced)) > 0.0001
+    && Boolean(confirmation.confirmedBy && confirmation.confirmedAt));
 }
 
 /** Puerta de escritura: solo "true" permite crear/contabilizar en Odoo. */
 export function odooWriteEnabled(env: Record<string, string | undefined>): boolean {
   return String(env.SUPPLIER_INVOICES_ODOO_WRITE_ENABLED ?? "false").toLowerCase() === "true";
+}
+
+/** Puerta acotada a crear borradores de facturas proveedor; no autoriza descartar ni contabilizar. */
+export function odooDraftCreationEnabled(env: Record<string, string | undefined>): boolean {
+  return String(env.SUPPLIER_INVOICES_ODOO_DRAFT_CREATE_ENABLED ?? "false").toLowerCase() === "true";
 }
 
 export interface OrderShape {
@@ -258,9 +282,10 @@ export async function resolvePurchaseTax(
 export async function createSupplierDraft(
   config: OdooConfig,
   uid: number,
-  doc: { driveFileId: string; name: string; invoiceBranch?: "goods" | "services" | null; confirmedOdooPartnerId?: number | null; extracted: { supplier: string | null; supplierVat: string | null; invoiceNumber: string | null; invoiceDate: string | null; dueDate: string | null; currency: string | null; base: number | null; taxes: number | null; total: number | null; lines: { productId?: number | null; description: string | null; quantity: number | null; priceUnit: number | null; discount?: number | null; discountExtra?: number | null; promptPaymentDiscount?: number | null; total: number | null; taxNames: string[]; taxId?: number | null; taxAmount?: number | null; accountId?: number | null; sourcePurchaseOrderId?: number | null; genericProductConfirmed?: boolean; pdfPriceVerified?: boolean; qtyReceived?: number | null; qtyInvoiced?: number | null }[] } | null; assignedPurchaseOrderIds: number[] | null; match: { purchaseOrderId: number | null } | null },
+  doc: { driveFileId: string; name: string; invoiceBranch?: "goods" | "services" | null; confirmedOdooPartnerId?: number | null; extracted: { supplier: string | null; supplierVat: string | null; invoiceNumber: string | null; invoiceDate: string | null; dueDate: string | null; currency: string | null; base: number | null; taxes: number | null; total: number | null; lines: { productId?: number | null; description: string | null; quantity: number | null; priceUnit: number | null; discount?: number | null; discountExtra?: number | null; promptPaymentDiscount?: number | null; total: number | null; taxNames: string[]; taxId?: number | null; taxAmount?: number | null; accountId?: number | null; sourcePurchaseOrderId?: number | null; genericProductConfirmed?: boolean; pdfPriceVerified?: boolean; qtyReceived?: number | null; qtyInvoiced?: number | null; quantityMismatchConfirmation?: { purchaseOrderId: number; productId: number; invoiceQuantity: number; qtyOrdered: number; qtyReceived: number; qtyInvoiced: number; confirmedBy: string; confirmedAt: string; scope: "quantity-discrepancy-not-receipt" } | null }[] } | null; assignedPurchaseOrderIds: number[] | null; match: { purchaseOrderId: number | null } | null },
   orders: OrderShape[],
   accountingDate: string,
+  exception?: { allowIncompleteAccounting: true; pending: string[]; reason: string; by: string },
 ): Promise<DraftResult> {
   const ex = doc.extracted;
   if (!ex) return { ok: false, message: "El documento no tiene datos extraidos", warnings: [] };
@@ -272,9 +297,12 @@ export async function createSupplierDraft(
   // se muestran como advertencias para que el borrador pueda revisarse en Odoo.
   const assignedIds = doc.assignedPurchaseOrderIds?.length ? doc.assignedPurchaseOrderIds : [];
   const amountError = draftAmountCompletenessError(base, taxes, total, lines);
-  if (amountError) return { ok: false, message: amountError, warnings: [] };
+  if (amountError && !exception) return { ok: false, message: amountError, warnings: [] };
   const pos = orders.filter((o) => assignedIds.includes(o.id));
-  const warnings: string[] = supplierInvoiceAmountWarnings(base!, taxes!, total!, lines, pos);
+  const warnings: string[] = [
+    ...(exception ? [`Envío con pendientes autorizado por ${exception.by}: ${exception.reason}`, ...exception.pending] : []),
+    ...([base,taxes,total].every(x=>x != null && Number.isFinite(x)) ? supplierInvoiceAmountWarnings(base!, taxes!, total!, lines, pos) : ["Desglose PDF incompleto: terminar en Odoo antes de contabilizar."]),
+  ];
   const services = doc.invoiceBranch === "services";
   const adjustments = lines.filter((line) => isWebAdjustmentProductId(line.productId));
   if (adjustments.length > 1) return { ok: false, message: "Solo se admite un Ajuste Web por factura.", warnings: [] };
@@ -293,16 +321,16 @@ export async function createSupplierDraft(
   if (!partnerId || (!services && pos.some((po) => po.partnerId !== partnerId))) return { ok: false, message: "Confirma un único proveedor existente de Odoo.", warnings: [] };
   const [partner] = await readRows(config, uid, "res.partner", [partnerId], ["active", "vat"]);
   if (!partner || partner.active === false) return { ok: false, message: "El proveedor confirmado no está activo en Odoo.", warnings: [] };
-  const docVat = String(ex.supplierVat ?? "").replace(/[^A-Z0-9]/gi, "").replace(/^ES/i, "");
-  const partnerVat = String(partner.vat ?? "").replace(/[^A-Z0-9]/gi, "").replace(/^ES/i, "");
+  const docVat = normalizeInvoiceVat(ex.supplierVat).replace(/[^A-Z0-9]/gi, "").replace(/^ES/i, "");
+  const partnerVat = normalizeInvoiceVat(partner.vat).replace(/[^A-Z0-9]/gi, "").replace(/^ES/i, "");
   if (services && docVat && partnerVat && docVat !== partnerVat) return { ok: false, message: "El NIF de la factura no coincide con el proveedor Odoo confirmado.", warnings: [] };
-  if (!ex.invoiceNumber || !ex.invoiceDate) return { ok: false, message: "Faltan número o fecha de factura. Complétalos antes de crear el borrador.", warnings: [] };
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(accountingDate) || Number.isNaN(Date.parse(`${accountingDate}T00:00:00Z`))) return { ok: false, message: "Selecciona una fecha contable válida antes de crear el borrador.", warnings: [] };
+  if (!ex.invoiceNumber || !validInvoiceDate(ex.invoiceDate || "")) return { ok: false, message: "Faltan número o fecha de factura. Complétalos antes de crear el borrador.", warnings: [] };
+  if (!validInvoiceDate(accountingDate)) return { ok: false, message: "Selecciona una fecha contable válida antes de crear el borrador.", warnings: [] };
   const existing = await searchRead(config, uid, "account.move", [["move_type", "=", "in_invoice"], ["partner_id", "=", partnerId], ["ref", "=", ex.invoiceNumber], ["state", "!=", "cancel"]], ["id", "name", "state"], { limit: 1 });
   if (existing.length) return { ok: false, message: `Ya existe en Odoo una factura de este proveedor con referencia ${ex.invoiceNumber} (${existing[0].name ?? existing[0].id}). Revísala antes de crear otra.`, warnings: [] };
 
   // ===== Tasa global (de los importes) para lineas sin nombre de impuesto =====
-  const globalRate = base > 0 ? Math.round((taxes / base) * 10000) / 100 : null;
+  const globalRate = base != null && taxes != null && base > 0 ? Math.round((taxes / base) * 10000) / 100 : null;
   // Pais para el mapeo OSS: campo country de la extraccion o prefijo del NIF (ISS)
   const taxCountry = inferCountry(ex.country ?? null, ex.supplierVat);
 
@@ -331,14 +359,18 @@ export async function createSupplierDraft(
     if (!isAdjustment && !services && !manualAccountLine && !pos.some((po) => po.id === l.sourcePurchaseOrderId && po.lines.some((source) => source.productId === l.productId))) {
       return { ok: false, message: `Línea ${i + 1}: el producto no existe en el pedido de origen confirmado.`, warnings: [] };
     }
-    const sourcePoLines = !isAdjustment && !services && !manualAccountLine ? (livePoLines.get(Number(l.sourcePurchaseOrderId)) ?? []).filter((source) => source.productId === l.productId && (invoiceBeforeReceipt ? source.qtyOrdered : source.qtyReceived) - source.qtyInvoiced + 0.0001 >= Number(l.quantity ?? 0)) : [];
+    const matchingPoLines = !isAdjustment && !services && !manualAccountLine ? (livePoLines.get(Number(l.sourcePurchaseOrderId)) ?? []).filter((source) => source.productId === l.productId) : [];
+    const confirmedMismatch = matchingPoLines.length === 1 && quantityMismatchConfirmationMatches(
+      l.quantityMismatchConfirmation, l, matchingPoLines[0], Number(l.sourcePurchaseOrderId),
+    );
+    const sourcePoLines = confirmedMismatch ? matchingPoLines : matchingPoLines.filter((source) => (invoiceBeforeReceipt ? source.qtyOrdered : source.qtyReceived) - source.qtyInvoiced + 0.0001 >= Number(l.quantity ?? 0));
     if (!isAdjustment && !services && !manualAccountLine && sourcePoLines.length !== 1) {
       return { ok: false, message: `Línea ${i + 1}: no hay una única línea de compra para este producto en el pedido confirmado. Revisa la asociación antes de crear el borrador.`, warnings: [] };
     }
-    if (!isAdjustment && (!l.taxId || !l.accountId || l.taxAmount == null)) {
+    if (!exception && !isAdjustment && (!l.taxId || !l.accountId || l.taxAmount == null)) {
       return { ok: false, message: `Línea ${i + 1}: confirma impuesto, cuota y cuenta contable antes de crear el borrador.`, warnings: [] };
     }
-    if (!invoiceBeforeReceipt && !isAdjustment && !services && !manualAccountLine && l.quantity != null) {
+    if (!invoiceBeforeReceipt && !confirmedMismatch && !isAdjustment && !services && !manualAccountLine && l.quantity != null) {
       const availableReceived = sourcePoLines[0].qtyReceived - sourcePoLines[0].qtyInvoiced;
       if (l.quantity > availableReceived + 0.0001) {
         return { ok: false, message: `Línea ${i + 1}: recepción incompleta. Factura ${l.quantity}, disponible recibido sin facturar ${Math.max(0, availableReceived)}.`, warnings: [] };
@@ -356,7 +388,7 @@ export async function createSupplierDraft(
     // genuinely tax-free adjustments tax-free when no tax quota was confirmed.
     let taxId: number | null = isAdjustment && !l.taxAmount ? null : (l.taxId ?? null);
     let taxName: string | null = null;
-    if (!isAdjustment && !taxId && lineRate != null && lineRate > 0) {
+    if (!exception && !isAdjustment && !taxId && lineRate != null && lineRate > 0) {
       const resolved = await resolvePurchaseTax(config, uid, taxCountry, lineRate);
       if (resolved) {
         taxId = resolved.id;
@@ -378,9 +410,18 @@ export async function createSupplierDraft(
       cmd.tax_ids = [[6, 0, []]];
     } else if (l.productId) cmd.product_id = l.productId;
     if (sourcePoLines.length === 1) cmd.purchase_line_id = sourcePoLines[0].id;
-    if (taxId) cmd.tax_ids = [[6, 0, [taxId]]];
+    if (taxId) {
+      const [tax] = await readRows(config, uid, "account.tax", [taxId], ["active", "type_tax_use"]);
+      if (!tax || tax.active === false || tax.type_tax_use !== "purchase") return { ok: false, message: `Línea ${i+1}: impuesto no disponible para compras.`, warnings };
+      cmd.tax_ids = [[6, 0, [taxId]]];
+    } else if (exception) cmd.tax_ids = [[6, 0, []]]; // Missing is not inferred from supplier defaults.
+
     const accountId = l.accountId ?? (isAdjustment ? lines.find((line) => !isWebAdjustmentProductId(line.productId) && line.accountId)?.accountId : null);
-    if (accountId) cmd.account_id = accountId;
+    if (accountId) {
+      const [account] = await readRows(config, uid, "account.account", [accountId], ["deprecated"]);
+      if (!account || account.deprecated === true) return { ok: false, message: `Línea ${i+1}: cuenta contable no disponible.`, warnings };
+      cmd.account_id = accountId;
+    }
     if (isAdjustment && !accountId) return { ok: false, message: "El descuento necesita una cuenta contable de compras confirmada.", warnings: [] };
     odooLines.push([0, 0, cmd]);
   }
@@ -394,7 +435,12 @@ export async function createSupplierDraft(
     invoice_origin: pos.map((o) => o.name).join(", "),
     invoice_line_ids: odooLines,
   };
+  if (ex.currency && !curId) return { ok: false, message: "Moneda no disponible en Odoo.", warnings };
   if (curId) vals.currency_id = curId;
+  if (exception) {
+    const escape = (v: string) => v.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
+    vals.narration = `<p>Pendiente de completar en Odoo. Autorizado por ${escape(exception.by)}: ${escape(exception.reason)}</p><ul>${exception.pending.map(x=>`<li>${escape(x)}</li>`).join('')}</ul>`;
+  }
   if (ex.dueDate) vals.invoice_date_due = ex.dueDate;
 
   const moveId = (await executeKw(config, uid, "account.move", "create", [vals])) as number;
@@ -406,7 +452,7 @@ export async function createSupplierDraft(
     // Odoo 18 exposes the same editable tax widget through tax_totals. Its
     // inverse adjusts the tax journal line and the payable line together.
     // Never change product prices or add a balancing product for a tax delta.
-    if (created && Math.abs(Number(created.amount_tax ?? 0) - taxes) > 0.005) {
+    if (!exception && taxes != null && total != null && created && Math.abs(Number(created.amount_tax ?? 0) - taxes) > 0.005) {
       if (warnings.some((warning) => warning.startsWith("Cuotas de línea"))) {
         warnings.push("Odoo conserva el impuesto calculado por sus líneas porque difiere del importe declarado; revisa y corrige el borrador antes de contabilizar.");
       } else {
@@ -430,7 +476,7 @@ export async function createSupplierDraft(
       }
     }
     const invoiceLineIds = Array.isArray(created?.invoice_line_ids) ? created.invoice_line_ids.map(Number).filter(Number.isFinite) : [];
-    createdLines = invoiceLineIds.length ? await readRows(config, uid, "account.move.line", invoiceLineIds, ["product_id", "purchase_line_id", "quantity", "price_unit", "price_subtotal", "price_total"]) : [];
+    createdLines = invoiceLineIds.length ? await readRows(config, uid, "account.move.line", invoiceLineIds, ["name", "product_id", "purchase_line_id", "quantity", "price_unit", "price_subtotal", "price_total"]) : [];
     readbackComplete = Boolean(created);
     if (created && String(created.ref ?? "") !== ex.invoiceNumber) warnings.push("La referencia de proveedor leída en Odoo no coincide con la factura. Revisa el borrador antes de validarlo.");
     if (created && ex.dueDate && String(created.invoice_date_due ?? "") !== ex.dueDate) warnings.push("El vencimiento leído en Odoo no coincide con el PDF. Revisa el borrador antes de validarlo.");
@@ -445,7 +491,7 @@ export async function createSupplierDraft(
     actual: readbackComplete && created ? {
       reference: String(created.ref ?? ""), dueDate: created.invoice_date_due ? String(created.invoice_date_due) : null,
       base: Number(created?.amount_untaxed ?? 0), taxes: Number(created?.amount_tax ?? 0), total: Number(created?.amount_total ?? 0),
-      lines: createdLines.map((line) => ({ productId: Array.isArray(line.product_id) ? Number(line.product_id[0]) : null,
+      lines: createdLines.map((line) => ({ description: String(line.name ?? ""), productId: Array.isArray(line.product_id) ? Number(line.product_id[0]) : null,
         purchaseLineId: Array.isArray(line.purchase_line_id) ? Number(line.purchase_line_id[0]) : null,
         quantity: Number(line.quantity ?? 0), priceUnit: Number(line.price_unit ?? 0), base: Number(line.price_subtotal ?? 0), total: Number(line.price_total ?? 0) })),
     } : undefined,

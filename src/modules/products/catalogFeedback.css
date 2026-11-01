@@ -1,0 +1,20 @@
+.catalog-action-spinner{display:inline-block;flex:none;vertical-align:middle;animation:catalog-feedback-spin .85s linear infinite}
+@keyframes catalog-feedback-spin{to{transform:rotate(360deg)}}
+.product-drawer .catalog-detail-top{position:sticky;top:-20px;z-index:3;background:#fff;margin:-20px -20px 12px;padding:16px 20px 10px;border-bottom:1px solid #e2e8f0}
+.catalog-detail-feedback{display:grid;gap:8px;margin-top:8px;min-width:0}
+.catalog-detail-feedback:empty{display:none}
+.catalog-detail-feedback p{margin:0;padding:10px 11px;font-size:13px;line-height:1.45;border-radius:9px;overflow-wrap:anywhere;max-height:min(32vh,220px);overflow:auto}
+.catalog-detail-pending{display:flex;align-items:center;gap:8px;background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8}
+.catalog-detail-notice.error{background:#fff1f2;border:1px solid #fecaca;color:#9f1239}
+.catalog-detail-notice.success{background:#ecfdf5;border:1px solid #bbf7d0;color:#166534}
+.catalog-detail-notice.warning{background:#fffbeb;border:1px solid #fde68a;color:#92400e}
+.product-drawer button:disabled,.product-drawer input:disabled,.product-drawer select:disabled{opacity:.6;cursor:not-allowed}
+.product-drawer .location-editor{min-width:0}
+.product-drawer .location-editor select,.product-drawer .location-editor input:not([type=checkbox]){max-width:100%;box-sizing:border-box}
+.product-drawer .location-editor input[type=checkbox]{width:15px;height:15px;flex:none}
+.product-drawer .catalog-detail-notice:focus-visible{outline:3px solid #93c5fd;outline-offset:2px}
+.location-catalog-feedback{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:9px;line-height:1.4;overflow-wrap:anywhere}
+.location-catalog-feedback.pending{background:#eff6ff;color:#1d4ed8}.location-catalog-feedback.error{background:#fff1f2;color:#9f1239}.location-catalog-feedback.success{background:#ecfdf5;color:#166534}
+.product-locations-catalog button:disabled{opacity:.6;cursor:not-allowed}
+@media(prefers-reduced-motion:reduce){.catalog-action-spinner{animation:none}}
+@media(max-width:560px){.product-drawer .drawer-head>strong{margin-left:36px}}

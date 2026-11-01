@@ -464,6 +464,22 @@ export type AmazonGmailImportResult = {
   processMs: number;
 };
 
+export type AmazonMessageTranslationRecord = {
+  translationId: string;
+  conversationId: string;
+  messageId: string;
+  sourceLanguage?: string;
+  targetLanguage: "es";
+  sourceContentHash: string;
+  translatedText: string;
+  provider: "AI" | "ORIGINAL_ES";
+  model?: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  externalSend: false;
+};
+
 export type AmazonOperatorAssignmentRecord = {
   assignmentId: string;
   conversationId: string;
@@ -496,6 +512,7 @@ export type AmazonMessagesStore = {
   schemaVersion: 1;
   conversations: AmazonConversationRecord[];
   messages: AmazonMessageRecord[];
+  messageTranslations: AmazonMessageTranslationRecord[];
   attachments: AmazonAttachmentRecord[];
   templates: AmazonTemplateRecord[];
   knowledgeExamples: AmazonKnowledgeExampleRecord[];
@@ -510,6 +527,8 @@ export type AmazonMessagesStore = {
   statisticsSnapshots: AmazonStatisticsSnapshotRecord[];
   alerts: AmazonAlertRecord[];
   gmailSync?: AmazonGmailSyncState;
+  /** Inicio operativo: lo anterior se conserva como histórico resuelto. */
+  historicalCutoverAt?: string;
 };
 
 export const amazonMessagesSqlSchema = [
@@ -549,6 +568,22 @@ export const amazonMessagesSqlSchema = [
     language text,
     created_at text not null,
     amazon_metadata_json text not null
+  )`,
+  `create table amazon_message_translations (
+    translation_id text primary key,
+    conversation_id text not null references amazon_conversations(conversation_id),
+    message_id text not null references amazon_messages(message_id),
+    source_language text,
+    target_language text not null,
+    source_content_hash text not null,
+    translated_text text not null,
+    provider text not null,
+    model text,
+    created_by text not null,
+    created_at text not null,
+    updated_at text not null,
+    external_send integer not null default 0,
+    unique(message_id, target_language)
   )`,
   `create table amazon_attachments (
     attachment_id text primary key,

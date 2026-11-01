@@ -673,6 +673,55 @@ try {
     message: "test lock released",
   });
 
+  assert.throws(
+    () => repository.resolveHistoricalBacklog(operator),
+    /Permiso insuficiente/,
+    "only an admin may close the initial backlog",
+  );
+  const historicalCutover = repository.resolveHistoricalBacklog(admin, {
+    reason: "Cierre inicial de prueba",
+  });
+  assert.ok(historicalCutover.cutoverAt, "cutover timestamp should persist");
+  assert.ok(historicalCutover.resolved > 0, "open history should be resolved");
+  assert.ok(
+    repository.listConversations(operator).every(
+      (item) => item.workflowStatus === "RESUELTO" || item.workflowStatus === "CERRADO",
+    ),
+    "the current backlog should no longer contain new conversations",
+  );
+  assert.throws(
+    () => repository.resolveHistoricalBacklog(admin),
+    /ya fue cerrado/,
+    "cutover must be idempotent",
+  );
+  const reopenedAfterCutover = await repository.importGmailMessage(admin, {
+    gmailMessageId: "after-cutover-message",
+    gmailThreadId: "thread-after-cutover",
+    rawEmail: `Message-ID: <after-cutover@example.amazon.com>
+X-Space-Notification-Type: BBC_MESSAGE_SENT_TO_MERCHANT
+From: Cliente <buyer-after-cutover@marketplace.amazon.es>
+To: Juanito <juanitoopenclaw@gmail.com>
+Subject: Pedido Amazon 123-4567890-1234567
+Date: ${new Date(Date.now() + 60_000).toUTCString()}
+
+# 123-4567890-1234567:
+1 / Producto test [ASIN: B0CUTOVER]
+
+------------- Message: -------------
+
+Nuevo mensaje posterior al corte.
+
+------------- Finalizar mensaje -------------`,
+  });
+  const reopenedConversation = repository
+    .listConversations(operator)
+    .find((item) => item.conversationId === reopenedAfterCutover.conversationId);
+  assert.equal(
+    reopenedConversation?.workflowStatus,
+    "NUEVO",
+    "a real post-cutover message must reopen its historic conversation as new",
+  );
+
   console.log("Amazon Messages backend tests passed.");
 } finally {
   rmSync(tempDir, { recursive: true, force: true });

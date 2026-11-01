@@ -96,7 +96,7 @@ export function InventoryView({
     setInventories((current) => current.map((item) => item.id === updated.id ? updated : item));
     if (updated.status === "review") onNavigate("review");
   };
-  if (opened) return <>{message && <p className="products-message">{message}</p>}<InventorySession inventory={opened} catalog={catalog.products} locationCatalog={locationCatalog} onClose={closeInventory} onDiscard={(inventoryId) => { setOpened(null); setInventories((current) => current.filter((item) => item.id !== inventoryId)); setMessage("Inventario cancelado. Ningún conteo se ha enviado a Odoo."); onNavigate("new"); }} onPrevious={openedIndex > 0 ? () => setOpened(shown[openedIndex - 1]) : undefined} onNext={openedIndex >= 0 && openedIndex < shown.length - 1 ? () => setOpened(shown[openedIndex + 1]) : undefined} readOnly={screen === "history"} returnLabel={labels[screen]} onMessage={setMessage} /></>;
+  if (opened) return <>{message && <p className="products-message">{message}</p>}<InventorySession key={opened.id} inventory={opened} catalog={catalog.products} locationCatalog={locationCatalog} onClose={closeInventory} onDiscard={(inventoryId) => { setOpened(null); setInventories((current) => current.filter((item) => item.id !== inventoryId)); setMessage("Inventario cancelado. Ningún conteo se ha enviado a Odoo."); onNavigate("new"); }} onPrevious={openedIndex > 0 ? () => setOpened(shown[openedIndex - 1]) : undefined} onNext={openedIndex >= 0 && openedIndex < shown.length - 1 ? () => setOpened(shown[openedIndex + 1]) : undefined} readOnly={screen === "history"} returnLabel={labels[screen]} onMessage={setMessage} /></>;
   return (
     <section className="inventory-view">
       <header className="products-header">
@@ -198,13 +198,13 @@ function InventoryCreate({
   const suppliers = useMemo(
     () =>
       [
-        ...new Set(catalog.flatMap((product) => product.supplierNames || [])),
+        ...new Set(catalog.filter((product) => !product.isKit).flatMap((product) => product.supplierNames || [])),
       ].sort((a, b) => a.localeCompare(b, "es")),
     [catalog],
   );
   const matches = useMemo(
     () =>
-      catalog
+      catalog.filter((product) => !product.isKit)
         .filter(
           (product) =>
             !query ||
@@ -233,8 +233,8 @@ function InventoryCreate({
           ? { mode: "all" }
         : type === "supplier"
           ? { mode: "filtered", supplier }
-          : selectedIds.length
-            ? { mode: "ids", ids: selectedIds }
+          : selectedIds.some((id) => catalog.some((product) => product.id === id && !product.isKit))
+            ? { mode: "ids", ids: selectedIds.filter((id) => catalog.some((product) => product.id === id && !product.isKit)) }
             : { mode: "filtered", query, supplier };
     const scope: InventoryScope = {
       type,
@@ -345,7 +345,7 @@ function InventoryCreate({
             />
           </label>
           <div className="inventory-picker-actions">
-            <small>{selectedIds.length} productos seleccionados</small>
+            <small>{selectedIds.filter((id) => catalog.some((product) => product.id === id && !product.isKit)).length} productos seleccionados</small>
             <button onClick={selectMatches} type="button">Seleccionar visibles</button>
             {selectedIds.length > 0 && <button onClick={() => setSelectedIds([])} type="button">Limpiar</button>}
           </div>
@@ -555,6 +555,7 @@ function InventorySession({ inventory: initial, catalog, locationCatalog, onClos
       // break the React screen.
       const found = catalog.find((item) => [item.reference, item.barcode, item.id].some((value) => String(value ?? "").trim().toLocaleLowerCase() === normalized));
       if (!found) { feedback(false); return onMessage(`No se encontró el producto “${code}”`); }
+      if (found.isKit) { feedback(false); return onMessage("No se pueden contar kits ni productos fabricados; cuenta sus componentes"); }
       if (!activeLocation) { feedback(false); return onMessage("Primero escanea una ubicación"); }
       const zoneProducts = inventory.scope.plannedProductIdsByLocation?.[activeLocation];
       if (!inventory.plannedProductIds.includes(found.id) || (zoneProducts && !zoneProducts.includes(found.id))) { feedback(false); return onMessage("Producto fuera del alcance de esta ubicación"); }
@@ -602,7 +603,7 @@ function InventorySession({ inventory: initial, catalog, locationCatalog, onClos
   };
   const finish = async () => { try { const updated = await odooClient.inventoryAction(inventory.id, "review"); onClose(updated); } catch (error) { onMessage(error instanceof Error ? error.message : "No se pudo finalizar"); } };
   const rows = catalog.filter((item) => inventory.plannedProductIds.includes(item.id));
-  const activeLocationProducts = rows.filter((item) => {
+  const activeLocationProducts = rows.filter((item) => !item.isKit).filter((item) => {
     const zoneProducts = inventory.scope.plannedProductIdsByLocation?.[activeLocation];
     const matchesZone = inventory.scope.type === "locations"
       ? (item.physicalLocations || []).some((code) => code.toUpperCase() === activeLocation)
@@ -703,6 +704,10 @@ function InventoryReview({ inventory, catalog, onClose, onPrevious, onNext, read
   const entriesFor = (id: number) => effectiveCounts.filter((item) => item.productId === id);
   const totals = (id: number) => entriesFor(id).reduce((sum, item) => sum + item.quantity, 0);
   const counted = new Set(effectiveCounts.map((item) => item.productId)).size; const differences = catalog.filter((item) => totals(item.id) !== item.onHand).length;
+  const manufacturedCountNames = [...new Set(effectiveCounts.flatMap((count) => {
+    const item = catalog.find((product) => product.id === count.productId);
+    return item?.isKit ? [item.name] : [];
+  }))];
   const filteredCatalog = useMemo(() => {
     const normalized = productQuery.trim().toLocaleLowerCase();
     if (!normalized) return catalog;
@@ -716,5 +721,5 @@ function InventoryReview({ inventory, catalog, onClose, onPrevious, onNext, read
   const startRecount = async () => { if (!recountIds.length) return onMessage("Selecciona al menos un producto para recontar"); try { onUpdate(await odooClient.startInventoryRecount(inventory.id, recountIds)); } catch (error) { onMessage(error instanceof Error ? error.message : "No se pudo abrir el reconteo"); } };
   const navigation = <nav className="inventory-detail-nav" aria-label="Navegación de inventarios"><button onClick={() => onClose(inventory)} type="button"><ArrowLeft size={16}/> Volver a {returnLabel}</button><span>{onPrevious && <button aria-label="Inventario anterior" onClick={onPrevious} type="button"><ChevronLeft size={18}/></button>}{onNext && <button aria-label="Inventario siguiente" onClick={onNext} type="button"><ChevronRight size={18}/></button>}</span></nav>;
   const isFinal = inventory.status === "finalized";
-  return <section className="inventory-review">{navigation}<header><p className="eyebrow">{readOnly ? "HISTORIAL DE INVENTARIO" : isFinal ? "INVENTARIO FINALIZADO" : "REVISIÓN DEL INVENTARIO"}</p><h1>{inventory.name}</h1><p>{catalog.length} previstos · {counted} contados · {catalog.length - counted} pendientes · {differences} con diferencias</p></header>{readOnly ? <p className="inventory-locked-note"><LockKeyhole size={16}/> Consulta histórica: las cantidades no se pueden modificar desde esta vista.</p> : inventory.status === "review" && <p className="inventory-locked-note"><LockKeyhole size={16}/> Conteo bloqueado tras finalizar. Selecciona productos y abre un reconteo si necesitas corregirlos.</p>}{isFinal && <p className="inventory-odoo-status"><Check size={16}/> Enviado a Odoo {inventory.sentAt ? new Date(inventory.sentAt).toLocaleString("es-ES") : ""} · {inventory.odooResults?.filter((result) => result.changed).length || 0} diferencias aplicadas.</p>}<div className="inventory-review-toolbar"><label><Search size={16}/><input value={productQuery} onChange={(event) => { setProductQuery(event.target.value); setProductPage(1); }} placeholder="Buscar producto en este inventario" /></label><small>{filteredCatalog.length} productos</small></div><div className="table-scroll"><table><thead><tr>{inventory.status === "review" && !readOnly && <th>Recontar</th>}<th>Referencia</th><th>Producto</th><th>Ubicación/es</th><th>Stock Odoo</th><th>Contado</th><th>Diferencia</th><th>Operario</th></tr></thead><tbody>{visibleProducts.map((item) => { const entries = entriesFor(item.id); const total = totals(item.id); const selected = recountIds.includes(item.id); return <tr key={item.id}>{inventory.status === "review" && !readOnly && <td><input aria-label={`Seleccionar ${item.name} para reconteo`} checked={selected} onChange={() => setRecountIds((current) => selected ? current.filter((id) => id !== item.id) : [...current, item.id])} type="checkbox" /></td>}<td>{item.reference}</td><td>{item.name}</td><td>{entries.map((entry) => entry.locationCode).join(", ") || "Pendiente"}</td><td>{item.onHand}</td><td>{entries.length ? total : "—"}</td><td>{entries.length ? total - item.onHand : "—"}</td><td>{entries[0]?.operator.name || "—"}</td></tr>; })}</tbody></table></div><InventoryPagination page={safeProductPage} pages={productPages} onPage={setProductPage} />{!readOnly && inventory.status !== "finalized" && <div className="inventory-final-actions">{inventory.status === "review" ? <><button className="secondary-button" disabled={!recountIds.length} onClick={() => void startRecount()} type="button"><RotateCcw size={16}/> Abrir reconteo ({recountIds.length})</button><label>Operario que valida<input value={actionOperator} onChange={(event) => setActionOperator(event.target.value)} placeholder="Nombre o código"/></label><button className="primary-button" onClick={() => void validate()} type="button">Validar inventario</button></> : <><label>Operario que envía a Odoo<input value={actionOperator} onChange={(event) => setActionOperator(event.target.value)} placeholder="Nombre o código"/></label><button className="primary-button inventory-send-odoo" onClick={() => void sendToOdoo()} type="button">Finalizar y enviar a Odoo</button></>}<button className="secondary-button" onClick={() => onClose(inventory)} type="button">Volver</button></div>}</section>;
+  return <section className="inventory-review">{navigation}<header><p className="eyebrow">{readOnly ? "HISTORIAL DE INVENTARIO" : isFinal ? "INVENTARIO FINALIZADO" : "REVISIÓN DEL INVENTARIO"}</p><h1>{inventory.name}</h1><p>{catalog.length} previstos · {counted} contados · {catalog.length - counted} pendientes · {differences} con diferencias</p></header>{readOnly ? <p className="inventory-locked-note"><LockKeyhole size={16}/> Consulta histórica: las cantidades no se pueden modificar desde esta vista.</p> : inventory.status === "review" && <p className="inventory-locked-note"><LockKeyhole size={16}/> Conteo bloqueado tras finalizar. Selecciona productos y abre un reconteo si necesitas corregirlos.</p>}{manufacturedCountNames.length > 0 && !isFinal && <p className="inventory-locked-note"><LockKeyhole size={16}/> Hay conteos guardados de kits o productos fabricados ({manufacturedCountNames.join(", ")}). Se conservan para revisión, pero no se enviará ningún cambio de este inventario a Odoo.</p>}{isFinal && <p className="inventory-odoo-status"><Check size={16}/> Enviado a Odoo {inventory.sentAt ? new Date(inventory.sentAt).toLocaleString("es-ES") : ""} · {inventory.odooResults?.filter((result) => result.changed).length || 0} diferencias aplicadas.</p>}<div className="inventory-review-toolbar"><label><Search size={16}/><input value={productQuery} onChange={(event) => { setProductQuery(event.target.value); setProductPage(1); }} placeholder="Buscar producto en este inventario" /></label><small>{filteredCatalog.length} productos</small></div><div className="table-scroll"><table><thead><tr>{inventory.status === "review" && !readOnly && <th>Recontar</th>}<th>Referencia</th><th>Producto</th><th>Ubicación/es</th><th>Stock Odoo</th><th>Contado</th><th>Diferencia</th><th>Operario</th></tr></thead><tbody>{visibleProducts.map((item) => { const entries = entriesFor(item.id); const total = totals(item.id); const selected = recountIds.includes(item.id); return <tr key={item.id}>{inventory.status === "review" && !readOnly && <td>{item.isKit ? <small title="Los kits y productos fabricados no se pueden recontar">No aplicable</small> : <input aria-label={`Seleccionar ${item.name} para reconteo`} checked={selected} onChange={() => setRecountIds((current) => selected ? current.filter((id) => id !== item.id) : [...current, item.id])} type="checkbox" />}</td>}<td>{item.reference}</td><td>{item.name}</td><td>{entries.map((entry) => entry.locationCode).join(", ") || "Pendiente"}</td><td>{item.onHand}</td><td>{entries.length ? total : "—"}</td><td>{entries.length ? total - item.onHand : "—"}</td><td>{entries[0]?.operator.name || "—"}</td></tr>; })}</tbody></table></div><InventoryPagination page={safeProductPage} pages={productPages} onPage={setProductPage} />{!readOnly && inventory.status !== "finalized" && <div className="inventory-final-actions">{inventory.status === "review" ? <><button className="secondary-button" disabled={!recountIds.length} onClick={() => void startRecount()} type="button"><RotateCcw size={16}/> Abrir reconteo ({recountIds.length})</button><label>Operario que valida<input value={actionOperator} onChange={(event) => setActionOperator(event.target.value)} placeholder="Nombre o código"/></label><button className="primary-button" onClick={() => void validate()} type="button">Validar inventario</button></> : <><label>Operario que envía a Odoo<input value={actionOperator} onChange={(event) => setActionOperator(event.target.value)} placeholder="Nombre o código"/></label><button className="primary-button inventory-send-odoo" onClick={() => void sendToOdoo()} type="button">Finalizar y enviar a Odoo</button></>}<button className="secondary-button" onClick={() => onClose(inventory)} type="button">Volver</button></div>}</section>;
 }

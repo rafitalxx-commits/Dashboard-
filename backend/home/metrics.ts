@@ -56,14 +56,23 @@ export function isHomeOrderUnprinted(order: HomeOrder) {
   return isHomeOrderChannel(order) && !order.deliveryPrinted && !delivered;
 }
 
-export function hasOdooOutboundDelivery(pickings: Array<{ state?: string; pickingTypeCode?: string }>) {
-  return pickings.some((picking) => picking.pickingTypeCode === "outgoing" && picking.state !== "cancel");
+export function isHomeOrderUnsent(order: HomeOrder) {
+  if (!isHomeOrderChannel(order)) return false;
+  // Pedidos already summarizes its Odoo pickings as "Entregado" only when
+  // every linked delivery is done. Reuse that exact read for Home; printing
+  // and carrier labels do not prove that the Odoo delivery is complete.
+  if (!order.deliveryStatus?.trim()) throw new Error(`Falta el estado de entrega Odoo de ${order.id}`);
+  return normalize(order.deliveryStatus) !== "ENTREGADO";
 }
 
-export function isHomeOrderUnsent(order: HomeOrder, hasOdooDelivery: boolean) {
-  // The Odoo delivery is the shared signal for FBM and Website. Printing and
-  // carrier labels are deliberately irrelevant to this KPI.
-  return isHomeOrderChannel(order) && !hasOdooDelivery;
+export type HomeCatalogProduct = { id: number; onHand: number; isKit: boolean; mto: boolean };
+
+/** Odoo stock at the default stock location, with an assigned physical default zone, excluding manufactured kits and MTO. */
+export function selectHomeNoStockProducts(products: HomeCatalogProduct[], preferredZoneProductIds: Iterable<number>) {
+  const preferred = new Set(preferredZoneProductIds);
+  return products
+    .filter((product) => product.onHand <= 0 && preferred.has(product.id) && !product.isKit && !product.mto)
+    .map((product) => product.id);
 }
 
 export type HomePeriod = "48h" | "day" | "week" | "month";

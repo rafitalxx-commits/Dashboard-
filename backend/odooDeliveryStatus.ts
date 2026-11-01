@@ -50,6 +50,7 @@ export type DashboardLabelEvidence = {
 // expedition ledger and a usable shipment/tracking identity, not its name.
 export function isRecordedDashboardLabel(label: DashboardLabelEvidence) {
   const source = (label.source ?? "").trim().toLowerCase();
+  if (source === "incident-reshipment-label-created") return false;
   return (source === "expeditions-print" || source.endsWith("-label-created")) &&
     Boolean(label.shipmentCode?.trim()) &&
     !label.reissuedAt;

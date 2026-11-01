@@ -1,3 +1,15 @@
+import { createExpeditionReplenishment } from "./backend/expeditionReplenishment/service";
+import { registerExpeditionReplenishmentRoutes } from "./backend/expeditionReplenishment/routes";
+import {assertInternalAutomationNote} from './backend/incidents/automationAuthor';
+import {IncidentChatter} from './backend/incidents/chatter';
+import { enrichIncidentKits } from './backend/incidents/kits';
+import { orderMerchandise } from './backend/incidents/merchandise';
+import { operationalOdooTarget, operationalRexWritable, assertOperationalRexRpc } from './backend/incidents/odooRuntime';
+import { OdooDemoReader } from './backend/incidents/odooDemo';
+import { IncidentOdooStock, ControlledStockExecutor, StockJournal, TEST_TARGET } from './backend/incidents/odooStock';
+import { incidentVolumes } from './backend/incidents/statistics';
+import { searchIncidentCatalog } from "./backend/incidents/catalog";
+import { registerIncidentRoutes } from "./backend/incidents/routes";
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import {
@@ -20,6 +32,7 @@ import { registerGeneiRoutes } from "./backend/genei/routes";
 import { registerMrwRoutes } from "./backend/mrw/routes";
 import { registerCorreosExpressRoutes } from "./backend/correosExpress/routes";
 import { registerDhlRoutes } from "./backend/dhl/routes";
+import { registerGlsRoutes } from "./backend/gls/routes";
 import { registerShippingRulesRoutes } from "./backend/shippingRules/routes";
 import { registerPrestashopRoutes } from "./backend/prestashop/routes";
 import { registerPublicTrackingRoutes } from "./backend/publicTracking/routes";
@@ -34,12 +47,15 @@ import {
   isCompleteExpeditionOrderReference,
 } from "./backend/expeditionOrderReference";
 import { formatOdooMadrid } from "./backend/odooDateTime";
-import { groupShipmentLabels, hasOdooOutboundDelivery, isHomeOrderChannel, isHomeOrderUnprinted, isHomeOrderUnsent, labelReferences, periodBounds, type HomePeriod, type ShippingLabel } from "./backend/home/metrics";
+import { groupShipmentLabels, isHomeOrderUnprinted, isHomeOrderUnsent, labelReferences, periodBounds, selectHomeNoStockProducts, type HomePeriod, type ShippingLabel } from "./backend/home/metrics";
+import { buildHomeComparison, buildHomeComparisonRange, buildHomeComparisonRolling48h, comparisonBounds, comparisonChannel, parseOdooUtc, type SentSale } from "./backend/home/comparison";
 import {
   createProductCatalog,
   formatCatalogProductName,
 } from "./backend/products/catalog";
+import { withCatalogLocations } from "./backend/products/catalogLocations";
 import { createProductInventories } from "./backend/products/inventories";
+import { createCustomerReturnSync } from "./backend/products/customerReturnSync";
 import { createProductLocations, parseLocationCode } from "./backend/products/locations";
 import { createPendingReceipts } from "./backend/receptions/pendingReceipts";
 import { chooseSupplierPrice, type SupplierPriceRow } from "./backend/purchases/supplierPricing";
@@ -85,6 +101,7 @@ type OdooPickingRecord = {
   state?: string;
   printed?: boolean;
   scheduled_date?: string | false;
+  create_date?: string | false;
   origin?: string;
   date_done?: string | false;
   move_ids_without_package?: number[];
@@ -453,11 +470,15 @@ const readOnlyModels = new Set([
   "sale.order.line",
   "stock.picking",
   "stock.location",
+  "stock.warehouse",
+  "stock.picking.type",
   "stock.move",
   "purchase.order",
   "purchase.order.line",
   "mail.message",
   "res.partner",
+  "res.company",
+  "res.country",
   "product.product",
   "product.category",
   "product.supplierinfo",
@@ -484,6 +505,34 @@ export default defineConfig(({ mode }) => {
   // Keep supplier-invoice write gates under systemd control even if a stale
   // local env file contains different values.
   for (const key of [
+    "DASHBOARD_DATA_DIR",
+    "DASHBOARD_AUTH_STORE",
+    "DASHBOARD_DEV_BYPASS_AUTH",
+    "INCIDENTS_ODOO_WRITE_ENABLED",
+    "INCIDENTS_ODOO_READ_ENABLED",
+    "INCIDENTS_ODOO_MODE",
+    "INCIDENTS_REX_WRITE_ENABLED",
+    "INCIDENTS_DOCUMENTS_WRITE_ENABLED",
+    "INCIDENTS_OPERATIONAL_WORKFLOW_ENABLED",
+    "INCIDENTS_DATA_DIR",
+    "INCIDENTS_GOOGLE_ACCOUNT",
+    "INCIDENTS_GOOGLE_TOKENS_PATH",
+    "INCIDENTS_GOOGLE_CLIENT_PATH",
+    "INCIDENTS_DRIVE_ROOT_ID",
+    "INCIDENTS_LEDGER_DATA_DIR",
+    "INCIDENTS_TEST_EXTERNAL_EFFECTS_ISOLATED",
+    "INCIDENTS_ODOO_URL",
+    "INCIDENTS_ODOO_DATABASE",
+    "INCIDENTS_ODOO_USERNAME",
+    "INCIDENTS_ODOO_API_KEY",
+    "CREDENTIALS_DIRECTORY",
+    "INCIDENTS_ODOO_APPROVED_DIGEST",
+    "INCIDENTS_ODOO_APPROVED_OPERATION",
+    "INCIDENTS_SHEETS_WRITE_ENABLED",
+    "INCIDENTS_DRIVE_WRITE_ENABLED",
+    "INCIDENTS_SPREADSHEET_ID",
+    "SUPPLIER_INVOICES_AUTOMATION_ENABLED",
+    "SUPPLIER_INVOICES_AUTOMATION_TOKEN_SHA256",
     "SUPPLIER_INVOICES_ODOO_WRITE_ENABLED",
     "SUPPLIER_INVOICES_ODOO_ALLOWED_FILE_ID",
     "SUPPLIER_INVOICES_DRIVE_WRITE_ENABLED",
@@ -512,6 +561,12 @@ function odooReadOnlyApi(env: Record<string, string>) {
   return {
     name: "odoo-read-only-api",
     configureServer(server) {
+      // Same isolated API works through Caddy's stripped public prefix and directly in local QA.
+      server.middlewares.use((request, _response, next) => {
+        const base = server.config.base;
+        if (base !== "/" && request.url?.startsWith(base + "api/")) request.url = request.url.slice(base.length - 1);
+        next();
+      });
       const auth = createAuthRepository(env);
       const tasks = createTaskRepository(env);
       const calendar = createCalendarRepository(env);
@@ -519,10 +574,42 @@ function odooReadOnlyApi(env: Record<string, string>) {
       const productLocations = createProductLocations({
         dataDir: env.DASHBOARD_DATA_DIR,
       });
+      // Review snapshots are confined to LAB. Production always reads catalog images normally.
+      const replenishmentPreviewFile = join(env.DASHBOARD_DATA_DIR || ".dashboard-data", "expedition-replenishment-lab-preview.json");
+      const replenishmentPreview = server.config.base.includes("lab") && existsSync(replenishmentPreviewFile)
+        ? JSON.parse(readFileSync(replenishmentPreviewFile, "utf8")) as { capturedAt: string; images: Record<string, string> }
+        : null;
+      registerExpeditionReplenishmentRoutes(server, auth,
+        createExpeditionReplenishment(productLocations, productCatalog),
+        (ids) => replenishmentPreview
+          ? Promise.resolve(Object.fromEntries(ids.filter((id) => replenishmentPreview.images[id]).map((id) => [id, replenishmentPreview.images[id]])))
+          : productCatalog.images(ids), replenishmentPreview?.capturedAt);
+      const customerReturnSync = createCustomerReturnSync({
+        locations: productLocations,
+        read: async () => {
+          const config = getOdooConfig(env); const uid = await authenticate(config);
+          return async (model, args, kwargs) => {
+            if (!["stock.location", "stock.move", "product.product", "uom.uom"].includes(model)) throw new Error("Modelo fuera de lectura de devoluciones");
+            return rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, "search_read", args, kwargs]);
+          };
+        },
+      });
+      // Persist the cutover even with polling disabled, so a restart before the
+      // first catalog refresh cannot lose returns received since deployment.
+      try { customerReturnSync.start(); }
+      catch (error) { console.error("Customer return sync cutover not started:", error); }
       let movementSyncInFlight: Promise<unknown> | null = null;
       const syncOdooMovements = (automatic = false) => {
         if (movementSyncInFlight) return movementSyncInFlight.then(() => syncOdooMovements(automatic));
         const work = (async () => {
+          // A return/UoM error must not stop the existing customer-delivery debits.
+          let returnSync: unknown;
+          try { returnSync = await customerReturnSync.sync(); }
+          catch (error) {
+            const message = error instanceof Error ? error.message : "Error sincronizando devoluciones";
+            console.error("Customer return location sync failed:", message);
+            returnSync = { error: message };
+          }
           const state = productLocations.summary().odooMovementSync;
           if (!state) throw new Error("Primero finaliza un inventario para crear la base de ubicaciones");
           const config = getOdooConfig(env); const uid = await authenticate(config);
@@ -543,7 +630,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
           const dateField = automatic ? "write_date" : "date";
           const domain = automatic
             ? ["&", "&", "&", "&", ["state", "=", "done"], [dateField, ">=", since], [dateField, "<=", until], ["location_id", "child_of", rootId], ["location_dest_id.usage", "=", "customer"]]
-            : ["&", ["state", "=", "done"], "&", "&", [dateField, ">=", since], [dateField, "<=", until], "|", ["location_id", "child_of", rootId], ["location_dest_id", "child_of", rootId]];
+            : ["&", ["location_id.usage", "!=", "customer"], "&", ["state", "=", "done"], "&", "&", [dateField, ">=", since], [dateField, "<=", until], "|", ["location_id", "child_of", rootId], ["location_dest_id", "child_of", rootId]];
           const moves: any[] = [];
           for (let offset = 0; ; offset += 1000) {
             const page = await call("stock.move", "search_read", [domain], { fields: ["id", "product_id", "quantity", "product_uom_qty", "location_id", "location_dest_id", "date", "write_date"], order: `${dateField} asc, id asc`, limit: 1000, offset });
@@ -560,7 +647,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
             if (!Number.isInteger(move.id) || !Number.isInteger(productId) || !Number.isFinite(quantity) || quantity <= 0) return [];
             return [{ id: move.id, productId, quantity, direction: destinationIn ? "in" as const : "out" as const }];
           });
-          return productLocations.applyOdooMovements({ moves: mapped, syncedAt, automatic });
+          return { ...productLocations.applyOdooMovements({ moves: mapped, syncedAt, automatic }), returnSync };
         })();
         movementSyncInFlight = work;
         void work.finally(() => { movementSyncInFlight = null; }).catch(() => {});
@@ -590,6 +677,8 @@ function odooReadOnlyApi(env: Record<string, string>) {
         return work;
       };
       const homeSalesCache = new Map<string, { expiresAt: number; value: unknown }>();
+      const homeComparisonCacheByRange = new Map<string, { expiresAt: number; value: unknown }>();
+      const homeComparisonPendingByRange = new Map<string, Promise<unknown>>();
       const receptionSessions = createReceptionSessions({
         dataDir: env.DASHBOARD_DATA_DIR,
       });
@@ -607,12 +696,74 @@ function odooReadOnlyApi(env: Record<string, string>) {
           }));
         },
       });
+      const operationalTarget=env.INCIDENTS_ODOO_MODE==='operational'?operationalOdooTarget(env):undefined;
+      const incidentsTest = !operationalTarget&&env.INCIDENTS_ODOO_READ_ENABLED === 'true' ? new OdooDemoReader(env) : undefined;
+      const incidentCall = async (model:string,method:string,args:unknown[],kwargs:Record<string,unknown>={}) => {
+        if (incidentsTest) return incidentsTest.read(model,method,args,kwargs);
+        const config=getOdooConfig(env);const uid=await authenticate(config);
+        return executeKw(config,uid,model,method,args,kwargs);
+      };
+      const operationalWrite=async(model:string,method:string,args:unknown[],kwargs:Record<string,unknown>={})=>{
+        assertOperationalRexRpc(env,operationalTarget||'',model,method,args);
+        if(method==='message_post')await assertInternalAutomationNote(incidentCall,kwargs);
+        const config=getOdooConfig(env),uid=await authenticate(config);
+        return rpc(config.url,'object','execute_kw',[config.database,uid,config.apiKey,model,method,args,{...kwargs,context:{...((kwargs.context||{}) as object),mail_create_nosubscribe:true,mail_create_nolog:true,mail_notrack:true,tracking_disable:true,mail_notify_force_send:false,mail_post_autofollow:false}}]);
+      };
+      const incidentTarget=operationalTarget||TEST_TARGET;
+      const incidentWrite=operationalTarget?operationalWrite:incidentsTest?.controlledWrite.bind(incidentsTest);
+      registerIncidentRoutes(server, auth, env, {
+        odoo: incidentWrite ? {
+          mode: operationalTarget?'operational':'test',target:incidentTarget,
+          stock: new IncidentOdooStock(incidentCall,incidentTarget),
+          executor: new ControlledStockExecutor(incidentCall,incidentWrite,new StockJournal(env.INCIDENTS_DATA_DIR||env.DASHBOARD_DATA_DIR||'.dashboard-data',operationalTarget?'operational':'test'),env,new IncidentChatter(incidentCall,incidentWrite,env.INCIDENTS_DATA_DIR||env.DASHBOARD_DATA_DIR||'.dashboard-data')),
+          inspect: operationalTarget ? async()=>({target:operationalTarget,mode:'operational',readOnly:true,writesEnabled:operationalRexWritable(env,operationalTarget),companies:await incidentCall('res.company','search_read',[[]],{fields:['id','name'],limit:20})}) : () => incidentsTest!.inspect(),
+          read: incidentCall,
+          isolate: incidentsTest ? incidentsTest.isolated.bind(incidentsTest) : undefined,
+        } : undefined,
+        catalog: async (query, id) => {
+          return searchIncidentCatalog((model, method, args, kwargs) => incidentCall(model, method, args, kwargs), query, id);
+        },
+        lookup: async (query) => {
+          const call = (model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) => incidentCall(model, method, args, kwargs);
+          const found = await call("sale.order", "search_read", [["|", "|", ["name", "=", query], ["client_order_ref", "=", query], ["picking_ids.carrier_tracking_ref", "=", query]]], {fields:["id","name","client_order_ref","date_order","partner_id","partner_shipping_id","team_id","amount_untaxed","company_id"],limit:2}) as any[];
+          if (found.length !== 1) throw new Error(found.length ? "Coincide con varios pedidos; concreta la referencia" : "Pedido no encontrado");
+          const order = found[0];
+          const recipientId=order.partner_shipping_id?.[0]||order.partner_id?.[0];
+          const recipients=await call('res.partner','read',[[recipientId]],{fields:['name','street','street2','zip','city','country_id','phone','mobile','email']}) as any[];
+          if(recipients.length!==1)throw Error('No se pudo verificar el destinatario de envío');const recipient=recipients[0];
+          const countries=recipient.country_id?.[0]?await call('res.country','read',[[recipient.country_id[0]]],{fields:['code']}) as any[]:[];
+          const shippingDestination={name:String(recipient.name||''),address:[recipient.street,recipient.street2].filter(Boolean).join(' '),postalCode:String(recipient.zip||''),city:String(recipient.city||''),country:String(countries[0]?.code||''),phone:String(recipient.mobile||recipient.phone||''),email:String(recipient.email||'')};
+          const lines = await call("sale.order.line", "search_read", [[["order_id","=",order.id],["display_type","=",false]]], {fields:["product_id","name","product_uom_qty","price_unit","discount"],limit:500}) as any[];
+          const ids = [...new Set(lines.map(l => l.product_id?.[0]).filter(Boolean))];
+          const products = ids.length ? await call("product.product","read",[ids],{fields:["id","default_code","name","standard_price","type"]}) as any[] : [];
+          const goods=orderMerchandise(lines,products).map(p=>({...p,imageUrl:`${server.config.base === "/" ? "" : server.config.base.replace(/\/$/, "")}/api/incidents/product-image?id=${p.productId}`}));
+          const merchandise=await enrichIncidentKits(call,order.id,Number(order.company_id?.[0]),lines,goods,server.config.base === "/" ? "" : server.config.base.replace(/\/$/, ""));
+          const picking = await call("stock.picking","search_read",[[["sale_id","=",order.id],["picking_type_id.code","=","outgoing"]]],{fields:["carrier_tracking_ref","carrier_id","state"],order:"id desc",limit:1}) as any[];
+          const labels = readHomeShippingLabels({...env,DASHBOARD_DATA_DIR:env.INCIDENTS_LEDGER_DATA_DIR || env.DASHBOARD_DATA_DIR}) as any[];
+          const label = (incidentsTest ? [] : labels).filter(l => [l.odooOrderRef,l.externalOrderRef,...(l.orderRefs||[])].includes(order.name)).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+          return {source:"odoo" as const,order:{shippingDestination,odooId:order.id,odooReference:order.name,channelReference:order.client_order_ref||"",channel:order.team_id?.[1]||"Sales",customerName:order.partner_id?.[1]||"",orderDate:String(order.date_order).replace(" ","T")+"Z",shippedAt:label?.createdAt||undefined,saleWithoutTax:Number(order.amount_untaxed),carrier:label?.shipper||picking[0]?.carrier_id?.[1]||"",tracking:label?.tracking||picking[0]?.carrier_tracking_ref||"",preparedBy:label?.operator||label?.user||""},products:merchandise,excludedServiceCount:lines.filter(l=>products.some(p=>p.id===l.product_id?.[0]&&p.type==='service')).length};
+        },
+        image: async (id) => {
+          const products=await incidentCall("product.product","read",[[id]],{fields:["image_128"]}) as any[];
+          if(!products[0]?.image_128)throw new Error("El producto no tiene imagen");
+          return Buffer.from(products[0].image_128,"base64");
+        },
+        statistics: async (from,to,channel) => {
+          const start=new Date(from+"T00:00:00");const end=new Date(Math.min(Date.now(),new Date(to+"T23:59:59.999").getTime()));
+          const domain:any[]=[["state","in",["sale","done"]],["date_order",">=",start.toISOString().slice(0,19).replace("T"," ")],["date_order","<=",end.toISOString().slice(0,19).replace("T"," ")]];
+          if(channel){const teams=await incidentCall("crm.team","search_read",[[["name","=",channel]]],{fields:["id"],limit:10}) as any[];if(!teams.length)throw new Error("Canal no reconocido en Odoo");domain.push(["team_id","in",teams.map(t=>t.id)]);}
+          const rows=await incidentCall("sale.order","read_group",[domain,["amount_untaxed:sum"],[]],{lazy:false}) as any[];
+          const labels=(readHomeShippingLabels({...env,DASHBOARD_DATA_DIR:env.INCIDENTS_LEDGER_DATA_DIR || env.DASHBOARD_DATA_DIR}) as any[]).filter(l=>{const date=new Date(l.createdAt||"");return Boolean(l.tracking)&&date>=start&&date<=end;});
+          return {salesWithoutTax:Number(rows[0]?.amount_untaxed||0),salesSource:"sale.order.amount_untaxed · sale/done · misma base que Inicio",range:{from,to},...incidentVolumes(incidentsTest ? [] : labels,channel)};
+        }
+      });
       registerQzSigningRoutes(server, auth, env);
       registerPublicTrackingRoutes(server, env);
       registerGeneiRoutes(server, auth, env);
       registerMrwRoutes(server, auth, env);
       registerCorreosExpressRoutes(server, auth, env);
       registerDhlRoutes(server, auth, env);
+      registerGlsRoutes(server, auth, env);
       registerExpeditionsSettingsRoutes(server, auth, {
         dataDir: env.DASHBOARD_DATA_DIR,
       });
@@ -818,34 +969,14 @@ function odooReadOnlyApi(env: Record<string, string>) {
               return;
             }
             if (request.method === "POST" && url.pathname === "/sync") {
+              const returnSync = await customerReturnSync.sync();
               const rawCatalog = await productCatalog.sync(
                 url.searchParams.get("full") === "true",
               );
-              const locs = productLocations.summary().locations;
               sendJson(response, 200, {
                 ...rawCatalog,
-                products: rawCatalog.products.map((product: any) => {
-                  const productLocs = locs.filter(
-                    (loc: any) => loc.productId === product.id,
-                  );
-                  const preferred = productLocs.find(
-                    (loc: any) => loc.preferred,
-                  );
-                  return {
-                    ...product,
-                    physicalLocations: productLocs.map((loc: any) => loc.code),
-                    locationSummary: {
-                      preferredCode: preferred?.code,
-                      preferredQuantity: preferred?.quantity,
-                      replenishmentMin: preferred?.replenishmentMin,
-                      needsReplenishment: Boolean(
-                        preferred &&
-                        preferred.replenishmentMin !== undefined &&
-                        preferred.quantity <= preferred.replenishmentMin,
-                      ),
-                    },
-                  };
-                }),
+                returnSync,
+                products: withCatalogLocations(rawCatalog.products, productLocations.summary().locations),
               });
               return;
             }
@@ -857,28 +988,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
             const locations = productLocations.summary().locations;
             sendJson(response, 200, {
               ...catalog,
-              products: catalog.products.map((product) => {
-                const productLocations = locations.filter(
-                  (item) => item.productId === product.id,
-                );
-                const preferred = productLocations.find(
-                  (item) => item.preferred,
-                );
-                return {
-                  ...product,
-                  physicalLocations: productLocations.map((item) => item.code),
-                  locationSummary: {
-                    preferredCode: preferred?.code,
-                    preferredQuantity: preferred?.quantity,
-                    replenishmentMin: preferred?.replenishmentMin,
-                    needsReplenishment: Boolean(
-                      preferred &&
-                      preferred.replenishmentMin !== undefined &&
-                      preferred.quantity <= preferred.replenishmentMin,
-                    ),
-                  },
-                };
-              }),
+              products: withCatalogLocations(catalog.products, locations),
             });
           } catch (error) {
             sendJson(response, 500, {
@@ -937,6 +1047,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
               const payload = await readJsonBody<{ operator?: { id: string; code: string; name: string } }>(request);
               const inventory = productInventories.find(parts[0]);
               if (inventory.status !== "validated") throw new Error("Primero valida el inventario");
+              productInventories.assertNoManufacturedCounts(parts[0]);
               if (!payload.operator?.name?.trim()) throw new Error("Indica el operario que envía a Odoo");
               const config = getOdooConfig(env); const uid = await authenticate(config);
               const call = (model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) => rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
@@ -1255,6 +1366,36 @@ function odooReadOnlyApi(env: Record<string, string>) {
               if (request.method !== "GET") { sendJson(response, 405, { message: "Método no permitido" }); return; }
               const period = parseHomePeriod(url.searchParams.get("period"));
               sendJson(response, 200, { period, ...groupShipmentLabels(readHomeShippingLabels(env), period), updatedAt: new Date().toISOString() });
+              return;
+            }
+            if (url.pathname === "/home/charts/comparison") {
+              if (request.method !== "GET") { sendJson(response, 405, { message: "Método no permitido" }); return; }
+              const refresh = url.searchParams.get("refresh") === "1";
+              const preset = url.searchParams.get("period") || "";
+              const from = url.searchParams.get("from") || "";
+              const to = url.searchParams.get("to") || "";
+              const rolling48h = preset === "48h";
+              const validDay = (value: string) => {
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+                const date = new Date(`${value}T00:00:00Z`);
+                return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+              };
+              const rangeDays = from && to ? (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1 : 0;
+              if ((preset && !rolling48h) || (rolling48h && (from || to)) || Boolean(from) !== Boolean(to) || (from && (!validDay(from) || !validDay(to) || from > to || rangeDays > 3660))) {
+                sendJson(response, 400, { message: "Selecciona un rango de fechas válido" }); return;
+              }
+              const cacheKey = rolling48h ? "48h" : from ? `${from}:${to}` : "default";
+              const cached = homeComparisonCacheByRange.get(cacheKey);
+              if (!refresh && cached && cached.expiresAt > Date.now()) { sendJson(response, 200, cached.value); return; }
+              if (!homeComparisonPendingByRange.has(cacheKey)) {
+                const pending = getOperationalHomeComparison(env, from || undefined, to || undefined, rolling48h).then((value) => {
+                  homeComparisonCacheByRange.set(cacheKey, { expiresAt: Date.now() + 45_000, value });
+                  if (homeComparisonCacheByRange.size > 64) homeComparisonCacheByRange.delete(homeComparisonCacheByRange.keys().next().value!);
+                  return value;
+                }).finally(() => { homeComparisonPendingByRange.delete(cacheKey); });
+                homeComparisonPendingByRange.set(cacheKey, pending);
+              }
+              sendJson(response, 200, await homeComparisonPendingByRange.get(cacheKey));
               return;
             }
             if (url.pathname === "/home/charts/sales") {
@@ -4237,9 +4378,12 @@ async function getOdooOrdersFull(
   );
   const products = productIds.length
     ? ((await executeKwProfiled(profiler, "images", config, uid, "product.product", "read", [productIds], {
-        fields: ["id", "product_tmpl_id", "image_128", "type"],
+        fields: ["id", "name", "display_name", "default_code", "product_tmpl_id", "image_128", "type"],
       })) as ProductRecord[])
     : [];
+  const productNamesById = new Map(
+    products.map((product) => [product.id, formatCatalogProductName(product)]),
+  );
   const productImagesById = new Map(
     products.map((product) => [product.id, formatProductImage(product.image_128)]),
   );
@@ -4307,9 +4451,12 @@ async function getOdooOrdersFull(
         "product.product",
         "read",
         [componentProductIds],
-        { fields: ["id", "image_128"] },
+        { fields: ["id", "name", "display_name", "default_code", "image_128"] },
       )) as ProductRecord[])
     : [];
+  const componentNamesById = new Map(
+    componentProducts.map((product) => [product.id, formatCatalogProductName(product)]),
+  );
   const componentImagesById = new Map(
     componentProducts.map((product) => [
       product.id,
@@ -4424,6 +4571,7 @@ async function getOdooOrdersFull(
               getRelationName(line.product_id) ||
               `Linea ${line.id}`,
             name:
+              productNamesById.get(productId ?? 0) ||
               line.name || getRelationName(line.product_id) || "Sin producto",
             quantity: orderQuantity,
             price: line.price_unit ?? line.price_subtotal ?? 0,
@@ -4437,6 +4585,7 @@ async function getOdooOrdersFull(
                     getRelationName(component.product_id) ||
                     `Componente ${component.id}`,
                   name:
+                    componentNamesById.get(getRelationId(component.product_id) ?? 0) ||
                     stripProductCode(getRelationName(component.product_id)) ||
                     getRelationName(component.product_id) ||
                     `Componente ${component.id}`,
@@ -4803,9 +4952,12 @@ async function getOdooOrdersBatchDemandContext(
   );
   const products = productIds.length
     ? ((await executeKwProfiled(profiler, "images", config, uid, "product.product", "read", [productIds], {
-        fields: ["id", "product_tmpl_id", "image_128", "type"],
+        fields: ["id", "name", "display_name", "default_code", "product_tmpl_id", "image_128", "type"],
       })) as ProductRecord[])
     : [];
+  const productNamesById = new Map(
+    products.map((product) => [product.id, formatCatalogProductName(product)]),
+  );
   const productImagesById = new Map(
     products.map((product) => [product.id, formatProductImage(product.image_128)]),
   );
@@ -4873,9 +5025,12 @@ async function getOdooOrdersBatchDemandContext(
         "product.product",
         "read",
         [componentProductIds],
-        { fields: ["id", "image_128"] },
+        { fields: ["id", "name", "display_name", "default_code", "image_128"] },
       )) as ProductRecord[])
     : [];
+  const componentNamesById = new Map(
+    componentProducts.map((product) => [product.id, formatCatalogProductName(product)]),
+  );
   const componentImagesById = new Map(
     componentProducts.map((product) => [
       product.id,
@@ -4985,6 +5140,7 @@ async function getOdooOrdersBatchDemandContext(
               getRelationName(line.product_id) ||
               `Linea ${line.id}`,
             name:
+              productNamesById.get(productId ?? 0) ||
               line.name || getRelationName(line.product_id) || "Sin producto",
             quantity: orderQuantity,
             price: line.price_unit ?? line.price_subtotal ?? 0,
@@ -4998,6 +5154,7 @@ async function getOdooOrdersBatchDemandContext(
                     getRelationName(component.product_id) ||
                     `Componente ${component.id}`,
                   name:
+                    componentNamesById.get(getRelationId(component.product_id) ?? 0) ||
                     stripProductCode(getRelationName(component.product_id)) ||
                     getRelationName(component.product_id) ||
                     `Componente ${component.id}`,
@@ -6163,6 +6320,90 @@ function parseHomeSalesChannel(value: string | null): HomeSalesChannel {
   return value === "fbm" || value === "fba" || value === "website" || value === "sales" ? value : "all";
 }
 
+async function getOperationalHomeComparison(env: Record<string, string>, from?: string, to?: string, rolling48h = false) {
+  const config = getOdooConfig(env);
+  if (!config.url || !config.database || !config.username || !config.apiKey) throw new Error("Falta la conexión con Odoo para el comparativo");
+  const uid = await authenticate(config);
+  const now = new Date();
+  const bounds = comparisonBounds(now);
+  const utcText = (date: Date) => date.toISOString().slice(0, 19).replace("T", " ");
+  let queryStart = rolling48h ? new Date(now.getTime() - 48 * 3_600_000) : bounds.start;
+  let queryEnd = now;
+  if (from && to) {
+    const valid = (value: string) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+      const date = new Date(`${value}T00:00:00Z`);
+      return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+    };
+    if (!valid(from) || !valid(to) || from > to) throw new Error("Selecciona un rango de fechas válido");
+    const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
+    if (days > 3660) throw new Error("El rango máximo es de 10 años");
+    const dayStart = (key: string) => {
+      const [year, month, day] = key.split("-").map(Number);
+      const midnight = Date.UTC(year, month - 1, day);
+      for (let offset = 3; offset >= -1; offset--) {
+        const candidate = new Date(midnight - offset * 3_600_000);
+        const local = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Madrid", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23" }).formatToParts(candidate);
+        const parts = Object.fromEntries(local.map((part) => [part.type, part.value]));
+        if (`${parts.year}-${parts.month}-${parts.day}` === key && parts.hour === "00") return candidate;
+      }
+      throw new Error(`No se pudo calcular el inicio del día ${key}`);
+    };
+    queryStart = dayStart(from);
+    const afterTo = new Date(Date.parse(`${to}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+    queryEnd = dayStart(afterTo);
+  }
+  const effectiveEnd = new Date(Math.min(queryEnd.getTime(), now.getTime()));
+  type Picking = { id: number; sale_id?: false | [number, string]; date_done?: string | false };
+  type Sale = { id: number; team_id?: false | [number, string]; amz_fulfillment_by?: string | false; amount_untaxed?: number; currency_id?: false | [number, string]; currency_rate?: number };
+  const recent: Picking[] = [];
+  const domain = [["state", "=", "done"], ["picking_type_code", "=", "outgoing"], ["date_done", ">=", utcText(queryStart)], ["date_done", "<", utcText(effectiveEnd)]];
+  for (let offset = 0; ; offset += 500) {
+    const page = await executeKw(config, uid, "stock.picking", "search_read", [domain], { fields: ["id", "sale_id", "date_done"], order: "date_done asc, id asc", limit: 500, offset }) as Picking[];
+    recent.push(...page);
+    if (page.length < 500) break;
+  }
+  const ids = [...new Set(recent.flatMap((picking) => Array.isArray(picking.sale_id) ? [picking.sale_id[0]] : []))];
+  if (!ids.length) return rolling48h ? buildHomeComparisonRolling48h([], now) : from && to ? buildHomeComparisonRange([], from, to, now) : buildHomeComparison([], now);
+  const allDone: Picking[] = [];
+  const sales: Sale[] = [];
+  for (let index = 0; index < ids.length; index += 200) {
+    const batch = ids.slice(index, index + 200);
+    const orders = await executeKw(config, uid, "sale.order", "read", [batch], { fields: ["id", "team_id", "amz_fulfillment_by", "amount_untaxed", "currency_id", "currency_rate"] }) as Sale[];
+    const pickingDomain = [["sale_id", "in", batch], ["state", "=", "done"], ["picking_type_code", "=", "outgoing"]];
+    const pageSize = 500;
+    for (let offset = 0; ; offset += pageSize) {
+      const page = await executeKw(config, uid, "stock.picking", "search_read", [pickingDomain], { fields: ["id", "sale_id", "date_done"], order: "date_done asc, id asc", limit: pageSize, offset }) as Picking[];
+      allDone.push(...page);
+      if (page.length < pageSize) break;
+    }
+    sales.push(...orders);
+  }
+  const firstDone = new Map<number, Date>();
+  for (const picking of allDone) {
+    if (!Array.isArray(picking.sale_id) || !picking.date_done) continue;
+    const date = parseOdooUtc(picking.date_done);
+    const id = picking.sale_id[0];
+    if (!firstDone.has(id) || date < firstDone.get(id)!) firstDone.set(id, date);
+  }
+  const events: SentSale[] = sales.flatMap((sale) => {
+    const date = firstDone.get(sale.id);
+    if (!date || date < queryStart || date >= queryEnd || date > now) return [];
+    const event = {
+      id: sale.id, dateDone: date.toISOString(), amountUntaxed: Number(sale.amount_untaxed || 0),
+      team: Array.isArray(sale.team_id) ? sale.team_id[1] : "", fulfillmentBy: typeof sale.amz_fulfillment_by === "string" ? sale.amz_fulfillment_by : "",
+    } satisfies SentSale;
+    if (comparisonChannel(event) && Array.isArray(sale.currency_id) && !["EUR", "Eu"].includes(sale.currency_id[1])) {
+      throw new Error(`Moneda de venta no convertible con seguridad para Inicio: ${sale.currency_id[1]}`);
+    }
+    if (comparisonChannel(event) && sale.currency_rate !== undefined && Math.abs(sale.currency_rate - 1) > 0.000001) {
+      throw new Error("Inicio encontró una venta con tipo de cambio distinto de EUR; revisar conversión antes de mostrarla");
+    }
+    return [event];
+  });
+  return rolling48h ? buildHomeComparisonRolling48h(events, now) : from && to ? buildHomeComparisonRange(events, from, to, now) : buildHomeComparison(events, now);
+}
+
 async function getOperationalHomeSales(env: Record<string, string>, period: HomePeriod, channel: HomeSalesChannel) {
   const config = getOdooConfig(env);
   if (!config.url || !config.database || !config.username || !config.apiKey) throw new Error("Falta la conexión con Odoo para ventas");
@@ -6228,36 +6469,34 @@ async function buildOperationalHomeKpis(
   const orders = filterCachedOrders(ordersStore.orders, range);
   const locationsStore = productLocations.summary();
   const physicalCodes = new Set(locationsStore.locationCatalog.filter((item) => item.kind === "physical").map((item) => item.code));
-  const located = new Map<number, number>();
-  locationsStore.locations.filter((item) => physicalCodes.has(item.code)).forEach((item) => {
-    located.set(item.productId, (located.get(item.productId) || 0) + item.quantity);
-  });
-  const mto = new Set(productCatalog.list().products.filter((item) => item.mto).map((item) => item.id));
-  // The destination catalog also treats a product with no physical-location
-  // row as zero stock. Build the same universe here so the KPI does not omit
-  // catalog products that have never been located.
+  const preferredZoneProductIds = locationsStore.locations
+    .filter((item) => item.preferred && physicalCodes.has(item.code))
+    .map((item) => item.productId);
   const catalogProducts = productCatalog.list().products;
-  const noStock = catalogProducts
-    .filter((product) => (located.get(product.id) ?? 0) <= 0 && !mto.has(product.id))
-    .map((product) => product.id);
+  const noStock = selectHomeNoStockProducts(catalogProducts, preferredZoneProductIds);
   const values: Record<string, { count?: number; ids?: string[]; error?: string }> = {
     noStock: { count: noStock.length, ids: noStock.map((id) => String(id)) },
   };
-  const [unsentResult, unprintedResult, receptions, alerts, purchases] = await Promise.allSettled([
-    getHomeOrdersWithoutOdooDelivery(env, orders),
+  const [ordersResult, receptions, alerts, purchases] = await Promise.allSettled([
     getHomeUnprintedOrders(env, range, orders),
     getOdooInventoryReceptions(env),
     getOdooSalesPurchaseAlerts(env),
     getOdooPurchaseReceptions(env),
   ]);
-  if (unsentResult.status === "fulfilled") {
-    const unsent = unsentResult.value;
-    values.unsent = { count: unsent.length, ids: unsent.map((order) => order.id) };
-  } else values.unsent = { error: String(unsentResult.reason) };
-  if (unprintedResult.status === "fulfilled") {
-    const unprinted = unprintedResult.value.filter(isHomeOrderUnprinted);
+  if (ordersResult.status === "fulfilled") {
+    const sharedOrders = ordersResult.value;
+    const unprinted = sharedOrders.filter(isHomeOrderUnprinted);
     values.unprinted = { count: unprinted.length, ids: unprinted.map((order) => order.id) };
-  } else values.unprinted = { error: String(unprintedResult.reason) };
+    try {
+      const unsent = sharedOrders.filter(isHomeOrderUnsent);
+      values.unsent = { count: unsent.length, ids: unsent.map((order) => order.id) };
+    } catch (error) {
+      values.unsent = { error: String(error) };
+    }
+  } else {
+    values.unprinted = { error: String(ordersResult.reason) };
+    values.unsent = { error: String(ordersResult.reason) };
+  }
   if (receptions.status === "fulfilled") {
     const rows = receptions.value.receptions.filter((item) => !item.isImportation && (item.status === "Pendiente" || item.status === "Esperando"));
     values.receptions = { count: rows.length, ids: rows.map((item) => item.id) };
@@ -6273,70 +6512,6 @@ async function buildOperationalHomeKpis(
   if (purchases.status === "fulfilled") values.pendingPurchases = { count: purchases.value.total, ids: purchases.value.receptions.map((item) => item.id) };
   else values.pendingPurchases = { error: String(purchases.reason) };
   return { updatedAt: new Date().toISOString(), range, source: ordersFastCacheEnabled(env) ? "dashboard-cache" : "odoo-live", values, cacheUpdatedAt: ordersStore.updatedAt };
-}
-
-/**
- * Authoritatively checks the delivery relation in Odoo for the cached Home
- * order set. A live read avoids relying on carrier allowlists or potentially
- * stale label/printing metadata in the Dashboard cache.
- */
-async function getHomeOrdersWithoutOdooDelivery(
-  env: Record<string, string>,
-  orders: OrdersCacheStore["orders"],
-) {
-  const candidates = orders.filter(isHomeOrderChannel);
-  if (!candidates.length) return [];
-
-  const idsByOrder = new Map<string, number>();
-  for (const order of candidates) {
-    const match = (order.odooRef || "").match(/^#(\d+)$/);
-    if (!match) throw new Error(`No se pudo identificar el pedido Odoo de ${order.id}`);
-    idsByOrder.set(order.id, Number(match[1]));
-  }
-
-  const config = getOdooConfig(env);
-  if (!config.url || !config.database || !config.username || !config.apiKey) {
-    throw new Error("Falta la conexión con Odoo para comprobar las entregas");
-  }
-  const uid = await authenticate(config);
-  const orderIds = [...new Set(idsByOrder.values())];
-  const saleOrders: Array<{ id: number; picking_ids?: number[] }> = [];
-  for (let offset = 0; offset < orderIds.length; offset += 500) {
-    const batch = orderIds.slice(offset, offset + 500);
-    const page = await executeKw(config, uid, "sale.order", "read", [batch], {
-      fields: ["id", "picking_ids"],
-    }) as Array<{ id: number; picking_ids?: number[] }>;
-    saleOrders.push(...page);
-  }
-  if (saleOrders.length !== orderIds.length) {
-    throw new Error("Odoo no devolvió todos los pedidos para comprobar las entregas");
-  }
-
-  const pickingIds = [...new Set(saleOrders.flatMap((order) => order.picking_ids ?? []))];
-  const pickings: Array<{ id: number; state?: string; picking_type_code?: string }> = [];
-  for (let offset = 0; offset < pickingIds.length; offset += 500) {
-    const batch = pickingIds.slice(offset, offset + 500);
-    const page = await executeKw(config, uid, "stock.picking", "read", [batch], {
-      fields: ["id", "state", "picking_type_code"],
-    }) as Array<{ id: number; state?: string; picking_type_code?: string }>;
-    pickings.push(...page);
-  }
-  if (pickings.length !== pickingIds.length) {
-    throw new Error("Odoo no devolvió todas las entregas para comprobar los pedidos");
-  }
-  const pickingById = new Map(pickings.map((picking) => [picking.id, picking]));
-  const saleOrderById = new Map(saleOrders.map((order) => [order.id, order]));
-
-  return candidates.filter((order) => {
-    const saleOrderId = idsByOrder.get(order.id)!;
-    const saleOrder = saleOrderById.get(saleOrderId);
-    if (!saleOrder) throw new Error(`Odoo no devolvió el pedido #${saleOrderId}`);
-    const linkedPickings = (saleOrder.picking_ids ?? [])
-      .map((id) => pickingById.get(id))
-      .filter((picking): picking is NonNullable<typeof picking> => Boolean(picking))
-      .map((picking) => ({ state: picking.state, pickingTypeCode: picking.picking_type_code }));
-    return isHomeOrderUnsent(order, hasOdooOutboundDelivery(linkedPickings));
-  });
 }
 
 async function getHomeUnprintedOrders(
@@ -6704,6 +6879,7 @@ async function getOdooInventoryReceptions(
         "purchase_id",
         "state",
         "scheduled_date",
+        "create_date",
         "location_dest_id",
         "backorder_id",
         "move_ids_without_package",
@@ -6822,14 +6998,17 @@ async function getOdooInventoryReceptions(
   );
   const purchaseReferences = purchaseIds.length
     ? (await executeKw(config, uid, "purchase.order", "read", [purchaseIds], {
-        fields: ["id", "partner_ref", "order_type"],
-      })) as Array<{ id: number; partner_ref?: string | false; order_type?: [number, string] | false }>
+        fields: ["id", "partner_ref", "order_type", "date_approve"],
+      })) as Array<{ id: number; partner_ref?: string | false; order_type?: [number, string] | false; date_approve?: string | false }>
     : [];
   const supplierRefsByPurchaseId = new Map(
     purchaseReferences.map((purchase) => [purchase.id, cleanText(purchase.partner_ref)]),
   );
   const orderTypesByPurchaseId = new Map(
     purchaseReferences.map((purchase) => [purchase.id, getRelationName(purchase.order_type)]),
+  );
+  const orderConfirmedAtByPurchaseId = new Map(
+    purchaseReferences.map((purchase) => [purchase.id, formatDate(cleanText(purchase.date_approve)) || undefined]),
   );
   const productIds = Array.from(
     new Set(
@@ -6929,6 +7108,10 @@ async function getOdooInventoryReceptions(
       orderType: orderType || undefined,
       isImportation,
       scheduledDate: cleanText(picking.scheduled_date),
+      orderConfirmedAt: orderConfirmedAtByPurchaseId.get(getRelationId(picking.purchase_id) ?? -1),
+      partialEntryCreatedAt: getRelationId(picking.backorder_id)
+        ? formatDate(cleanText(picking.create_date)) || undefined
+        : undefined,
       state,
       status,
       destination: getRelationName(picking.location_dest_id),
@@ -9057,6 +9240,14 @@ async function executeKw(
     throw new Error("Operacion Odoo bloqueada: solo lectura");
   }
 
+  const suppliedContext = kwargs.context;
+  const context = suppliedContext && typeof suppliedContext === "object" && !Array.isArray(suppliedContext)
+    ? suppliedContext as Record<string, unknown>
+    : {};
+  const effectiveKwargs = model === "product.product"
+    ? { ...kwargs, context: { ...context, lang: "es_ES" } }
+    : kwargs;
+
   return rpc(config.url, "object", "execute_kw", [
     config.database,
     uid,
@@ -9064,7 +9255,7 @@ async function executeKw(
     model,
     method,
     args,
-    kwargs,
+    effectiveKwargs,
   ]);
 }
 

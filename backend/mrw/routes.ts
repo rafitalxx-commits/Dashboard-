@@ -1,3 +1,4 @@
+import {assertIncidentLabelAllowed} from '../incidents/labelGuard.ts';
 import { createMrwClient, type MrwShipmentRequest } from "./client.ts";
 import { shrinkPdfLabelBase64 } from "../pdfLabelTools.ts";
 
@@ -19,10 +20,10 @@ export function registerMrwRoutes(server: Server, auth: Auth, env: Record<string
         return sendJson(response, 200, { xml: mrw.buildShipmentXml(await readJsonBody<MrwShipmentRequest>(request)) });
       }
       if (request.method === "POST" && path === "shipments/test") {
-        return sendJson(response, 201, { shipment: await mrw.createShipment(await readJsonBody<MrwShipmentRequest>(request)) });
+        const input=await readJsonBody<MrwShipmentRequest>(request);await assertIncidentLabelAllowed(env,input);return sendJson(response, 201, { shipment: await mrw.createShipment(input) });
       }
       if (request.method === "POST" && path === "shipments/real") {
-        return sendJson(response, 201, { shipment: await mrw.createShipment(await readJsonBody<MrwShipmentRequest>(request)) });
+        const input=await readJsonBody<MrwShipmentRequest>(request);await assertIncidentLabelAllowed(env,input);return sendJson(response, 201, { shipment: await mrw.createShipment(input) });
       }
       const labelMatch = path.match(/^shipments\/([^/]+)\/label\.pdf$/);
       if (request.method === "GET" && labelMatch) return sendPdf(response, labelMatch[1], await mrw.getLabelPdf(labelMatch[1]));

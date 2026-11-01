@@ -4,7 +4,9 @@ import {
   Camera,
   ChevronLeft,
   ChevronRight,
+  Factory,
   MapPin,
+  LoaderCircle,
   Pencil,
   Plus,
   RefreshCw,
@@ -30,6 +32,11 @@ import {
   getSavedQzLabelPrinter,
   printImageLabelWithQzTray,
 } from "../expeditions/ExpeditionsView";
+
+import "./catalogFeedback.css";
+
+type ProductAction = "location" | "transfer" | "barcode" | "remove-barcode" | "print-label" | `remove-location:${string}`;
+type DetailNotice = { productId: number; kind: "error" | "success" | "warning"; text: string };
 
 const empty: CatalogStore = {
   products: [],
@@ -78,8 +85,21 @@ export function ProductsCatalogView({
     toCode: string;
     quantity: string;
   } | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [printingLabel, setPrintingLabel] = useState(false);
+  const [pendingAction, setPendingAction] = useState<ProductAction | null>(null);
+  const [pendingLabel, setPendingLabel] = useState("");
+  const [detailNotice, setDetailNotice] = useState<DetailNotice | null>(null);
+  const actionInFlight = useRef(false);
+  const selectedId = useRef<number | null>(null);
+  const detailRequest = useRef(0);
+  const noticeRef = useRef<HTMLParagraphElement | null>(null);
+  const saving = pendingAction !== null;
+  const printingLabel = pendingAction === "print-label";
+  useEffect(() => {
+    if (detailNotice?.kind === "error" && detailNotice.productId === selectedId.current) {
+      noticeRef.current?.focus({ preventScroll: true });
+      noticeRef.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [detailNotice]);
   const [barcodeEditor, setBarcodeEditor] = useState<string | null>(null);
   const [scanner, setScanner] = useState(startScanner);
   const [cameraSearchOpen, setCameraSearchOpen] = useState(false);
@@ -87,7 +107,8 @@ export function ProductsCatalogView({
     "ids" | "filtered" | "all"
   >("ids");
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
-  const load = async () => {
+  const [exporting, setExporting] = useState<"csv" | "pdf" | null>(null);
+  const load = async (onError?: (text: string) => void) => {
     setLoading(true);
     try {
       const [nextCatalog, nextLocations] = await Promise.all([
@@ -95,11 +116,11 @@ export function ProductsCatalogView({
         odooClient.getLocationCatalog(true),
       ]);
       setCatalog(nextCatalog);
+      setSelected((current) => current ? nextCatalog.products.find((product) => product.id === current.id) || current : current);
       setLocationCatalog(nextLocations);
     } catch (e) {
-      setMessage(
-        e instanceof Error ? e.message : "No se pudo cargar Productos",
-      );
+      const text = e instanceof Error ? e.message : "No se pudo cargar Productos";
+      if (onError) onError(text); else setMessage(text);
     } finally {
       setLoading(false);
     }
@@ -201,6 +222,14 @@ export function ProductsCatalogView({
     selectionMode === "all" ||
     selectionMode === "filtered" ||
     selectedIds.includes(id);
+  const locationText = (location: Pick<ProductLocation, "code" | "quantity" | "preferred">, uom: string) => {
+    const label = locationCatalog.find((entry) => entry.code === location.code)?.label || location.code;
+    return `${label}: ${fmt(location.quantity, uom)}${location.preferred ? " · Preferida" : ""}`;
+  };
+  const productLocationsText = (product: CatalogProduct, separator: string) =>
+    product.localLocations.length
+      ? product.localLocations.map((location) => locationText(location, product.uom)).join(separator)
+      : "Sin ubicaciones registradas";
   const selectionScope: InventoryScope = {
     type: locationFilter.trim()
       ? "locations"
@@ -237,13 +266,16 @@ export function ProductsCatalogView({
     });
   };
   const downloadCsv = () => {
+    if (exporting) return;
+    setExporting("csv");
     const rowsCsv = [
-      ["Referencia", "Producto", "EAN", "Stock Odoo"],
+      ["Referencia", "Producto", "EAN", "Stock Odoo", "Ubicaciones Dashboard"],
       ...selectedProducts.map((product) => [
         product.reference,
         product.name,
         product.barcode,
         String(product.onHand),
+        productLocationsText(product, "; "),
       ]),
     ]
       .map((row) =>
@@ -258,27 +290,34 @@ export function ProductsCatalogView({
     link.download = "productos-seleccionados.csv";
     link.click();
     URL.revokeObjectURL(url);
+    setMessage("Descarga CSV iniciada con las ubicaciones del Dashboard.");
+    window.setTimeout(() => setExporting(null), 350);
   };
   const printSelection = () => {
+    if (exporting) return;
+    setExporting("pdf");
     // `noopener` makes window.open return null in several browsers, which was
     // the cause of the blank PDF/print window in LAB.
     const popup = window.open("", "_blank");
     if (!popup) {
       setMessage("El navegador ha bloqueado la ventana. Permite ventanas emergentes para guardar el PDF.");
+      setExporting(null);
       return;
     }
     const lines = selectedProducts
       .map(
         (product) =>
-          `<tr><td>${escapePrintHtml(product.reference || "—")}</td><td>${escapePrintHtml(product.name)}</td><td>${escapePrintHtml(product.barcode || "—")}</td><td>${escapePrintHtml(String(product.onHand))}</td></tr>`,
+          `<tr><td>${escapePrintHtml(product.reference || "—")}</td><td>${escapePrintHtml(product.name)}</td><td>${escapePrintHtml(product.barcode || "—")}</td><td>${escapePrintHtml(String(product.onHand))}</td><td>${escapePrintHtml(productLocationsText(product, " · "))}</td></tr>`,
       )
       .join("");
     popup.document.write(
-      `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Productos seleccionados</title><style>body{font:12px Arial;padding:16px;color:#172033}h1{font-size:18px}p{color:#475569}table{width:100%;border-collapse:collapse}th,td{border:1px solid #cbd5e1;padding:7px;text-align:left}th{background:#f1f5f9}</style></head><body><h1>Productos seleccionados</h1><p>${selectedProducts.length} productos · usa «Guardar como PDF» en el diálogo de impresión.</p><table><thead><tr><th>Referencia</th><th>Producto</th><th>EAN</th><th>Stock</th></tr></thead><tbody>${lines}</tbody></table></body></html>`,
+      `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Productos seleccionados</title><style>body{font:12px Arial;padding:16px;color:#172033}h1{font-size:18px}p{color:#475569}table{width:100%;border-collapse:collapse}th,td{border:1px solid #cbd5e1;padding:7px;text-align:left;vertical-align:top}th{background:#f1f5f9}</style></head><body><h1>Productos seleccionados</h1><p>${selectedProducts.length} productos · usa «Guardar como PDF» en el diálogo de impresión.</p><table><thead><tr><th>Referencia</th><th>Producto</th><th>EAN</th><th>Stock</th><th>Ubicaciones Dashboard</th></tr></thead><tbody>${lines}</tbody></table></body></html>`,
     );
     popup.document.close();
     popup.focus();
     popup.print();
+    setMessage("Vista de impresión abierta con las ubicaciones del Dashboard. Elige «Guardar como PDF».");
+    window.setTimeout(() => setExporting(null), 350);
   };
   const sendSelectionToInventory = () => {
     if (!selectedProducts.length) return;
@@ -309,26 +348,51 @@ export function ProductsCatalogView({
         .then((next) => setImages((current) => ({ ...current, ...next })))
         .catch(() => undefined);
   }, [page, query, filter, supplier, locationFilter, catalog.updatedAt]);
+  const notifyProduct = (productId: number, kind: DetailNotice["kind"], text: string) => {
+    if (selectedId.current === productId) setDetailNotice({ productId, kind, text });
+  };
+  const closeDetail = () => {
+    if (actionInFlight.current) return;
+    selectedId.current = null; ++detailRequest.current;
+    setSelected(null); setDetailNotice(null);
+  };
   const openDetail = async (product: CatalogProduct) => {
-    setSelected(product);
-    setDetail(null);
-    setLocations([]);
-    setEditor(null);
-    setBarcodeEditor(null);
+    if (actionInFlight.current) return;
+    const request = ++detailRequest.current;
+    selectedId.current = product.id;
+    setSelected(product); setDetail(null); setLocations([]);
+    setEditor(null); setTransfer(null); setBarcodeEditor(null); setDetailNotice(null);
     setDetailLoading(true);
     try {
       const [nextDetail, nextLocations] = await Promise.all([
         odooClient.getProductCatalogDetail(product.id),
         odooClient.getProductLocations(product.id),
       ]);
-      setDetail(nextDetail);
-      setLocations(nextLocations);
+      if (request !== detailRequest.current || selectedId.current !== product.id) return;
+      setDetail(nextDetail); setLocations(nextLocations);
     } catch (e) {
-      setMessage(
-        e instanceof Error ? e.message : "No se pudo cargar el detalle",
-      );
+      if (request === detailRequest.current) notifyProduct(product.id, "error", e instanceof Error ? e.message : "No se pudo cargar el detalle");
     } finally {
-      setDetailLoading(false);
+      if (request === detailRequest.current) setDetailLoading(false);
+    }
+  };
+  const runProductAction = async (action: ProductAction, label: string, work: () => Promise<void>, success: string, refresh = false) => {
+    if (!selected || actionInFlight.current) return;
+    const productId = selected.id;
+    actionInFlight.current = true;
+    setPendingAction(action); setPendingLabel(label); setDetailNotice(null);
+    try {
+      await work();
+      let refreshError = "";
+      if (refresh) {
+        setPendingLabel("Datos guardados. Actualizando catálogo…");
+        await load((text) => { refreshError = text; });
+      }
+      notifyProduct(productId, refreshError ? "warning" : "success", refreshError ? `${success} No se pudo actualizar la lista del catálogo: ${refreshError}` : success);
+    } catch (e) {
+      notifyProduct(productId, "error", e instanceof Error ? e.message : "No se pudo completar la acción. Los datos del formulario se han conservado.");
+    } finally {
+      actionInFlight.current = false; setPendingAction(null); setPendingLabel("");
     }
   };
   const searchWithCamera = (code: string) => {
@@ -344,144 +408,60 @@ export function ProductsCatalogView({
   };
   const saveLocation = async () => {
     if (!selected || !editor) return;
-    setSaving(true);
-    try {
-      const input = {
-        productId: selected.id,
-        code: editor.code,
-        quantity: Number(editor.quantity),
-        preferred: editor.preferred,
-        replenishmentMin:
-          editor.preferred && editor.replenishmentMin !== ""
-            ? Number(editor.replenishmentMin)
-            : undefined,
-      };
-      const next = editor.adjustOdoo
-        ? await odooClient.adjustProductLocationAndOdoo(input)
-        : await odooClient.saveProductLocation(input);
-      setLocations(next);
-      setEditor(null);
-      await load();
-    } catch (e) {
-      setMessage(
-        e instanceof Error ? e.message : "No se pudo guardar la ubicación",
-      );
-    } finally {
-      setSaving(false);
-    }
+    const input = { productId: selected.id, code: editor.code, quantity: Number(editor.quantity), preferred: editor.preferred,
+      replenishmentMin: editor.preferred && editor.replenishmentMin !== "" ? Number(editor.replenishmentMin) : undefined };
+    const adjustOdoo = editor.adjustOdoo;
+    await runProductAction("location", adjustOdoo ? "Actualizando stock y guardando ubicación…" : "Guardando ubicación y cantidad…", async () => {
+      const next = adjustOdoo ? await odooClient.adjustProductLocationAndOdoo(input) : await odooClient.saveProductLocation(input);
+      setLocations(next); setEditor(null);
+    }, "Ubicación y cantidad guardadas.", true);
   };
   const saveTransfer = async () => {
     if (!selected || !transfer) return;
-    setSaving(true);
-    try {
-      const next = await odooClient.transferProductLocation(
-        selected.id,
-        transfer.fromCode,
-        transfer.toCode,
-        Number(transfer.quantity),
-      );
-      setLocations(next);
-      setTransfer(null);
-      await load();
-    } catch (e) {
-      setMessage(
-        e instanceof Error ? e.message : "No se pudo registrar la reposición",
-      );
-    } finally {
-      setSaving(false);
-    }
+    const productId = selected.id, draft = { ...transfer };
+    await runProductAction("transfer", "Registrando movimiento entre ubicaciones…", async () => {
+      const next = await odooClient.transferProductLocation(productId, draft.fromCode, draft.toCode, Number(draft.quantity));
+      setLocations(next); setTransfer(null);
+    }, "Movimiento entre ubicaciones registrado.", true);
   };
   const removeLocation = async (code: string) => {
-    if (!selected || !window.confirm(`¿Eliminar la ubicación ${code}?`)) return;
-    setSaving(true);
-    try {
-      const next = await odooClient.removeProductLocation(selected.id, code);
-      setLocations(next);
+    if (!selected || actionInFlight.current || !window.confirm(`¿Eliminar la ubicación ${code}?`)) return;
+    const productId = selected.id;
+    await runProductAction(`remove-location:${code}`, `Eliminando ubicación ${code}…`, async () => {
+      setLocations(await odooClient.removeProductLocation(productId, code));
       if (editor?.code === code) setEditor(null);
-      await load();
-    } catch (e) {
-      setMessage(
-        e instanceof Error ? e.message : "No se pudo eliminar la ubicación",
-      );
-    } finally {
-      setSaving(false);
-    }
+    }, `Ubicación ${code} eliminada.`, true);
   };
   const saveBarcode = async () => {
     if (!selected || barcodeEditor === null || !barcodeEditor.trim()) return;
-    setSaving(true);
-    try {
-      const next = await odooClient.updateProductBarcode(
-        selected.id,
-        barcodeEditor.trim(),
-      );
-      setDetail((current) =>
-        current
-          ? { ...current, barcode: next.barcode || barcodeEditor.trim() }
-          : current,
-      );
-      setSelected((current) =>
-        current
-          ? { ...current, barcode: next.barcode || barcodeEditor.trim() }
-          : current,
-      );
-      setCatalog((current) => ({
-        ...current,
-        products: current.products.map((product) =>
-          product.id === selected.id
-            ? { ...product, barcode: next.barcode || barcodeEditor.trim() }
-            : product,
-        ),
-      }));
+    const productId = selected.id, barcode = barcodeEditor.trim();
+    await runProductAction("barcode", "Guardando EAN…", async () => {
+      const next = await odooClient.updateProductBarcode(productId, barcode);
+      const value = next.barcode || barcode;
+      setDetail((current) => current ? { ...current, barcode: value } : current);
+      setSelected((current) => current ? { ...current, barcode: value } : current);
+      setCatalog((current) => ({ ...current, products: current.products.map((product) => product.id === productId ? { ...product, barcode: value } : product) }));
       setBarcodeEditor(null);
-      setMessage("EAN actualizado en Odoo y Dashboard");
-    } catch (e) {
-      setMessage(
-        e instanceof Error ? e.message : "No se pudo actualizar el EAN",
-      );
-    } finally {
-      setSaving(false);
-    }
+    }, "EAN actualizado en Odoo y Dashboard.");
   };
   const removeBarcode = async () => {
-    if (!selected || !detail?.barcode) return;
+    if (!selected || !detail?.barcode || actionInFlight.current) return;
     if (!window.confirm(`¿Eliminar el EAN ${detail.barcode} de ${detail.name}?`)) return;
-    setSaving(true);
-    try {
-      await odooClient.updateProductBarcode(selected.id, "");
-      setDetail((current) => (current ? { ...current, barcode: "" } : current));
-      setSelected((current) => (current ? { ...current, barcode: "" } : current));
-      setCatalog((current) => ({
-        ...current,
-        products: current.products.map((product) =>
-          product.id === selected.id ? { ...product, barcode: "" } : product,
-        ),
-      }));
+    const productId = selected.id;
+    await runProductAction("remove-barcode", "Eliminando EAN…", async () => {
+      await odooClient.updateProductBarcode(productId, "");
+      setDetail((current) => current ? { ...current, barcode: "" } : current);
+      setSelected((current) => current ? { ...current, barcode: "" } : current);
+      setCatalog((current) => ({ ...current, products: current.products.map((product) => product.id === productId ? { ...product, barcode: "" } : product) }));
       setBarcodeEditor(null);
-      setMessage("EAN eliminado en Odoo y Dashboard");
-    } catch (e) {
-      setMessage(e instanceof Error ? e.message : "No se pudo eliminar el EAN");
-    } finally {
-      setSaving(false);
-    }
+    }, "EAN eliminado en Odoo y Dashboard.");
   };
   const printLabel = async () => {
     if (!selected) return;
-    setPrintingLabel(true);
-    try {
-      await printImageLabelWithQzTray(
-        await createProductLabelImage(selected),
-        `Producto ${selected.reference || selected.barcode}`,
-        getSavedQzLabelPrinter(),
-      );
-      setMessage("Etiqueta enviada a la impresora seleccionada.");
-    } catch (e) {
-      setMessage(
-        e instanceof Error ? e.message : "No se pudo imprimir la etiqueta",
-      );
-    } finally {
-      setPrintingLabel(false);
-    }
+    const product = selected;
+    await runProductAction("print-label", "Preparando y enviando etiqueta a la impresora…", async () => {
+      await printImageLabelWithQzTray(await createProductLabelImage(product), `Producto ${product.reference || product.barcode}`, getSavedQzLabelPrinter());
+    }, "Etiqueta enviada a la impresora seleccionada.");
   };
   const totalLocated = locations.reduce((sum, item) => sum + item.quantity, 0);
   const selectedPreferred = locations.find((item) => item.preferred);
@@ -639,18 +619,20 @@ export function ProductsCatalogView({
           Todo el catálogo
         </button>
         <button
-          disabled={!selectedProducts.length}
+          aria-live="polite"
+          disabled={!selectedProducts.length || exporting !== null}
           onClick={downloadCsv}
           type="button"
         >
-          CSV
+          {exporting === "csv" ? "Preparando CSV…" : "CSV"}
         </button>
         <button
-          disabled={!selectedProducts.length}
+          aria-live="polite"
+          disabled={!selectedProducts.length || exporting !== null}
           onClick={printSelection}
           type="button"
         >
-          PDF
+          {exporting === "pdf" ? "Preparando PDF…" : "PDF"}
         </button>
         <button
           className="primary-button"
@@ -692,7 +674,7 @@ export function ProductsCatalogView({
               <span>Reservado</span>
               <span>Por recibir</span>
               <span>Pronóstico</span>
-              <span>Estado</span>
+              <span>Ubicaciones</span>
             </div>
             {visibleRows.map((p) => (
               <div
@@ -722,6 +704,7 @@ export function ProductsCatalogView({
                       alt=""
                     />
                   )}
+                  {p.isKit && <span className="product-manufactured-marker" role="img" aria-label="Fabricado en Odoo (BOM)" title="Fabricado en Odoo · lista de materiales"><Factory aria-hidden="true" size={15}/></span>}
                   {p.name}
                 </span>
                 <span title={p.reference}>{p.reference || "—"}</span>
@@ -729,15 +712,12 @@ export function ProductsCatalogView({
                 <span>{fmt(p.reserved, p.uom)}</span>
                 <span>{fmt(p.incoming, p.uom)}</span>
                 <span>{fmt(p.forecast, p.uom)}</span>
-                <span className="product-tags">
-                  {p.mto && <i className="tag warn">Bajo pedido</i>}
-                  {!p.barcode && <i className="tag">Sin EAN</i>}
-                  {p.locationSummary?.needsReplenishment && (
-                    <i className="tag danger">Reponer</i>
-                  )}
-                  {!p.physicalLocations.length && (
-                    <i className="tag">Sin ubicación</i>
-                  )}
+                <span className="product-locations-cell" title={productLocationsText(p, " · ")}>
+                  {p.localLocations.length ? (
+                    p.localLocations.map((location) => {
+                      return <i className="tag" key={location.code}>{locationText(location, p.uom)}</i>;
+                    })
+                  ) : <i className="tag">Sin ubicaciones registradas</i>}
                 </span>
               </div>
             ))}
@@ -769,15 +749,20 @@ export function ProductsCatalogView({
         </footer>
       )}
       {selected && (
-        <aside className="product-drawer">
+        <aside className="product-drawer" aria-label="Detalle de producto">
+          <div className="catalog-detail-top">
           <div className="drawer-head">
             <strong>Detalle de producto</strong>
-            <button onClick={() => setSelected(null)}>
+            <button aria-label="Cerrar detalle de producto" disabled={saving} onClick={closeDetail} type="button">
               <X size={18} />
             </button>
           </div>
+          <div className="catalog-detail-feedback">
+            {saving && <p className="catalog-detail-pending" role="status"><LoaderCircle className="catalog-action-spinner" size={17} aria-hidden="true"/>{pendingLabel}</p>}
+            {detailNotice?.productId === selected.id && <p ref={noticeRef} tabIndex={-1} className={`catalog-detail-notice ${detailNotice.kind}`} role={detailNotice.kind === "success" ? "status" : "alert"}>{detailNotice.text}</p>}
+          </div></div>
           {detailLoading ? (
-            <p>Cargando detalles…</p>
+            <p role="status"><LoaderCircle className="catalog-action-spinner" size={16} aria-hidden="true"/> Cargando detalles…</p>
           ) : (
             detail && (
               <>
@@ -788,13 +773,14 @@ export function ProductsCatalogView({
                     <Boxes />
                   )}
                   <div>
-                    <strong>{detail.name}</strong>
+                    <strong className="drawer-product-name">{selected?.isKit && <span className="product-manufactured-marker" role="img" aria-label="Fabricado en Odoo (BOM)" title="Fabricado en Odoo · lista de materiales"><Factory aria-hidden="true" size={15}/></span>}{detail.name}</strong>
                     <small>{detail.reference || "Sin referencia"}</small>
                     {barcodeEditor === null ? (
                       <div className="drawer-ean">
                         <small>{detail.barcode || "Sin EAN"}</small>
                         <button
                           aria-label="Editar EAN"
+                          disabled={saving}
                           onClick={() => setBarcodeEditor(detail.barcode)}
                         >
                           <Pencil size={13} />
@@ -807,7 +793,7 @@ export function ProductsCatalogView({
                             title="Eliminar EAN"
                             type="button"
                           >
-                            <Trash2 size={13} />
+                            {pendingAction === "remove-barcode" ? <LoaderCircle className="catalog-action-spinner" size={13} aria-hidden="true"/> : <Trash2 size={13} />}
                           </button>
                         ) : null}
                       </div>
@@ -815,6 +801,8 @@ export function ProductsCatalogView({
                       <div className="drawer-ean-editor">
                         <input
                           autoFocus
+                          aria-label="EAN del producto"
+                          disabled={saving}
                           value={barcodeEditor}
                           onChange={(event) =>
                             setBarcodeEditor(event.target.value)
@@ -826,7 +814,7 @@ export function ProductsCatalogView({
                           disabled={saving || !barcodeEditor.trim()}
                           onClick={() => void saveBarcode()}
                         >
-                          {saving ? "Guardando…" : "Guardar"}
+                          {pendingAction === "barcode" && <LoaderCircle className="catalog-action-spinner" size={14} aria-hidden="true"/>}{pendingAction === "barcode" ? "Guardando…" : "Guardar"}
                         </button>
                         <button
                           className="drawer-link"
@@ -865,13 +853,14 @@ export function ProductsCatalogView({
                     </h3>
                     <button
                       className="drawer-action"
+                      disabled={saving}
                       onClick={() =>
                         setEditor({
                           code: "",
                           quantity: "0",
                           preferred: !locations.length,
                           replenishmentMin: "",
-                          adjustOdoo: false,
+                          adjustOdoo: true,
                         })
                       }
                     >
@@ -906,6 +895,7 @@ export function ProductsCatalogView({
                           <span>{fmt(item.quantity, selected.uom)}</span>
                           <button
                             aria-label={`Editar ${item.code}`}
+                            disabled={saving}
                             onClick={() =>
                               setEditor({
                                 code: item.code,
@@ -915,7 +905,7 @@ export function ProductsCatalogView({
                                   item.replenishmentMin === undefined
                                     ? ""
                                     : String(item.replenishmentMin),
-                                adjustOdoo: false,
+                                adjustOdoo: true,
                               })
                             }
                           >
@@ -926,7 +916,7 @@ export function ProductsCatalogView({
                             disabled={saving}
                             onClick={() => void removeLocation(item.code)}
                           >
-                            <Trash2 size={14} />
+                            {pendingAction === `remove-location:${item.code}` ? <LoaderCircle className="catalog-action-spinner" size={14} aria-hidden="true"/> : <Trash2 size={14} />}
                           </button>
                         </li>
                       ))}
@@ -935,10 +925,11 @@ export function ProductsCatalogView({
                     <p>Sin ubicaciones registradas.</p>
                   )}
                   {editor && (
-                    <div className="location-editor">
+                    <form className="location-editor" aria-label="Guardar ubicación del producto" aria-busy={pendingAction === "location"} onSubmit={(event) => { event.preventDefault(); void saveLocation(); }}>
                       <select
                         value={editor.code}
-                        disabled={locations.some(
+                        aria-label="Ubicación del producto"
+                        disabled={saving || locations.some(
                           (item) => item.code === editor.code,
                         )}
                         onChange={(e) =>
@@ -952,6 +943,8 @@ export function ProductsCatalogView({
                         {locationCatalog.filter((item) => item.kind === "physical").map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
                       </select>
                       <input
+                        aria-label="Cantidad en ubicación"
+                        disabled={saving}
                         value={editor.quantity}
                         inputMode="decimal"
                         onChange={(e) =>
@@ -962,6 +955,7 @@ export function ProductsCatalogView({
                       <label>
                         <input
                           type="checkbox"
+                          disabled={saving}
                           checked={editor.preferred}
                           onChange={(e) =>
                             setEditor({
@@ -975,6 +969,7 @@ export function ProductsCatalogView({
                       <label title="Solo úsalo al descubrir una diferencia real de existencias; los traslados entre baldas no cambian Odoo.">
                         <input
                           type="checkbox"
+                          disabled={saving}
                           checked={editor.adjustOdoo}
                           onChange={(e) => setEditor({ ...editor, adjustOdoo: e.target.checked })}
                         />{" "}
@@ -982,6 +977,8 @@ export function ProductsCatalogView({
                       </label>
                       {editor.preferred && (
                         <input
+                          aria-label="Mínimo de reposición"
+                          disabled={saving}
                           value={editor.replenishmentMin}
                           inputMode="decimal"
                           onChange={(e) =>
@@ -997,23 +994,26 @@ export function ProductsCatalogView({
                         <button
                           className="drawer-action"
                           disabled={saving || !editor.code}
-                          onClick={() => void saveLocation()}
+                          type="submit"
                         >
-                          Guardar
+                          {pendingAction === "location" && <LoaderCircle className="catalog-action-spinner" size={14} aria-hidden="true"/>}{pendingAction === "location" ? "Guardando…" : "Guardar"}
                         </button>
                         <button
                           className="drawer-link"
+                          disabled={saving}
+                          type="button"
                           onClick={() => setEditor(null)}
                         >
                           Cancelar
                         </button>
                       </div>
-                    </div>
+                    </form>
                   )}
                   {locations.length > 1 && (
                     <>
                       <button
                         className="drawer-action"
+                        disabled={saving}
                         onClick={() =>
                           setTransfer({
                             fromCode: locations[0].code,
@@ -1025,8 +1025,10 @@ export function ProductsCatalogView({
                         Mover entre ubicaciones
                       </button>
                       {transfer && (
-                        <div className="location-editor">
+                        <form className="location-editor" aria-label="Mover producto entre ubicaciones" aria-busy={pendingAction === "transfer"} onSubmit={(event) => { event.preventDefault(); void saveTransfer(); }}>
                           <select
+                            aria-label="Ubicación de origen"
+                            disabled={saving}
                             value={transfer.fromCode}
                             onChange={(e) =>
                               setTransfer({
@@ -1040,6 +1042,8 @@ export function ProductsCatalogView({
                             ))}
                           </select>
                           <select
+                            aria-label="Ubicación de destino"
+                            disabled={saving}
                             value={transfer.toCode}
                             onChange={(e) =>
                               setTransfer({
@@ -1053,6 +1057,8 @@ export function ProductsCatalogView({
                             ))}
                           </select>
                           <input
+                            aria-label="Cantidad a trasladar"
+                            disabled={saving}
                             value={transfer.quantity}
                             inputMode="decimal"
                             onChange={(e) =>
@@ -1067,18 +1073,20 @@ export function ProductsCatalogView({
                             <button
                               className="drawer-action"
                               disabled={saving}
-                              onClick={() => void saveTransfer()}
+                              type="submit"
                             >
-                              Registrar movimiento
+                              {pendingAction === "transfer" && <LoaderCircle className="catalog-action-spinner" size={14} aria-hidden="true"/>}{pendingAction === "transfer" ? "Registrando…" : "Registrar movimiento"}
                             </button>
                             <button
                               className="drawer-link"
+                              disabled={saving}
+                              type="button"
                               onClick={() => setTransfer(null)}
                             >
                               Cancelar
                             </button>
                           </div>
-                        </div>
+                        </form>
                       )}
                     </>
                   )}
@@ -1130,10 +1138,10 @@ export function ProductsCatalogView({
                 </section>
                 <button
                   className="secondary-button"
-                  disabled={printingLabel}
+                  disabled={saving}
                   onClick={() => void printLabel()}
                 >
-                  {printingLabel ? "Imprimiendo…" : "Imprimir etiqueta"}
+                  {printingLabel && <LoaderCircle className="catalog-action-spinner" size={15} aria-hidden="true"/>}{printingLabel ? "Imprimiendo…" : "Imprimir etiqueta"}
                 </button>
               </>
             )

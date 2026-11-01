@@ -6,6 +6,9 @@ import { authenticate, getOdooConfig, hasOdooConfig, readRows, searchRead } from
 import { DriveClient } from "./driveClient.ts";
 import { discountedBase, isWebAdjustmentProductId } from "../../shared/supplierInvoiceDiscounts.ts";
 
+import { invoiceDateInPdf, printedInvoiceAmount, normalizeInvoiceVat } from "../../shared/supplierInvoiceEvidence.ts";
+import { vatAbsenceConfirmed } from "./reviewCorrections.ts";
+
 export type InvoiceVerification = { ready: boolean; checkedAt: string; blockers: string[] };
 type Row = Record<string, unknown>;
 export type VerificationReads = {
@@ -16,22 +19,6 @@ const cents = (n: number) => Math.round(n * 100);
 const idOf = (v: unknown): number => Array.isArray(v) ? Number(v[0]) : Number(v);
 const vat = (v: unknown) => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/^ES(?=[A-Z0-9]{9}$)/, "");
 const words = (v: unknown) => String(v ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim().replace(/\s+/g, " ");
-const dateInPdf = (iso: string | null | undefined, pdf: string) => {
-  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return false;
-  const [year, month, day] = iso.split("-");
-  return pdf.includes(iso) || pdf.includes(`${day}-${month}-${year}`) || pdf.includes(`${day}/${month}/${year}`);
-};
-const printedAmount = (pdf: string, label: RegExp): number | null => {
-  for (const line of pdf.split(/\r?\n/)) {
-    if (!label.test(line)) continue;
-    const amounts = [...line.matchAll(/(-?\d[\d.,]*)\s*€/g)];
-    if (amounts.length !== 1) continue;
-    const raw = amounts[0][1].replace(/\./g, "").replace(",", ".");
-    const amount = Number(raw);
-    if (Number.isFinite(amount)) return amount;
-  }
-  return null;
-};
 const add = (errors: string[], condition: unknown, message: string) => { if (!condition) errors.push(message); };
 
 export async function verifyInvoiceForAutomation(doc: InboxDocument, pdfText: string, db: VerificationReads): Promise<InvoiceVerification> {
@@ -45,8 +32,8 @@ export async function verifyInvoiceForAutomation(doc: InboxDocument, pdfText: st
   if (!ex) { blockers.push("Falta extracción del PDF."); return finish(); }
   add(blockers, Boolean(ex.invoiceNumber && pdfText.includes(ex.invoiceNumber)), "Referencia de factura sin evidencia literal en el PDF.");
   add(blockers, Boolean(ex.invoiceDate && /^\d{4}-\d{2}-\d{2}$/.test(ex.invoiceDate)), "Fecha de factura ausente o inválida.");
-  if (doc.invoiceBranch === "services") add(blockers, dateInPdf(ex.invoiceDate, pdfText), "Fecha de factura distinta del PDF.");
-  add(blockers, Boolean(ex.supplierVat && vat(pdfText).includes(vat(ex.supplierVat))), "NIF del emisor sin evidencia en el PDF.");
+  if (doc.invoiceBranch === "services") add(blockers, invoiceDateInPdf(ex.invoiceDate, pdfText), "Fecha de factura distinta del PDF.");
+  add(blockers, Boolean(normalizeInvoiceVat(ex.supplierVat) && vat(pdfText).includes(vat(ex.supplierVat))) || vatAbsenceConfirmed(doc), "NIF del emisor sin evidencia en el PDF.");
   // Los pendientes de una lectura anterior no son un bloqueo perpetuo: el
   // operador puede resolverlos editando el borrador. Las comprobaciones de
   // evidencia PDF/Odoo de abajo deciden sobre el estado ACTUAL del documento.
@@ -60,8 +47,8 @@ export async function verifyInvoiceForAutomation(doc: InboxDocument, pdfText: st
   if (amounts.every((x) => x != null && Number.isFinite(x))) {
     add(blockers, cents(ex.base! + ex.taxes!) === cents(ex.total!), "Base + IVA no coincide con total PDF.");
     if (doc.invoiceBranch === "services") {
-      const pdfBase = printedAmount(pdfText, /base imponible/i);
-      const pdfTotal = printedAmount(pdfText, /(?:importe total|total factura|total a pagar)/i);
+      const pdfBase = printedInvoiceAmount(pdfText, "base", ex.currency);
+      const pdfTotal = printedInvoiceAmount(pdfText, "total", ex.currency);
       add(blockers, pdfBase != null && cents(ex.base!) === cents(pdfBase), "Base de servicios distinta de la impresa en el PDF o no legible.");
       add(blockers, pdfTotal != null && cents(ex.total!) === cents(pdfTotal), "Total de servicios distinto del impreso en el PDF o no legible.");
       if (pdfBase != null && pdfTotal != null) add(blockers, cents(ex.taxes!) === cents(pdfTotal - pdfBase), "Impuestos de servicios distintos de la diferencia total-base del PDF.");
@@ -104,9 +91,14 @@ export async function verifyInvoiceForAutomation(doc: InboxDocument, pdfText: st
   try {
     const partnerId = Number(doc.confirmedOdooPartnerId);
     const [partner] = await db.read("res.partner", [partnerId], ["name", "vat", "active"]);
-    add(blockers, partner?.active !== false && vat(partner?.vat) === vat(ex.supplierVat), "Proveedor Odoo inactivo o NIF distinto del PDF.");
-    const sameVat = await db.search("res.partner", [["vat", "ilike", vat(ex.supplierVat)]], ["id", "vat"]);
-    add(blockers, sameVat.filter((p) => vat(p.vat) === vat(ex.supplierVat)).length === 1, "El NIF no identifica un único proveedor Odoo.");
+    if (vatAbsenceConfirmed(doc)) {
+      add(blockers, Boolean(partner) && partner.active !== false && !normalizeInvoiceVat(partner.vat)
+        && words(partner.name).length >= 5 && normalizedPdf.includes(words(partner.name)), "Proveedor sin NIF: identidad Odoo y nombre del emisor PDF no coinciden.");
+    } else {
+      add(blockers, Boolean(partner) && partner.active !== false && vat(partner.vat) === vat(ex.supplierVat), "Proveedor Odoo inactivo o NIF distinto del PDF.");
+      const sameVat = await db.search("res.partner", [["vat", "ilike", vat(ex.supplierVat)]], ["id", "vat"]);
+      add(blockers, sameVat.filter((p) => vat(p.vat) === vat(ex.supplierVat)).length === 1, "El NIF no identifica un único proveedor Odoo.");
+    }
     const duplicates = await db.search("account.move", [["move_type", "=", "in_invoice"], ["partner_id", "=", partnerId], ["ref", "=", ex.invoiceNumber], ["state", "!=", "cancel"]], ["id", "ref"]);
     add(blockers, duplicates.length === 0, "Ya existe una factura no cancelada con esa referencia y proveedor.");
     const poIds = doc.assignedPurchaseOrderIds ?? [];

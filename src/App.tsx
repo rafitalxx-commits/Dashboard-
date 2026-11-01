@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import {
   BarChart3,
+  AlertTriangle,
   Boxes,
   CheckCircle2,
   CalendarDays,
@@ -39,7 +40,6 @@ import { money, orders as demoOrders, statusTone } from "./data/demoData";
 import { AmazonMessagesView } from "./modules/amazonMessages";
 import { ExpeditionsView } from "./modules/expeditions/ExpeditionsView";
 import { WarehouseWorkersSettings } from "./modules/expeditions/WarehouseWorkersSettings";
-import { WarehouseStatisticsView } from "./modules/warehouseStats/WarehouseStatisticsView";
 import { ProductsCatalogView } from "./modules/products/ProductsCatalogView";
 import { ProductLabelsView } from "./modules/products/ProductLabelsView";
 import { ProductLocationsView } from "./modules/products/ProductLocationsView";
@@ -48,6 +48,8 @@ import { InventoryReceptionsView } from "./modules/receptions/InventoryReception
 import { PendingPurchasesView } from "./modules/receptions/ReceptionsView";
 import { HomePage } from "./modules/home/HomePage";
 import { SupplierInvoicesView } from "./modules/supplierInvoices/SupplierInvoicesView";
+import { IncidentsView } from "./modules/incidents/IncidentsView";
+import { IncidentsHome } from "./modules/incidents/IncidentsHome";
 import { odooClient } from "./services/odooClient";
 import type {
   InvoiceAnalytics,
@@ -97,12 +99,6 @@ const navItems = [
     icon: Send,
     view: "expeditions",
     permission: "expeditions",
-  },
-  {
-    label: "Estadísticas",
-    icon: BarChart3,
-    view: "warehouseStatistics",
-    permission: "dashboard",
   },
   {
     label: "Facturas cliente",
@@ -207,6 +203,12 @@ const navItems = [
     navGroup: "products",
   },
   {
+    label: "Incidencias",
+    icon: AlertTriangle,
+    view: "incidents",
+    permission: "products",
+  },
+  {
     label: "Amazon Messages",
     icon: MessagesSquare,
     view: "amazonMessages",
@@ -227,7 +229,6 @@ const viewRoutes: Record<ActiveView, string> = {
   orders: "pedidos",
   ordersV2: "pedidos-v2",
   expeditions: "expediciones",
-  warehouseStatistics: "estadisticas",
   customerInvoices: "facturacion",
   supplierInvoices: "facturas-proveedor",
   purchaseAnalytics: "compras/analitica",
@@ -243,12 +244,16 @@ const viewRoutes: Record<ActiveView, string> = {
   productsInventoryFinal: "productos/inventario/finalizados",
   productsInventoryHistory: "productos/inventario/historial",
   receptions: "productos/recepciones",
+  incidents: "incidencias",
   amazonMessages: "amazon-messages",
   settings: "configuracion",
 };
 const routeViews = Object.fromEntries(
   Object.entries(viewRoutes).map(([view, route]) => [route, view]),
 ) as Record<string, ActiveView>;
+// Keep old statistics links working, but route them through Expeditions access control.
+routeViews.estadisticas = "expeditions";
+routeViews["expediciones/estadisticas"] = "expeditions";
 
 type DashboardUserRole = "viewer" | "printer" | "admin";
 type DashboardPermission =
@@ -492,6 +497,7 @@ function App() {
     activeView === "dashboard" || activeView === "dashboardV2";
   const isOrdersView = activeView === "orders" || activeView === "ordersV2";
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  const [incidentOrderToOpen, setIncidentOrderToOpen] = useState<string | null>(null);
   const [salesPurchaseAlerts, setSalesPurchaseAlerts] = useState<SalesPurchaseAlert[]>([]);
   const [salesPurchaseAlertsLoading, setSalesPurchaseAlertsLoading] = useState(false);
   const [selectedPurchaseAlertId, setSelectedPurchaseAlertId] = useState<string | null>(null);
@@ -748,6 +754,12 @@ function App() {
     serverPage,
     serverSearch,
   ]);
+
+  useEffect(() => {
+    if (!incidentOrderToOpen || activeView !== "orders" || dataMode !== "live") return;
+    const target = orders.find(order => order.odooRef === incidentOrderToOpen || order.id === incidentOrderToOpen);
+    if (target) { setSelectedOrderId(target.id); setIncidentOrderToOpen(null); }
+  }, [incidentOrderToOpen, activeView, dataMode, orders]);
 
   useEffect(() => {
     if (authMode !== "logged-in" || !isOrdersView) return;
@@ -1513,7 +1525,7 @@ function App() {
     <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">OD</div>
+          <div className="brand-mark"><img src="/te-panel-rayo-192.png" alt="Todoeléctrico" style={{width:"100%",height:"100%",objectFit:"contain"}} /></div>
           <div className="brand-copy">
             <strong>Odoo v18</strong>
             <span>Dashboard interno</span>
@@ -1674,11 +1686,15 @@ function App() {
         <header className="topbar">
           <div>
             <p className="eyebrow">
-              {activeView === "receptions"
-                ? "Inventario · Odoo real"
+              {activeView === "incidents"
+                ? "Atención al cliente · Operaciones"
+                : activeView === "receptions"
+                ? (import.meta.env.BASE_URL.startsWith("/incidents-lab/") ? "Inventario · Odoo DEMO" : "Inventario · Odoo real")
                 : activeView === "pendingPurchases"
                   ? "Compras · Odoo real"
-                  : activeView === "supplierInvoices" || activeView === "purchaseAnalytics"
+                  : activeView === "supplierInvoices"
+                    ? "Compras · Odoo real · borradores bajo confirmación"
+                  : activeView === "purchaseAnalytics"
                     ? "Compras · Odoo real · solo lectura"
                   : `Pedidos de venta · ${
                       isV2View
@@ -1699,10 +1715,10 @@ function App() {
                   ? "Pedidos V2"
                 : activeView === "expeditions"
                   ? "Expediciones"
-                : activeView === "warehouseStatistics"
-                  ? "Estadísticas"
                 : activeView === "amazonMessages"
                     ? "Amazon Messages"
+                  : activeView === "incidents"
+                    ? "Incidencias"
                   : activeView === "settings"
                     ? "Configuracion"
                     : navItems.find((item) => item.view === activeView)?.label}
@@ -1723,11 +1739,17 @@ function App() {
             )}
             <div className={`connection-pill ${activeView === "receptions" || activeView === "pendingPurchases" || activeView === "supplierInvoices" || activeView === "purchaseAnalytics" ? "live" : dataMode}`}>
               <span />
-              {activeView === "receptions" || activeView === "pendingPurchases"
+              {activeView === "incidents"
+                ? (import.meta.env.BASE_URL.startsWith("/incidents-lab/") ? "Incidencias · Odoo TEST" : "Incidencias · Operaciones")
+                : activeView === "receptions" && import.meta.env.BASE_URL.startsWith("/incidents-lab/")
+                ? "LAB · Recepciones DEMO"
+                : activeView === "receptions" || activeView === "pendingPurchases"
                 ? authUser.permissions.includes("odooWrite")
                   ? "Odoo real · acciones habilitadas"
                   : "Odoo real · solo lectura"
-                : activeView === "supplierInvoices" || activeView === "purchaseAnalytics"
+                : activeView === "supplierInvoices"
+                  ? "Odoo real · borrador solo con confirmación"
+                : activeView === "purchaseAnalytics"
                   ? "Odoo real · solo lectura"
                   : connectionMessage}
             </div>
@@ -1810,7 +1832,7 @@ function App() {
         )}
 
         {activeView === "dashboard" ? (
-          <HomePage onOpen={openOperationalHomeMetric} />
+          <><HomePage onOpen={openOperationalHomeMetric} /><IncidentsHome /></>
         ) : activeView === "dashboardV2" ? (
           <>
             {isV2View && (
@@ -1920,6 +1942,20 @@ function App() {
             onSaveUsers={saveDashboardUsers}
             users={dashboardUsers}
           />
+        ) : activeView === "incidents" ? (
+          <IncidentsView currentUser={authUser?.name || authUser?.username || "Usuario"} onOpenOrder={async (reference) => {
+            try {
+              const value = await odooClient.getOrderDetail(reference);
+              if (value.mode !== "live" || !value.order) throw new Error("No se pudo abrir el pedido real");
+              const order = value.order;
+              setRangePreset("custom"); setCustomFrom(order.date.slice(0,10)); setCustomTo(todayIso()); setHomeDestination(null); setSelectedChannels([]); setDelivery("Todos"); setPrinted("Todos"); setOdooDelivery("Todos");
+              setQuery(reference); setServerPage(1); setPage(1);
+              setOrders((items) => [order, ...items.filter(item => item.id !== order.id)]);
+              setOrderDetailsById((items) => ({...items,[order.id]:order}));
+              navigateToView("orders");
+              setIncidentOrderToOpen(reference);
+            } catch (error) { throw new Error(error instanceof Error ? error.message : "No se pudo abrir el pedido"); }
+          }} />
         ) : activeView === "amazonMessages" ? (
           <AmazonMessagesView
             currentUser={authUser}
@@ -1929,8 +1965,6 @@ function App() {
           <ExpeditionsView
             onRefreshOrders={() => setOrderRefreshKey((value) => value + 1)}
           />
-        ) : activeView === "warehouseStatistics" ? (
-          <WarehouseStatisticsView />
         ) : activeView === "products" ? (
           <ProductsCatalogView
             key="catalog"
@@ -2024,7 +2058,7 @@ function App() {
           <InventoryReceptionsView initialIds={homeDestination?.metric === "receptions" ? homeDestination.ids : undefined} />
         ) : isOrdersView ? (
           <>
-            {homeDestination && (homeDestination.metric === "unprinted" || homeDestination.metric === "unsent") && <div className="home-destination-filter">Filtro de Inicio · {homeDestination.metric === "unprinted" ? "FBM + Website · sin imprimir" : "FBM + Website · sin etiqueta de Expediciones"} · {homeDestination.ids.length} pedidos <button onClick={() => setHomeDestination(null)} type="button">Quitar filtro</button></div>}
+            {homeDestination && (homeDestination.metric === "unprinted" || homeDestination.metric === "unsent") && <div className="home-destination-filter">Filtro de Inicio · {homeDestination.metric === "unprinted" ? "FBM + Website · sin imprimir" : "FBM + Website · entrega Odoo pendiente"} · {homeDestination.ids.length} pedidos <button onClick={() => setHomeDestination(null)} type="button">Quitar filtro</button></div>}
             {isV2View && (
               <V2PerformancePanel
                 performance={ordersV2Performance}

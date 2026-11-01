@@ -1,25 +1,36 @@
+import { correctedReview, reviewFingerprint, exceptionRequestError } from "./reviewCorrections.ts";
+import { normalizeInvoiceVat, validInvoiceDate } from "../../shared/supplierInvoiceEvidence.ts";
 // Rutas Fase 2: bandeja documental (Drive + extraccion + cotejo) y pedidos sin facturar.
-// SOLO LECTURA de Drive/Odoo. Escritura unicamente del registro documental local del LAB.
+// El escaneo Facturas escribe sólo el registro documental local; las escrituras
+// Odoo/Drive son rutas separadas con permisos y puertas de configuración propias.
 // OJO: este middleware es first-match-wins por prefijo. Las sub-rutas especificas
 // (/inbox/detail, /inbox/scan, /unbilled/sync...) DEBEN registrarse ANTES que sus listas.
 
 import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename } from "node:path";
-import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { reviewInvoice } from "./agentRunner.ts";
+import { extractCorreosExpressPdf } from "./correosExpressPdf.ts";
 const pdfParse = createRequire(import.meta.url)("pdf-parse") as typeof import("pdf-parse");
 import { SupplierInvoiceSyncService } from "./service.ts";
 import { DocumentInboxService, matchDocument, buildPoIndex, parseDate, normalizeSupplierName, extractPurchaseOrderReferences, extractPurchaseOrderReferenceEvidence } from "./documentInbox.ts";
 import { SupplierMappingStore } from "./supplierMappings.ts";
-import { odooSession, odooWriteEnabled, createSupplierDraft, discardSupplierDraft, validateAmounts, draftAmountCompletenessError, serviceLineIdentityError } from "./odooBridge.ts";
+import { odooSession, odooWriteEnabled, odooDraftCreationEnabled, createSupplierDraft, discardSupplierDraft, validateAmounts, draftAmountCompletenessError, serviceLineIdentityError, quantityMismatchConfirmationMatches } from "./odooBridge.ts";
 import type { DraftResult } from "./odooBridge.ts";
 import { aiExtractCachedPdf, mergeExtracted } from "./aiExtract.ts";
+import { isConcatenatedInvoiceNumber } from "./agentReply.ts";
+import { pdfIssuerVatMatches } from "./supplierIdentity.ts";
 import { PurchaseOrdersLedger, computeBilling, filterOrders, computeUnbilledKpis } from "./unbilled.ts";
 import { DriveClient } from "./driveClient.ts";
+import { verifyInvoiceWithOdoo } from "./autoVerifier.ts";
+import { autoFillInvoiceDraft } from "./autoFill.ts";
+import { invoiceAutomationUser } from "./automationAuth.ts";
 import { cotejarPdfConPedidos, preserveOperatorProductSelections, productReferenceTokens, type SupplierProductAlias } from "./pdfPurchaseLines.ts";
 import { authenticate, executeKw, getOdooConfig, hasOdooConfig, readRows, searchIds, paginatedRead, searchRead } from "./odooClient.ts";
 import { chooseSupplierPrice, type SupplierPriceRow } from "../purchases/supplierPricing.ts";
 import { isWebAdjustmentProductId, discountedBase, effectiveDiscount } from "../../shared/supplierInvoiceDiscounts.ts";
+import { archiveMismatch, isRecommendedInvoiceArchivePath } from "../../shared/supplierInvoiceArchiveGate.ts";
 
 type MiddlewareServer = {
   middlewares: {
@@ -36,6 +47,8 @@ type AuthReader = {
 type Deps = {
   env: Record<string, string | undefined>;
   dataDir: string;
+  /** Test seam; production always reads the cached PDF with pdf-parse. */
+  readPdfText?: (pdf: Buffer) => Promise<{ text?: string | null }>;
 };
 
 const PERMISSIONS = ["supplierBilling", "purchases", "billing"];
@@ -68,8 +81,9 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
   const raskibotInFlight = new Set<string>();
   const draftInFlight = new Set<string>();
 
-  const requireUser = (request: any, response: any) => {
-    const user = auth.getSessionUser(request.headers.cookie);
+  const requireUser = (request: any, response: any, automationMethod?: "GET" | "POST") => {
+    const user = auth.getSessionUser(request.headers.cookie)
+      ?? (automationMethod ? invoiceAutomationUser(request, deps.env, automationMethod) : null);
     if (!user) {
       sendJson(response, 401, { message: "Login requerido" });
       return null;
@@ -79,6 +93,20 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
       return null;
     }
     return user;
+  };
+
+  const verifyCurrentDocument = async (id: string) => {
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) return { ready: false, checkedAt: new Date().toISOString(), blockers: ["ID de PDF inválido."] };
+    const doc = inboxService.getDocument(id);
+    if (!doc) return null;
+    const pdfPath = `${deps.dataDir.replace(/\/$/, "")}/supplier-invoices/inbox/${id}.pdf`;
+    if (!existsSync(pdfPath)) return { ready: false, checkedAt: new Date().toISOString(), blockers: ["No se conserva el PDF completo en la caché de producción."] };
+    try {
+      const parsed = deps.readPdfText ? await deps.readPdfText(readFileSync(pdfPath)) : await pdfParse(readFileSync(pdfPath));
+      return await verifyInvoiceWithOdoo(doc, String(parsed.text ?? ""), deps.env);
+    } catch (error) {
+      return { ready: false, checkedAt: new Date().toISOString(), blockers: [`No se pudo verificar el PDF: ${error instanceof Error ? error.message.slice(0, 160) : "error"}`] };
+    }
   };
 
   const enrichedOrders = () =>
@@ -95,26 +123,6 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     const poVat = normalizedVat(partnerVat);
     if (docVat && poVat) return docVat === poVat || stripVatCountry(docVat) === stripVatCountry(poVat);
     return !docVat && Boolean(ex.supplier) && normalizeSupplierName(ex.supplier) === normalizeSupplierName(partnerName);
-  };
-  // Heuristic extraction can pick the buyer's NIF (often printed before the
-  // items) as supplierVat. Resolve it only from a labeled VAT/NIF/CIF placed
-  // near the exact Odoo supplier name in the complete PDF text.
-  const pdfIssuerVatMatches = (pdfText: string, partnerName: string, partnerVat: string | null) => {
-    const targetVat = normalizedVat(partnerVat);
-    const words = normalizeSupplierName(partnerName).split(/\s+/).filter(Boolean);
-    if (!targetVat || words.length < 2) return false;
-    const namePattern = new RegExp(words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[^A-Z0-9]{0,12}"), "i");
-    const nameMatch = namePattern.exec(pdfText);
-    if (!nameMatch) return false;
-    const nearby = pdfText.slice(nameMatch.index + nameMatch[0].length, nameMatch.index + nameMatch[0].length + 900);
-    for (const label of nearby.matchAll(/\b(?:NIF|CIF|VAT|identif(?:icaci[oó]n)?\.?\s*fiscal)\b/gi)) {
-      const valueWindow = nearby.slice(label.index! + label[0].length, label.index! + label[0].length + 90);
-      for (const raw of valueWindow.matchAll(/(?:ES)?[A-Z]\s*[- ]?\s*\d(?:[\s-]?\d){7}\b/gi)) {
-        const found = normalizedVat(raw[0]);
-        if (found === targetVat || stripVatCountry(found) === stripVatCountry(targetVat)) return true;
-      }
-    }
-    return false;
   };
   const pendingOrdersForDocument = (doc: ReturnType<typeof inboxService.getDocument>, pdfText = "") => enrichedOrders()
     .filter((order) => order.state === "purchase" || order.state === "done")
@@ -304,7 +312,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
   // Actualiza sólo el inventario de metadatos. Descargar/leer/cotejar un PDF
   // requiere pulsar el botón de IA de ese documento.
   server.middlewares.use("/api/odoo/supplier-invoices/inbox/scan", async (request: any, response: any) => {
-    const user = requireUser(request, response);
+    const user = requireUser(request, response, "POST");
     if (!user) return;
     if ((request.method ?? "POST").toUpperCase() !== "POST") return sendJson(response, 405, { message: "Usa POST" });
     try {
@@ -341,6 +349,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     if (!allowed.includes(body.status)) return sendJson(response, 400, { message: "Estado no permitido" });
     const current = inboxService.getDocument(body.id);
     if (!current) return sendJson(response, 404, { message: "Documento no encontrado" });
+    if (draftInFlight.has(current.driveFileId)) return sendJson(response, 409, { message: "Hay un envío Odoo en curso." });
     if (current.odooDraftMoveId && body.status !== "VALIDADA") return sendJson(response, 409, { message: "El borrador Odoo ya existe; el documento no puede volver a cotejo." });
     if (body.status === "VALIDADA") {
       const ex = current.extracted;
@@ -383,10 +392,13 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
           const sourceOrder = pendingById.get(Number(line.sourcePurchaseOrderId));
           // ILA5467106: Rafa regulariza la recepción por separado. Este cotejo
           // sólo permite facturar cantidad pedida aún no facturada; no escribe stock.
+          const sourceMatches = sourceOrder?.lines.filter((source) => source.productId === line.productId) ?? [];
+          if (sourceMatches.length !== 1) return sendJson(response, 409, { message: `Línea ${i + 1}: falta una única línea de compra para confirmar su cantidad.` });
+          const source = sourceMatches[0];
+          const confirmedMismatch = quantityMismatchConfirmationMatches(line.quantityMismatchConfirmation, line, source, Number(line.sourcePurchaseOrderId));
           const invoiceBeforeReceipt = current.driveFileId === "1a5eCfcym42k3kRFUVEmRnZ9Krs6vVuYh";
-          const sourceMatches = sourceOrder?.lines.filter((source) => source.productId === line.productId &&
-            (invoiceBeforeReceipt ? source.qtyOrdered : source.qtyReceived) - source.qtyInvoiced + 0.0001 >= line.quantity) ?? [];
-          if (sourceMatches.length !== 1) return sendJson(response, 409, { message: `Línea ${i + 1}: falta una única línea ${invoiceBeforeReceipt ? "pedida" : "recibida"} sin facturar en el pedido confirmado.` });
+          const quantityAvailable = (invoiceBeforeReceipt ? source.qtyOrdered : source.qtyReceived) - source.qtyInvoiced;
+          if (!confirmedMismatch && quantityAvailable + 0.0001 < line.quantity) return sendJson(response, 409, { message: `Línea ${i + 1}: cantidad superior a la disponible sin facturar. Para aceptar esta discrepancia, el operario debe confirmarla en la línea y guardar.` });
           receiptUpdates.push({ index: i, source: sourceMatches[0] });
         }
       }
@@ -412,6 +424,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
         qtyInvoiced: source.qtyInvoiced, qtyPending: source.qtyPending,
       });
     }
+    if (draftInFlight.has(current.driveFileId)) return sendJson(response, 409, { message: "Hay un envío Odoo en curso." });
     const doc = inboxService.setStatus(body.id, body.status as any, user.name, body.notes);
     if (!doc) return sendJson(response, 404, { message: "Documento no encontrado" });
     // Validar confirma exclusivamente el cotejo humano. La única escritura es el botón explícito.
@@ -441,11 +454,12 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     const user = requireUser(request, response);
     if (!user) return;
     if ((request.method ?? "POST").toUpperCase() !== "POST") return sendJson(response, 405, { message: "Usa POST" });
-    let body: { id?: string; manualTaxTotal?: number; lines?: { productId?: number | null; description: string; reference: string | null; quantity: number | null; priceUnit: number | null; discount: number | null; discountExtra?: number | null; promptPaymentDiscount?: number | null; taxNames: string[]; taxId?: number | null; taxRate?: number | null; taxAmount?: number | null; totalWithTax?: number | null; accountId?: number | null; accountName?: string | null; total: number | null; sourcePurchaseOrderId?: number | null; sourcePurchaseOrderName?: string | null; genericProductConfirmed?: boolean; pdfPriceVerified?: boolean; qtyOrdered?: number | null; qtyReceived?: number | null; qtyInvoiced?: number | null; qtyPending?: number | null }[] } = {};
-    try { body = JSON.parse(await readBody(request) || "{}"); } catch { /* body vacio */ }
+    let body: { id?: string; manualTaxTotal?: number; lines?: { productId?: number | null; description: string; reference: string | null; quantity: number | null; priceUnit: number | null; discount: number | null; discountExtra?: number | null; promptPaymentDiscount?: number | null; taxNames: string[]; taxId?: number | null; taxRate?: number | null; taxAmount?: number | null; totalWithTax?: number | null; accountId?: number | null; accountName?: string | null; total: number | null; sourcePurchaseOrderId?: number | null; sourcePurchaseOrderName?: string | null; genericProductConfirmed?: boolean; pdfPriceVerified?: boolean; qtyOrdered?: number | null; qtyReceived?: number | null; qtyInvoiced?: number | null; qtyPending?: number | null; quantityMismatchAcknowledged?: boolean }[] } = {};
+    try { body = JSON.parse(await readBody(request, 8e6) || "{}"); } catch { /* body vacio */ }
     if (!body.id || !Array.isArray(body.lines)) return sendJson(response, 400, { message: "Faltan id o lines" });
     const doc = inboxService.getDocument(body.id);
     if (!doc) return sendJson(response, 404, { message: "Documento no encontrado" });
+    if (draftInFlight.has(doc.driveFileId)) return sendJson(response, 409, { message: "Hay un envío Odoo en curso." });
     if (!doc.extracted) return sendJson(response, 400, { message: "El documento no tiene datos extraidos" });
     if (body.lines.filter((line) => isWebAdjustmentProductId(line.productId)).length > 1) return sendJson(response, 409, { message: "Solo se admite un Ajuste Web por factura." });
     for (const [index, line] of body.lines.entries()) {
@@ -463,13 +477,19 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     }
     const usedSourceLines = new Set<number>();
     const oldLines = doc.extracted.lines;
-    const clean = body.lines.slice(0, 60).map((l, index) => {
+    if (body.lines.length > 5000) return sendJson(response, 400, { message: "La factura supera el límite de 5000 líneas; no se guardó ninguna línea truncada." });
+    const clean = body.lines.map((l, index) => {
       const matches = (source: typeof oldLines[number], at: number) => !usedSourceLines.has(at)
         && source.productId === l.productId && source.sourcePurchaseOrderId === l.sourcePurchaseOrderId;
       const priorIndex = oldLines[index] && matches(oldLines[index], index) ? index : oldLines.findIndex(matches);
       const prior = priorIndex >= 0 ? oldLines[priorIndex] : null;
       if (priorIndex >= 0) usedSourceLines.add(priorIndex);
       const sameOrigin = Boolean(prior);
+      const mismatchAck = l.quantityMismatchAcknowledged === true
+        && typeof l.productId === "number" && typeof l.sourcePurchaseOrderId === "number"
+        && typeof l.quantity === "number" && typeof l.qtyOrdered === "number"
+        && typeof l.qtyReceived === "number" && typeof l.qtyInvoiced === "number"
+        && Math.abs(l.quantity - Math.max(0, l.qtyReceived - l.qtyInvoiced)) > 0.0001;
       return ({
       productId: typeof l.productId === "number" && Number.isFinite(l.productId) ? Math.floor(l.productId) : null,
       description: String(l.description ?? "").slice(0, 200) || "(concepto)",
@@ -486,6 +506,14 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
       qtyReceived: typeof l.qtyReceived === "number" && Number.isFinite(l.qtyReceived) ? Math.round(l.qtyReceived * 100) / 100 : null,
       qtyInvoiced: typeof l.qtyInvoiced === "number" && Number.isFinite(l.qtyInvoiced) ? Math.round(l.qtyInvoiced * 100) / 100 : null,
       qtyPending: typeof l.qtyPending === "number" && Number.isFinite(l.qtyPending) ? Math.round(l.qtyPending * 100) / 100 : null,
+      quantityMismatchConfirmation: mismatchAck ? {
+        purchaseOrderId: Math.floor(l.sourcePurchaseOrderId!), productId: Math.floor(l.productId!),
+        invoiceQuantity: Math.round(l.quantity! * 100) / 100,
+        qtyOrdered: Math.round(l.qtyOrdered! * 100) / 100,
+        qtyReceived: Math.round(l.qtyReceived! * 100) / 100,
+        qtyInvoiced: Math.round(l.qtyInvoiced! * 100) / 100,
+        confirmedBy: user.name, confirmedAt: new Date().toISOString(), scope: "quantity-discrepancy-not-receipt" as const,
+      } : null,
       // El precio original del pedido no lo proporciona el navegador: conservar
       // sólo la línea de origen que ya quedó importada en el store local.
       odooPurchasePriceUnit: sameOrigin ? prior?.odooPurchasePriceUnit ?? null : null,
@@ -519,6 +547,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
       doc.extracted.taxes = requested;
       doc.extracted.total = round2(base + requested);
     }
+    doc.operatorLinesEdited = true;
     doc.extracted.lines = clean;
     if (doc.invoiceBranch === "services" && doc.confirmedOdooPartnerId && !(doc.assignedPurchaseOrderIds?.length)
         && doc.status !== "VALIDADA" && doc.status !== "INCIDENCIA"
@@ -537,7 +566,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     }, user.name);
     const sum = clean.reduce((acc, l) => acc + (l.total ?? 0), 0);
     doc.notes = [...(doc.notes ? [doc.notes] : []), `Lineas editadas por ${user.name}`].join("; ").slice(0, 400);
-    inboxService.save();
+    if (!inboxService.save()) return sendJson(response, 500, { message: "No se pudo guardar en disco el borrador local; los cambios no están confirmados." });
     sendJson(response, 200, { status: "ok", document: doc, lines: doc.extracted.lines, total: doc.extracted.total, fiscalDefaults: mappingStore.get(doc.extracted.supplier, doc.extracted.supplierVat) });
   });
 
@@ -552,6 +581,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     if (!body.id || !body.fields || typeof body.fields !== "object") return sendJson(response, 400, { message: "Faltan id o fields" });
     const doc = inboxService.getDocument(body.id);
     if (!doc) return sendJson(response, 404, { message: "Documento no encontrado" });
+    if (draftInFlight.has(doc.driveFileId)) return sendJson(response, 409, { message: "Hay un envío Odoo en curso." });
     if (!doc.extracted) return sendJson(response, 400, { message: "El documento no tiene datos extraidos" });
     const f = body.fields;
     const str = (v: unknown, max = 200) => (typeof v === "string" ? v.trim().slice(0, max) || null : null);
@@ -586,7 +616,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
       doc.invoiceBranch = f.invoiceBranch;
     }
     ex.supplier = str(f.supplier) ?? ex.supplier;
-    ex.supplierVat = str(f.supplierVat, 20)?.toUpperCase() ?? ex.supplierVat;
+    if (f.supplierVat !== undefined) ex.supplierVat = normalizeInvoiceVat(f.supplierVat) || null;
     ex.country = str(f.country, 20)?.toUpperCase() ?? ex.country;
     ex.invoiceNumber = str(f.invoiceNumber, 60) ?? ex.invoiceNumber;
     const dInv = str(f.invoiceDate, 10);
@@ -625,7 +655,9 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     if (doc.invoiceBranch === "services" && doc.confirmedOdooPartnerId && !(doc.assignedPurchaseOrderIds?.length)
         && validateAmounts(ex.base, ex.taxes, ex.total, ex.lines, []).ok) targetStatus = "PENDIENTE_VALIDAR";
     if (targetStatus && !doc.odooDraftMoveId && doc.status !== "VALIDADA" && doc.status !== "INCIDENCIA") doc.status = targetStatus;
-    inboxService.save();
+    const editableKeys = ["supplier", "supplierVat", "country", "invoiceNumber", "invoiceDate", "dueDate", "currency", "billingAddress", "base", "taxes", "total"];
+    doc.operatorEditedFields = [...new Set([...(doc.operatorEditedFields ?? []), ...editableKeys.filter((key) => Object.prototype.hasOwnProperty.call(f, key))])];
+    if (!inboxService.save()) return sendJson(response, 500, { message: "No se pudo guardar en disco el borrador local; los cambios no están confirmados." });
     sendJson(response, 200, { status: "ok", document: doc, mapping: { learned: true, supplierName: learned.supplierName, samples: learned.samples, defaultTaxId: learned.defaultTaxId ?? null, defaultAccountId: learned.defaultAccountId ?? null } });
   });
 
@@ -752,6 +784,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     && String(deps.env.SUPPLIER_INVOICES_SUPPLIER_PRICE_WRITE_ENABLED ?? "false").toLowerCase() === "true";
   const driveWriteEnabled = (fileId?: string) => String(deps.env.SUPPLIER_INVOICES_DRIVE_WRITE_ENABLED ?? "false").toLowerCase() === "true"
     && (!deps.env.SUPPLIER_INVOICES_DRIVE_ALLOWED_FILE_ID || deps.env.SUPPLIER_INVOICES_DRIVE_ALLOWED_FILE_ID === fileId);
+  const driveUploadEnabled = () => String(deps.env.SUPPLIER_INVOICES_DRIVE_UPLOAD_ENABLED ?? "false").toLowerCase() === "true";
 
   const loadSupplierPriceContext = async (doc: NonNullable<ReturnType<typeof inboxService.getDocument>>) => {
     const assignedIds = doc.assignedPurchaseOrderIds ?? [];
@@ -1047,7 +1080,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     const ex = doc.extracted;
     const priorSupplier = ex.supplier, priorVat = ex.supplierVat;
     ex.supplier = String(verifiedPartner.name ?? "").trim() || ex.supplier;
-    ex.supplierVat = String(verifiedPartner.vat ?? "").trim().toUpperCase() || ex.supplierVat;
+    ex.supplierVat = normalizeInvoiceVat(verifiedPartner.vat) || null;
     ex.country = text(f.country, 20)?.toUpperCase() ?? ex.country;
     ex.invoiceNumber = text(f.invoiceNumber, 60) ?? ex.invoiceNumber;
     if (text(f.invoiceDate, 10)) ex.invoiceDate = parseDate(String(f.invoiceDate));
@@ -1058,6 +1091,8 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     doc.confirmedOdooPartnerId = partnerId;
     doc.invoiceBranch = branch;
     doc.assignedPurchaseOrderIds = requestedIds.length ? requestedIds : null;
+    doc.operatorEditedFields = [...new Set([...(doc.operatorEditedFields ?? []), "supplier", "supplierVat", ...Object.keys(body.fields ?? {}).filter((key) => ["country", "invoiceNumber", "invoiceDate", "dueDate", "currency", "billingAddress", "base", "taxes", "total"].includes(key))])];
+    doc.operatorLinesEdited = true;
     if (branch === "goods" && requestedIds.length) {
       const pdfSourceLines = doc.pdfSourceLines ?? ex.lines.map((line) => ({ ...line }));
       doc.pdfSourceLines = pdfSourceLines;
@@ -1070,7 +1105,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     if (requestedIds.length && doc.status !== "INCIDENCIA") doc.status = "PENDIENTE_VALIDAR";
     else if (branch === "services" && doc.status !== "INCIDENCIA") doc.status = "PENDIENTE_COTEJO";
     doc.notes = [...(doc.notes ? [doc.notes] : []), `Proveedor y ${requestedIds.length ? "pedidos" : "rama de servicios"} confirmados localmente por ${user.name}`].join("; ").slice(0, 400);
-    inboxService.save();
+    if (!inboxService.save()) return sendJson(response, 500, { message: "No se pudo guardar la confirmación local; los cambios no están confirmados." });
     sendJson(response, 200, { status: "ok", document: doc, freshness: { source: "live_odoo", refreshedAt: new Date().toISOString() }, mapping: { learned: true, supplierName: learned.supplierName } });
   });
 
@@ -1097,7 +1132,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     if (!doc.extracted.lines.length) return sendJson(response, 409, { message: "No se detectaron líneas en el PDF; revísalo antes de continuar" });
     doc.invoiceBranch = "services";
     doc.pdfLinesAccepted = true;
-    inboxService.save();
+    if (!inboxService.save()) return sendJson(response, 500, { message: "No se pudieron guardar las líneas en el borrador local." });
     sendJson(response, 200, { status: "ok", document: doc });
   });
 
@@ -1167,11 +1202,12 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
         accountId: defaults.defaultAccountId ?? line.accountId,
         accountName: defaults.defaultAccountName ?? line.accountName,
       }));
+      doc.operatorLinesEdited = true;
     }
     doc.notes = [...(doc.notes ? [doc.notes] : []), `Pedidos asociados por ${user.name}: ${ids.length ? ids.join(", ") : "ninguno"}`].join("; ").slice(0, 400);
     // Confirmacion humana de pedidos: si hay al menos uno, la factura pasa a validacion.
     if (ids.length && doc.status !== "VALIDADA" && doc.status !== "INCIDENCIA") doc.status = "PENDIENTE_VALIDAR";
-    inboxService.save();
+    if (!inboxService.save()) return sendJson(response, 500, { message: "No se pudo guardar la asociación de pedidos en el borrador local." });
     sendJson(response, 200, { status: "ok", document: doc });
   });
 
@@ -1205,6 +1241,41 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
   });
 
   // ===== Fase 2.4: mini navegador de Drive (alojar PDFs validados) =====
+
+  // Alta explícita de un PDF nuevo en la carpeta conectada SIN REVISAR.
+  // Es una puerta independiente del archivo/movimiento de PDFs ya procesados.
+  server.middlewares.use("/api/odoo/supplier-invoices/inbox/drive/upload", async (request: any, response: any) => {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if ((request.method ?? "POST").toUpperCase() !== "POST") return sendJson(response, 405, { message: "Usa POST" });
+    if (!driveUploadEnabled()) return sendJson(response, 403, { message: "Subida a Drive desactivada en este entorno." });
+    const contentType = String(request.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+    if (contentType !== "application/pdf") return sendJson(response, 415, { message: "Selecciona un archivo PDF." });
+    let bytes: Buffer;
+    try { bytes = await readBinaryBody(request, 20 * 1024 * 1024); }
+    catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo leer el PDF";
+      return sendJson(response, message.includes("20 MB") ? 413 : 400, { message });
+    }
+    if (bytes.length < 5 || bytes.subarray(0, 5).toString("ascii") !== "%PDF-") return sendJson(response, 415, { message: "El archivo no contiene una cabecera PDF válida." });
+    const encodedName = String(request.headers["x-file-name"] ?? "factura.pdf");
+    let requestedName = "factura.pdf";
+    try { requestedName = decodeURIComponent(encodedName); } catch { requestedName = encodedName; }
+    let name = basename(requestedName).replace(/[\r\n\u0000]/g, "_").trim().slice(0, 180);
+    if (!name) name = "factura.pdf";
+    if (!/\.pdf$/i.test(name)) name += ".pdf";
+    const client = new DriveClient(deps.env);
+    const configError = client.configError();
+    if (configError) return sendJson(response, 503, { message: configError });
+    try {
+      const file = await client.uploadPdf(name, bytes);
+      const scan = await inboxService.scan(deps.env, invoiceService.getStore().invoices, buildPoIndex(poLedger.getStore()), user.name);
+      const document = inboxService.getDocument(file.id);
+      sendJson(response, 201, { status: "ok", file, document: document ?? null, added: scan.added, message: `PDF subido a Drive/SIN REVISAR: ${file.name}` });
+    } catch (error) {
+      sendJson(response, 502, { message: error instanceof Error ? error.message : "No se pudo subir el PDF a Drive" });
+    }
+  });
 
   // Navegacion: solo dentro de FACTURAS; la bandeja de entrada queda separada.
   server.middlewares.use("/api/odoo/supplier-invoices/inbox/drive/browse", async (request: any, response: any) => {
@@ -1252,7 +1323,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     try { body = JSON.parse(await readBody(request) || "{}"); } catch { /* body vacio */ }
     if (!driveWriteEnabled(body.id)) return sendJson(response, 403, { message: "Escritura en Drive no autorizada para esta factura." });
     const doc = body.id ? inboxService.getDocument(body.id) : null;
-    if (!doc || doc.status !== "VALIDADA" || !doc.odooDraftMoveId) return sendJson(response, 409, { message: "Sólo se crean carpetas cuando la factura está validada y ya tiene borrador Odoo." });
+    if (!doc || doc.sourcePresent === false) return sendJson(response, 409, { message: "El PDF debe seguir en la bandeja documental para preparar su destino." });
     if (doc.movedTo) return sendJson(response, 409, { message: "El PDF ya está archivado en Drive." });
     const name = sanitizeFolderName(String(body.name ?? ""));
     const parentId = String(body.parentId ?? "");
@@ -1271,19 +1342,55 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
   });
 
   // Mover el PDF validado a su carpeta definitiva. Doble seguro: solo al pulsar el boton.
+  server.middlewares.use("/api/odoo/supplier-invoices/inbox/drive/move-capability", (request: any, response: any) => {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if ((request.method ?? "GET").toUpperCase() !== "GET") return sendJson(response, 405, { message: "Usa GET" });
+    const id = new URL(request.url ?? "/", "http://localhost").searchParams.get("id");
+    if (!id || !inboxService.getDocument(id)) return sendJson(response, 404, { message: "Documento no encontrado" });
+    sendJson(response, 200, { enabled: driveWriteEnabled(id) });
+  });
+
   server.middlewares.use("/api/odoo/supplier-invoices/inbox/drive/move", async (request: any, response: any) => {
     const user = requireUser(request, response);
     if (!user) return;
     if ((request.method ?? "POST").toUpperCase() !== "POST") return sendJson(response, 405, { message: "Usa POST" });
-    let body: { id?: string; targetFolderId?: string } = {};
+    let body: { id?: string; targetFolderId?: string; expectedFolderPath?: string; acceptNonRecommendedDestination?: boolean } = {};
     try { body = JSON.parse(await readBody(request) || "{}"); } catch { /* body vacio */ }
     if (!driveWriteEnabled(body.id)) return sendJson(response, 403, { message: "Escritura en Drive no autorizada para esta factura." });
-    if (!body.id || !body.targetFolderId) return sendJson(response, 400, { message: "Faltan id o targetFolderId" });
+    if (!body.id || !body.targetFolderId || !body.expectedFolderPath) return sendJson(response, 400, { message: "Faltan id, targetFolderId o la ruta de Drive confirmada." });
     const doc = inboxService.getDocument(body.id);
     if (!doc) return sendJson(response, 404, { message: "Documento no encontrado" });
     // El borrador sólo pudo crearse tras VALIDADA. No perder la posibilidad de
     // archivar si un recotejo antiguo degradó el estado local después.
     if (!doc.odooDraftMoveId) return sendJson(response, 409, { message: "Guardar en Drive requiere factura validada y borrador Odoo existente." });
+    if (body.expectedFolderPath) {
+      try {
+        const session = await odooSession(deps.env);
+        const [move] = await readRows(session.config, session.uid, "account.move", [Number(doc.odooDraftMoveId)], ["move_type", "state", "partner_id", "ref", "invoice_date_due", "amount_untaxed", "amount_tax", "amount_total", "invoice_line_ids"]);
+        if (!move || move.move_type !== "in_invoice" || move.state === "cancel" ||
+            (Array.isArray(move.partner_id) ? Number(move.partner_id[0]) : Number(move.partner_id)) !== Number(doc.confirmedOdooPartnerId)) {
+          return sendJson(response, 409, { message: "El borrador Odoo ya no corresponde al proveedor/documento confirmado. No se archivó el PDF." });
+        }
+        const lineIds = Array.isArray(move.invoice_line_ids) ? move.invoice_line_ids.map(Number) : [];
+        const rows = lineIds.length ? await readRows(session.config, session.uid, "account.move.line", lineIds, ["name", "product_id", "purchase_line_id", "quantity", "price_unit", "price_subtotal", "price_total"]) : [];
+        const actual = {
+          reference: String(move.ref ?? ""), dueDate: move.invoice_date_due ? String(move.invoice_date_due) : null,
+          base: Number(move.amount_untaxed ?? 0), taxes: Number(move.amount_tax ?? 0), total: Number(move.amount_total ?? 0),
+          lines: rows.map((line) => ({ description: String(line.name ?? ""),
+            productId: Array.isArray(line.product_id) ? Number(line.product_id[0]) : null,
+            purchaseLineId: Array.isArray(line.purchase_line_id) ? Number(line.purchase_line_id[0]) : null,
+            quantity: Number(line.quantity ?? 0), priceUnit: Number(line.price_unit ?? 0),
+            base: Number(line.price_subtotal ?? 0), total: Number(line.price_total ?? 0) })),
+        };
+        doc.odooDraftActual = actual;
+        inboxService.save();
+        const mismatch = archiveMismatch(doc.extracted, actual, [], doc.invoiceBranch === "services" ? "services" : "goods");
+        if (mismatch) return sendJson(response, 409, { message: `${mismatch} El PDF permanece en la bandeja.`, document: doc });
+      } catch (error) {
+        return sendJson(response, 502, { message: `No se pudo releer el borrador Odoo antes de archivar: ${error instanceof Error ? error.message : "error"}` });
+      }
+    }
     const client = new DriveClient(deps.env);
     const err = client.configError();
     if (err) return sendJson(response, 400, { message: err });
@@ -1291,6 +1398,17 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     try {
       const targetFolderPath = await client.archivePath(body.targetFolderId);
       if (body.targetFolderId === client.getArchiveFolderId()) return sendJson(response, 400, { message: "Selecciona una subcarpeta dentro de FACTURAS." });
+      if (body.expectedFolderPath && body.expectedFolderPath !== targetFolderPath) return sendJson(response, 409, { message: "La carpeta de Drive cambió desde su selección; vuelve a comprobar el destino." });
+      if (body.expectedFolderPath) {
+        const recommended = isRecommendedInvoiceArchivePath(doc.extracted?.invoiceDate, targetFolderPath);
+        if (!recommended && !body.acceptNonRecommendedDestination) {
+          return sendJson(response, 409, {
+            confirmationRequired: true,
+            targetFolderPath,
+            message: `El destino seleccionado no es el recomendado para la fecha de factura. ¿Aceptas guardar en ${targetFolderPath}?`,
+          });
+        }
+      }
       await client.moveFile(doc.driveFileId, body.targetFolderId);
       doc.movedTo = body.targetFolderId;
       doc.targetFolderPath = targetFolderPath;
@@ -1320,13 +1438,106 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     response.end();
   });
 
+  const currentFingerprint = (doc: import("./phase2Types.ts").InboxDocument) => {
+    if (!/^[A-Za-z0-9_-]+$/.test(doc.driveFileId)) throw new Error("ID inválido");
+    const path = `${deps.dataDir.replace(/\/$/, "")}/supplier-invoices/inbox/${doc.driveFileId}.pdf`;
+    const bytes = readFileSync(path);
+    if (bytes.subarray(0,5).toString() !== "%PDF-") throw new Error("No se conserva un PDF válido");
+    return reviewFingerprint(doc, createHash("sha256").update(bytes).digest("hex"));
+  };
+  server.middlewares.use("/api/odoo/supplier-invoices/inbox/review-corrections", async (request: any, response: any) => {
+    const user = requireUser(request, response); if (!user) return;
+    if (request.method !== "POST") return sendJson(response, 405, { message: "Usa POST" });
+    try {
+      const body = JSON.parse(await readBody(request) || "{}");
+      const doc = inboxService.getDocument(body.id);
+      if (!doc) return sendJson(response, 404, { message: "Documento no encontrado" });
+      if (draftInFlight.has(doc.driveFileId)) return sendJson(response, 409, { message: "Hay un envío Odoo en curso." });
+      if (body.fingerprint !== currentFingerprint(doc)) return sendJson(response, 409, { message: "La factura cambió. Vuelve a abrir la corrección." });
+      const next = correctedReview(doc, body, user.name);
+      const original = structuredClone(doc);
+      Object.assign(doc, next);
+      if (!inboxService.save()) { Object.assign(doc, original); return sendJson(response, 500, { message: "No se pudo guardar la corrección en disco." }); }
+      sendJson(response, 200, { document: doc, fingerprint: currentFingerprint(doc) });
+    } catch (error) { sendJson(response, 400, { message: error instanceof Error ? error.message : "Corrección inválida" }); }
+  });
+
+  server.middlewares.use("/api/odoo/supplier-invoices/inbox/verification", async (request: any, response: any) => {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if ((request.method ?? "GET").toUpperCase() !== "GET") return sendJson(response, 405, { message: "Usa GET" });
+    const id = new URL(request.url ?? "/", "http://localhost").searchParams.get("id");
+    if (!id || !/^[A-Za-z0-9_-]+$/.test(id)) return sendJson(response, 400, { message: "ID de PDF inválido" });
+    const verification = await verifyCurrentDocument(id);
+    if (!verification) return sendJson(response, 404, { message: "Documento no encontrado" });
+    const doc = inboxService.getDocument(id)!;
+    let fingerprint: string | null = null;
+    try { fingerprint = currentFingerprint(doc); } catch { /* Cannot approve a missing PDF. */ }
+    sendJson(response, 200, { verification, fingerprint });
+  });
+
   server.middlewares.use("/api/odoo/supplier-invoices/inbox/odoo-draft-capability", (request: any, response: any) => {
     const user = requireUser(request, response);
     if (!user) return;
     if ((request.method ?? "GET").toUpperCase() !== "GET") return sendJson(response, 405, { message: "Usa GET" });
     const id = new URL(request.url ?? "/", "http://localhost").searchParams.get("id");
     if (!id || !inboxService.getDocument(id)) return sendJson(response, 404, { message: "Documento no encontrado" });
-    sendJson(response, 200, { enabled: odooWriteEnabled(deps.env) && (!deps.env.SUPPLIER_INVOICES_ODOO_ALLOWED_FILE_ID || deps.env.SUPPLIER_INVOICES_ODOO_ALLOWED_FILE_ID === id) });
+    sendJson(response, 200, { enabled: odooDraftCreationEnabled(deps.env) && (!deps.env.SUPPLIER_INVOICES_ODOO_ALLOWED_FILE_ID || deps.env.SUPPLIER_INVOICES_ODOO_ALLOWED_FILE_ID === id) });
+  });
+
+  // Recuperación tras una respuesta perdida: consulta por pareja proveedor+referencia,
+  // sin volver a crear ni contabilizar. Sólo enlaza localmente una coincidencia única
+  // cuya creación sea posterior a la tentativa incierta.
+  server.middlewares.use("/api/odoo/supplier-invoices/inbox/odoo-draft-reconcile", async (request: any, response: any) => {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if ((request.method ?? "POST").toUpperCase() !== "POST") return sendJson(response, 405, { message: "Usa POST" });
+    let body: { id?: string } = {};
+    try { body = JSON.parse(await readBody(request) || "{}"); } catch { return sendJson(response, 400, { message: "Solicitud inválida" }); }
+    if (!body.id || !/^[A-Za-z0-9_-]+$/.test(body.id)) return sendJson(response, 400, { message: "ID de PDF inválido" });
+    const doc = inboxService.getDocument(body.id);
+    if (!doc) return sendJson(response, 404, { message: "Documento no encontrado" });
+    const anyDoc = doc as any;
+    if (anyDoc.odooDraftMoveId) return sendJson(response, 200, { status: "created", document: doc, result: { moveId: anyDoc.odooDraftMoveId, name: anyDoc.odooDraftName, state: anyDoc.odooDraftState } });
+    if (draftInFlight.has(body.id)) return sendJson(response, 200, { status: "in_progress", message: "El servidor todavía está procesando la petición; no la repitas." });
+    const attempt = anyDoc.draftAttempt;
+    if (!attempt || attempt.state === "failed") return sendJson(response, 200, { status: "not_created", safeToRetry: true, message: "No hay una creación de borrador pendiente." });
+    if (attempt.state === "verifying") {
+      attempt.state = "failed";
+      attempt.updatedAt = new Date().toISOString();
+      attempt.message = "La petición se interrumpió antes de iniciar la escritura en Odoo.";
+      if (!inboxService.save()) return sendJson(response, 500, { status: "unknown", safeToRetry: false, message: "No se pudo guardar el estado local; no repitas todavía." });
+      return sendJson(response, 200, { status: "not_created", safeToRetry: true, message: attempt.message });
+    }
+    try {
+      const ex = doc.extracted;
+      const partnerId = Number(doc.confirmedOdooPartnerId ?? 0);
+      const reference = String(ex?.invoiceNumber ?? "").trim();
+      if (!partnerId || !reference) return sendJson(response, 200, { status: "unknown", safeToRetry: false, message: "Falta proveedor o referencia para reconciliar con seguridad." });
+      const session = await odooSession(deps.env);
+      const matches = await searchRead(session.config, session.uid, "account.move", [
+        ["move_type", "=", "in_invoice"], ["partner_id", "=", partnerId], ["ref", "=", reference], ["state", "!=", "cancel"],
+      ], ["id", "name", "state", "ref", "partner_id", "move_type", "create_date"], { limit: 3, order: "id desc" });
+      if (!matches.length) return sendJson(response, 200, { status: "not_found", safeToRetry: false, message: "Odoo todavía no muestra un borrador coincidente. Comprueba la factura en Odoo antes de autorizar otro intento." });
+      if (matches.length !== 1) return sendJson(response, 200, { status: "ambiguous", safeToRetry: false, matches: matches.map((row) => ({ id: row.id, name: row.name, state: row.state, createDate: row.create_date })), message: "Hay varias facturas coincidentes; no se ha enlazado ninguna." });
+      const match = matches[0];
+      const createdAt = Date.parse(String(match.create_date ?? ""));
+      const attemptAt = Date.parse(String(attempt.at ?? ""));
+      if (!Number.isFinite(createdAt) || !Number.isFinite(attemptAt) || createdAt < attemptAt || match.state !== "draft") {
+        return sendJson(response, 200, { status: "existing_conflict", safeToRetry: false, matches: [{ id: match.id, name: match.name, state: match.state, createDate: match.create_date }], message: "Existe una factura con esa referencia, pero no se puede atribuir con seguridad a este intento. No se ha enlazado ni repetido." });
+      }
+      anyDoc.odooDraftMoveId = Number(match.id);
+      anyDoc.odooDraftName = String(match.name ?? match.id);
+      anyDoc.odooDraftState = String(match.state ?? "draft");
+      anyDoc.draftAttempt = { ...attempt, state: "created", updatedAt: new Date().toISOString(), message: "Borrador reconciliado desde Odoo", moveId: Number(match.id) };
+      const lastException = doc.draftExceptions?.at(-1);
+      if (lastException?.outcome === "requested") Object.assign(lastException, { outcome: "created", moveId: Number(match.id) });
+      doc.notes = [...(doc.notes ? [doc.notes] : []), `Borrador Odoo ${anyDoc.odooDraftName} reconciliado por ${user.name}`].join("; ").slice(0, 400);
+      if (!inboxService.save()) return sendJson(response, 500, { status: "created", safeToRetry: false, document: doc, result: { moveId: match.id, name: match.name, state: match.state }, warning: "Odoo contiene el borrador, pero no se pudo guardar su vínculo local. No repitas el envío." });
+      return sendJson(response, 200, { status: "created", document: doc, result: { moveId: match.id, name: match.name, state: match.state }, reconciled: true });
+    } catch (error) {
+      return sendJson(response, 502, { status: "unknown", safeToRetry: false, message: `No se pudo consultar Odoo: ${error instanceof Error ? error.message : "error de lectura"}. No repitas el envío.` });
+    }
   });
 
   // Crea el BORRADOR de factura en Odoo desde un documento VALIDADA.
@@ -1334,60 +1545,94 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     const user = requireUser(request, response);
     if (!user) return;
     if ((request.method ?? "POST").toUpperCase() !== "POST") return sendJson(response, 405, { message: "Usa POST" });
-    if (!odooWriteEnabled(deps.env)) {
-      return sendJson(response, 403, { message: "Escritura en Odoo deshabilitada (SUPPLIER_INVOICES_ODOO_WRITE_ENABLED). Se necesita autorizacion explicita." });
-    }
-    let body: { id?: string; accountingDate?: string } = {};
-    try { body = JSON.parse(await readBody(request) || "{}"); } catch { /* body vacio */ }
+    if (!odooDraftCreationEnabled(deps.env)) return sendJson(response, 403, { message: "Creación de borradores de facturas proveedor deshabilitada (SUPPLIER_INVOICES_ODOO_DRAFT_CREATE_ENABLED)." });
+    let body: { id?: string; accountingDate?: string; retryUncertain?: boolean; requireVerified?: boolean; exception?: { acknowledged: boolean; reason: string; fingerprint: string; blockers: string[]; retryUncertain?: boolean } } = {};
+    try { body = JSON.parse(await readBody(request) || "{}"); } catch { return sendJson(response, 400, { message: "Solicitud inválida" }); }
     if (!body.id) return sendJson(response, 400, { message: "Falta id" });
-    if (!body.accountingDate || !/^\d{4}-\d{2}-\d{2}$/.test(body.accountingDate)) return sendJson(response, 400, { message: "Selecciona y confirma la fecha contable del borrador." });
-    if (deps.env.SUPPLIER_INVOICES_ODOO_ALLOWED_FILE_ID && body.id !== deps.env.SUPPLIER_INVOICES_ODOO_ALLOWED_FILE_ID) return sendJson(response, 403, { message: "La autorización de escritura del LAB está limitada a otra factura." });
+    if (!body.accountingDate || !validInvoiceDate(body.accountingDate)) return sendJson(response, 400, { message: "Selecciona y confirma la fecha contable del borrador." });
+    if (deps.env.SUPPLIER_INVOICES_ODOO_ALLOWED_FILE_ID && body.id !== deps.env.SUPPLIER_INVOICES_ODOO_ALLOWED_FILE_ID) return sendJson(response, 403, { message: "La autorización de escritura está limitada a otra factura." });
     const doc = inboxService.getDocument(body.id);
     if (!doc) return sendJson(response, 404, { message: "Documento no encontrado" });
     const anyDoc = doc as any;
     if (anyDoc.odooDraftMoveId) return sendJson(response, 400, { message: `Ya existe el borrador ${anyDoc.odooDraftName ?? anyDoc.odooDraftMoveId} en Odoo` });
-    if (doc.status !== "VALIDADA") return sendJson(response, 400, { message: `La factura debe estar VALIDADA primero (estado actual: ${doc.status})` });
-    if (draftInFlight.has(body.id)) return sendJson(response, 409, { message: "Ya se está creando un borrador para esta factura." });
+    if (!body.exception && doc.status !== "VALIDADA") return sendJson(response, 400, { message: `La factura debe estar VALIDADA primero (estado actual: ${doc.status})` });
+    if (draftInFlight.has(body.id)) return sendJson(response, 409, { message: "El servidor todavía está procesando un envío para esta factura; consulta el estado antes de repetir." });
+    const previousAttempt = anyDoc.draftAttempt as NonNullable<typeof anyDoc.draftAttempt> | undefined;
+    if (["creating", "uncertain"].includes(previousAttempt?.state ?? "") && body.exception?.retryUncertain !== true) {
+      return sendJson(response, 409, { uncertain: true, message: "El resultado del intento anterior es incierto. Comprueba primero el estado en Odoo." });
+    }
+    let beforeVerification: string;
+    try { beforeVerification = currentFingerprint(doc); }
+    catch { return sendJson(response, 409, { message: "Falta un PDF válido: no se puede enviar." }); }
+    const attempt = { state: "verifying" as const, by: user.name, at: new Date().toISOString(), updatedAt: new Date().toISOString(), fingerprint: beforeVerification, accountingDate: body.accountingDate };
     draftInFlight.add(body.id);
+    anyDoc.draftAttempt = attempt;
+    if (!inboxService.save()) { draftInFlight.delete(body.id); return sendJson(response, 500, { message: "No se pudo guardar el estado de envío; no se inició ninguna escritura en Odoo." }); }
+    const finish = (state: "failed" | "uncertain" | "created", message: string) => {
+      anyDoc.draftAttempt = { ...attempt, state, updatedAt: new Date().toISOString(), message };
+      inboxService.save();
+    };
     try {
-    let session: { config: import("./odooClient.ts").OdooConfig; uid: number };
-    try {
-      session = await odooSession(deps.env);
-    } catch (e) {
-      return sendJson(response, 502, { message: e instanceof Error ? e.message : "No se pudo conectar con Odoo" });
-    }
-    for (const id of doc.assignedPurchaseOrderIds ?? []) {
-      const order = poLedger.getStore().orders.find((row) => row.id === id);
-      if (!order) return sendJson(response, 409, { message: `Pedido ${id} no encontrado en el LAB. Revisa la asociación.` });
-      try {
-        const fresh = await poLedger.refreshOrderByName(deps.env, order.name);
-        if (!fresh || fresh.id !== id) return sendJson(response, 409, { message: `No se pudo confirmar ${order.name} en Odoo.` });
-      } catch (error) {
-        return sendJson(response, 502, { message: error instanceof Error ? error.message : `No se pudo actualizar ${order.name}` });
+      const verification = await verifyCurrentDocument(body.id);
+      if (currentFingerprint(doc) !== beforeVerification) { finish("failed", "La factura cambió durante el cotejo."); return sendJson(response, 409, { message: "La factura cambió durante el cotejo. Revisa de nuevo." }); }
+      if (body.exception) {
+        const error = exceptionRequestError(doc, body.exception, beforeVerification, verification?.blockers ?? ["Verificación incompleta"]);
+        if (error) { finish("failed", error); return sendJson(response, 409, { message: error, verification }); }
+      } else if (!verification?.ready) {
+        const message = "Cotejo pendiente: corrige los datos o confirma expresamente el envío con pendientes.";
+        finish("failed", message); return sendJson(response, 409, { message, verification });
       }
-    }
-    const orders = poLedger.getStore().orders.map((o) => ({
-      id: o.id,
-      name: o.name,
-      partnerId: o.partnerId,
-      partnerName: o.partnerName,
-      partnerVat: o.partnerVat,
-      amountTotal: o.amountTotal as number | null,
-      lines: o.lines.map((l) => ({ productId: l.productId, productName: l.productName, qtyOrdered: l.qtyOrdered, qtyReceived: l.qtyReceived, qtyInvoiced: l.qtyInvoiced, qtyPending: l.qtyPending, priceUnit: l.priceUnit, subtotal: l.subtotal, taxIds: l.taxIds ?? [] })),
-    }));
-    try {
-      const result: DraftResult = await createSupplierDraft(session.config, session.uid, doc as any, orders, body.accountingDate!);
-      if (!result.ok) return sendJson(response, 400, { message: result.message, warnings: result.warnings ?? [] });
+      if (body.exception) {
+        doc.draftExceptions = [...(doc.draftExceptions || []), { fingerprint: beforeVerification, blockers: verification!.blockers,
+          reason: body.exception.reason.trim().slice(0,1000), by: user.name, at: new Date().toISOString(), outcome: "requested" }];
+        if (!inboxService.save()) { finish("failed", "No se pudo guardar la autorización; Odoo no fue contactado para crear."); return sendJson(response, 500, { message: "No se pudo guardar la autorización: no se envió nada a Odoo." }); }
+      }
+      let session: { config: import("./odooClient.ts").OdooConfig; uid: number };
+      try { session = await odooSession(deps.env); }
+      catch (error) { const message = error instanceof Error ? error.message : "No se pudo conectar con Odoo"; finish("failed", message); return sendJson(response, 502, { message }); }
+      for (const id of doc.assignedPurchaseOrderIds ?? []) {
+        const order = poLedger.getStore().orders.find((row) => row.id === id);
+        if (!order) { const message = `Pedido ${id} no encontrado en Dashboard. Revisa la asociación.`; finish("failed", message); return sendJson(response, 409, { message }); }
+        try {
+          const fresh = await poLedger.refreshOrderByName(deps.env, order.name);
+          if (!fresh || fresh.id !== id) { const message = `No se pudo confirmar ${order.name} en Odoo.`; finish("failed", message); return sendJson(response, 409, { message }); }
+        } catch (error) { const message = error instanceof Error ? error.message : `No se pudo actualizar ${order.name}`; finish("failed", message); return sendJson(response, 502, { message }); }
+      }
+      const orders = poLedger.getStore().orders.map((o) => ({
+        id: o.id, name: o.name, partnerId: o.partnerId, partnerName: o.partnerName, partnerVat: o.partnerVat, amountTotal: o.amountTotal as number | null,
+        lines: o.lines.map((l) => ({ productId: l.productId, productName: l.productName, qtyOrdered: l.qtyOrdered, qtyReceived: l.qtyReceived, qtyInvoiced: l.qtyInvoiced, qtyPending: l.qtyPending, priceUnit: l.priceUnit, subtotal: l.subtotal, taxIds: l.taxIds ?? [] })),
+      }));
+      if (currentFingerprint(doc) !== beforeVerification) { const message = "La factura cambió antes del envío. Revisa de nuevo."; finish("failed", message); return sendJson(response, 409, { message }); }
+      anyDoc.draftAttempt = { ...attempt, state: "creating", updatedAt: new Date().toISOString() };
+      if (!inboxService.save()) { finish("failed", "No se pudo registrar el inicio de la llamada Odoo."); return sendJson(response, 500, { message: "No se pudo registrar la operación; Odoo no fue llamado." }); }
+      let result: DraftResult;
+      try {
+        result = await createSupplierDraft(session.config, session.uid, structuredClone(doc) as any, orders, body.accountingDate!, body.exception ? {
+          allowIncompleteAccounting: true, pending: verification!.blockers, reason: body.exception.reason, by: user.name,
+        } : undefined);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "No se recibió respuesta concluyente de Odoo";
+        finish("uncertain", message);
+        return sendJson(response, 502, { uncertain: true, message: `${message}. Comprueba el estado en Odoo antes de reintentar.` });
+      }
+      if (!result.ok) {
+        if (body.exception && doc.draftExceptions?.length) Object.assign(doc.draftExceptions.at(-1)!, { outcome: "failed" });
+        finish("failed", result.message); return sendJson(response, 400, { message: result.message, warnings: result.warnings ?? [] });
+      }
+      if (body.exception && doc.draftExceptions?.length) Object.assign(doc.draftExceptions.at(-1)!, { outcome: "created", moveId: result.moveId });
       anyDoc.odooDraftMoveId = result.moveId;
       anyDoc.odooDraftName = result.name;
       anyDoc.odooDraftState = result.state;
       anyDoc.odooDraftActual = result.actual ?? null;
+      anyDoc.draftAttempt = { ...attempt, state: "created", updatedAt: new Date().toISOString(), moveId: result.moveId };
       doc.notes = [...(doc.notes ? [doc.notes] : []), `Borrador Odoo ${result.name} creado por ${user.name}`].join("; ").slice(0, 400);
-      inboxService.save();
-      sendJson(response, 200, { status: "ok", result, document: doc });
-    } catch (e) {
-      sendJson(response, 502, { message: e instanceof Error ? e.message : "Error creando borrador en Odoo" });
-    }
+      const persisted = inboxService.save();
+      return sendJson(response, 200, { status: "ok", result, document: doc, ...(persisted ? {} : { uncertain: true, warning: "Borrador creado en Odoo, pero falló el vínculo local; usa Comprobar estado antes de reintentar." }) });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Error preparando el borrador";
+      const uncertain = anyDoc.draftAttempt?.state === "creating";
+      finish(uncertain ? "uncertain" : "failed", message);
+      return sendJson(response, 502, { uncertain, message: uncertain ? `${message}. Comprueba el estado en Odoo antes de reintentar.` : message });
     } finally {
       draftInFlight.delete(body.id);
     }
@@ -1509,9 +1754,9 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
 
   // Delega el análisis humano-asistido al agente de cotejo. No se usa Telegram
   // ni callback: el proceso devuelve JSON y este servidor conserva sólo las
-  // propuestas locales. Raskibot no recibe credenciales ni permisos de Odoo.
+  // propuestas locales. Facturas no recibe permisos de escritura de Odoo.
   server.middlewares.use("/api/odoo/supplier-invoices/inbox/raskibot-extract", async (request: any, response: any) => {
-    const user = requireUser(request, response);
+    const user = requireUser(request, response, "POST");
     if (!user) return;
     if ((request.method ?? "POST").toUpperCase() !== "POST") return sendJson(response, 405, { message: "Usa POST" });
     let body: { ids?: string[]; question?: string } = {};
@@ -1523,14 +1768,18 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     const ids = body.ids.map(String).filter(Boolean);
     const docs = ids.map((id) => inboxService.getDocument(id)).filter((d): d is NonNullable<typeof d> => Boolean(d));
     if (!docs.length) return sendJson(response, 404, { message: "Documento no encontrado" });
-    if (docs.some((d) => raskibotInFlight.has(d.driveFileId))) return sendJson(response, 409, { message: "Raskibot ya está analizando esta factura. Espera a que termine." });
+    const question = typeof body.question === "string" ? body.question.trim().slice(0, 1000) : "";
+    if (user.id === "invoice-automation" && (question || docs[0].sourcePresent !== true || docs[0].movedTo))
+      return sendJson(response, 409, { message: "Automatización limitada a preparar PDF presentes en la bandeja; sin consultas ni archivos archivados." });
+    if (!question && (docs[0].status === "VALIDADA" || docs[0].odooDraftMoveId))
+      return sendJson(response, 409, { message: "El borrador está bloqueado porque ya se validó o existe en Odoo. Puedes hacer una consulta, pero no volver a aplicar el escaneo." });
+    if (docs.some((d) => raskibotInFlight.has(d.driveFileId))) return sendJson(response, 409, { message: "Facturas ya está analizando esta factura. Espera a que termine." });
     try {
-      await inboxService.prepareForReview(docs[0].driveFileId, deps.env, invoiceService.getStore().invoices, buildPoIndex(poLedger.getStore()));
+      await inboxService.prepareForReview(docs[0].driveFileId, deps.env, invoiceService.getStore().invoices, buildPoIndex(poLedger.getStore()), user.id === "invoice-automation");
     } catch (error) {
       return sendJson(response, 502, { message: error instanceof Error ? error.message : "No se pudo leer el PDF elegido" });
     }
     const pdfDir = `${deps.dataDir.replace(/\/$/, "")}/supplier-invoices/inbox`;
-    const question = typeof body.question === "string" ? body.question.trim().slice(0, 1000) : "";
     if (question) docs.forEach((d) => {
       d.reviewChat = [...(d.reviewChat ?? []), { at: new Date().toISOString(), role: "user", content: question }].slice(-60);
     });
@@ -1538,14 +1787,15 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
     // Telegram. `textPreview` es deliberadamente corto para la lista y no
     // alcanza para cotejar todas las líneas de una factura. El PDF nunca sale
     // por Telegram: se lee desde la caché local del LAB y el texto se entrega
-    // únicamente al proceso interno de Raskibot.
+    // únicamente al proceso interno de Facturas.
     const documentsForAgent = await Promise.all(docs.map(async (d) => {
       const pdfPath = `${pdfDir}/${d.driveFileId}.pdf`;
       let pdfText = "";
       let pdfTextComplete = false;
       try {
         if (existsSync(pdfPath)) {
-          const completeText = String((await pdfParse(readFileSync(pdfPath))).text ?? "");
+          const parsedPdf = deps.readPdfText ? await deps.readPdfText(readFileSync(pdfPath)) : await pdfParse(readFileSync(pdfPath));
+          const completeText = String(parsedPdf.text ?? "");
           if (completeText.trim()) { pdfText = completeText; pdfTextComplete = true; }
           else pdfText = d.extracted?.textPreview ?? "";
         } else pdfText = d.extracted?.textPreview ?? "";
@@ -1586,7 +1836,7 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
         purchaseOrderCandidates: orderContext.candidates,
         purchaseOrderReferenceEvidence: orderContext.referenceEvidence,
         candidateDiagnostics: {
-          source: "LAB purchase-order ledger + exact Odoo product lookup", pdfTextComplete, liveOrderRead, orderRefreshError,
+          source: "Production purchase-order ledger + exact Odoo product lookup", pdfTextComplete, liveOrderRead, orderRefreshError,
           liveProductRead: catalogContext.liveProductRead, liveProductReadError: catalogContext.liveProductReadError,
           purchaseOrderCandidates: orderContext.totalCandidates, explicitOrderMatches: orderContext.explicitMatches,
           pendingSupplierMatches: orderContext.pendingSupplierMatches, excludedSupplierConflicts: orderContext.excludedSupplierConflicts,
@@ -1595,37 +1845,50 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
         catalogCandidates,
       };
     }));
+    const visualReview = !question && documentsForAgent.some((document: any) => !document.candidateDiagnostics.pdfTextComplete);
+    const verifiedDetail = !question ? extractCorreosExpressPdf(documentsForAgent[0].pdfText) : null;
     const task = {
+      verifiedLineCount: verifiedDetail?.lines.length,
+      verifiedPdfDetail: verifiedDetail ? { fields: verifiedDetail.fields, shipmentCount: verifiedDetail.shipmentCount, lineCount: verifiedDetail.lines.length, lineSum: verifiedDetail.fields.base } : null,
       task: question ? `Responde esta duda de Rafa sobre la factura: ${question}` : "Extrae y coteja esta factura. Señala con claridad toda duda que requiera decisión humana.",
-      rules: ["Misión: eres el analista de facturas proveedor de Rafa. Lee primero pdfText completo y, si queda una duda, el PDF local indicado por pdfPath; no te limites a extracted/textPreview. reviewChat es historial, no evidencia: prevalecen el PDF completo y los candidatos actuales.", "Puedes proponer correcciones estructuradas del borrador local del Dashboard basadas solo en el PDF. Devuelve la propuesta; no escribas directamente en el Dashboard, sus stores, Odoo ni Drive. La persona revisará y aplicará la propuesta por una ruta autenticada separada. Nunca confirmes proveedor, pedido o producto; conserva los campos y líneas ya confirmados por el operario y declara dudas.", "Usa purchaseOrderCandidates y candidateDiagnostics como evidencia preparada por el backend. Antes de afirmar que no hay candidatos, comprueba los arrays recibidos y cita sus contadores. Prioriza la coincidencia exacta de name o supplierRef con el texto PDF completo. El backend puede incluir una referencia exacta aunque supplierMatched=false o vatConflict=true: es evidencia para investigar, NO permiso de asociar ni contabilizar; coteja CIF/NIF del emisor en el PDF y solo propón como invoiceEligible un candidato sin conflicto. Si faltan datos o hay conflicto sin resolver, dilo como pendiente y no ocultes la referencia exacta.", "Compara la referencia del PDF con name (nuestro pedido P...) y supplierRef (referencia del proveedor guardada en Odoo). Prioriza coincidencia exacta única; no confundas código postal, CIF, factura ni referencia de producto con un pedido. Ante varias coincidencias, no asignes ninguno.", "Localiza referencias explícitas de pedidos de compra en el PDF y explica qué pedido pendiente corresponde a cada referencia; usa para facturar solo candidatos con invoiceEligible=true. Si existe una referencia identificable pero invoiceEligible=false, explica si está ya facturada/no elegible y no la propongas para asociar.", "Para cada línea, compara por separado todos los códigos del PDF (EAN, referencia del proveedor y otros tokens) con reference/barcode/default_code de los productos y las líneas de compra. Revisa catalogCandidates.matchedReferences: cada elemento es una coincidencia literal entre el PDF y el catálogo, así que no digas que el catálogo está vacío si esos candidatos existen. Si no hay coincidencias y candidateDiagnostics.liveProductRead es failed o not-configured, indica que no pudo confirmarse en Odoo en vivo; si es read, limita la conclusión a que no hay coincidencia exacta de referencia en los registros activos consultados. Una coincidencia única de identidad no se descarta por diferencias de cantidad o precio: conserva los valores del PDF y señala por separado cantidad pedida/recibida/facturada/pendiente y precios/descuentos de Odoo. Si varias líneas Odoo siguen siendo posibles, deja la asociación como ambigua.", "No inventar asociaciones de productos o pedidos ni agrupar líneas repetidas: conserva una línea por aparición del PDF hasta que Rafa confirme su pedido de origen.", "Separa descuentos sucesivos tal como constan en el PDF: discount es el comercial (p. ej. 45), discountExtra el adicional (p. ej. 5), promptPaymentDiscount el pronto pago (p. ej. 2). No los sumes ni los inventes; si son globales y afectan a todas las líneas, repítelos en cada línea afectada.", "El proveedor se coteja con evidencia del PDF: no tomes el primer NIF del texto como proveedor, pues puede pertenecer al cliente. Usa CIF/NIF explícitamente situado junto al nombre/dirección del emisor y contrástalo con supplier/VAT de los candidatos. Si nombre y NIF próximos coinciden con Odoo, informa que resuelve el conflicto heurístico; si no, pide revisión. Nunca propongas el NIF del cliente como emisor.", "Distingue coincidencia exacta, probable, ambigua y sin evidencia. No conviertas una mera coincidencia de cantidad/precio en identidad de producto. Los productos sin coincidencia sólo se pueden recomendar como Servicio/Consumible existente; no los apliques ni asignes pedidos.", "Devuelve JSON estricto, sin Markdown: {reply:string, proposal:{fields?:{supplier?:string,supplierVat?:string,country?:string,billingAddress?:string,currency?:string,invoiceNumber?:string,invoiceDate?:string,dueDate?:string,base?:number,taxes?:number,total?:number},lines?:[{description:string,reference?:string,quantity?:number,priceUnit?:number,discount?:number,discountExtra?:number,promptPaymentDiscount?:number,total?:number,productCandidateId?:number,purchaseOrderCandidateId?:number,candidateReason?:string}]}, unresolved:string[]}. Devuelve sólo valores leídos expresamente del PDF. Los IDs son candidatos para revisión, nunca identidades confirmadas."],
+      rules: [
+        "Misión: eres el analista de facturas proveedor de Rafa. Lee primero pdfText completo y, si queda una duda, el PDF local indicado por pdfPath; no te limites a extracted/textPreview. reviewChat es historial, no evidencia: prevalecen el PDF completo y los candidatos actuales.",
+        "Devuelve una propuesta estructurada basada solo en el PDF. El backend la guarda únicamente en el borrador local del Dashboard; no escribas directamente en el Dashboard, sus stores, Odoo ni Drive. No confirmes proveedor, pedido o producto. El operador revisará el borrador local y pedirá por separado cualquier borrador Odoo.",
+        "Usa purchaseOrderCandidates y candidateDiagnostics como evidencia preparada por el backend. Comprueba arrays y contadores antes de afirmar que no hay candidatos. Prioriza coincidencia exacta de name o supplierRef con el PDF completo. Una referencia exacta con supplierMatched=false o vatConflict=true es evidencia para investigar, no permiso de sugerir asociación ni contabilizar; coteja CIF/NIF del emisor. Si faltan datos o hay conflicto, declara el bloqueo.",
+        "Una factura puede incluir líneas de varios pedidos. Para cada línea, usa el pedido que figure en su bloque/albarán y propón purchaseOrderCandidateId solo si hay una única referencia explícita para ese bloque y el backend marca el pedido invoiceEligible=true, supplierMatched=true y sin vatConflict. Si no se puede atribuir una línea de forma única, deja el ID null. Todas las asociaciones siguen siendo sugerencias humanas: nunca selecciones ni confirmes pedidos, aunque haya varias referencias distintas en la factura.",
+        "Compara las referencias del PDF con name (pedido interno P...) y supplierRef (referencia del proveedor en Odoo). No confundas código postal, CIF, número de factura ni referencia de producto con un pedido. Si una referencia identificable no es elegible, explica por qué y deja el ID null.",
+        "Para cada línea, compara por separado todos los códigos del PDF (EAN, referencia del proveedor y otros tokens) con reference/barcode/default_code del catálogo y líneas de compra. Usa catalogCandidates.matchedReferences; no digas que el catálogo está vacío si hay coincidencias. Una sugerencia de producto requiere referencia literal y candidato backend único. Cantidad/precio describen discrepancias, nunca identidad. Si Odoo no se pudo leer, dilo expresamente.",
+        "Incluye todas las apariciones de líneas PDF, incluso duplicadas; no las agrupes, elimines ni añadas líneas que solo existan en el pedido. Conserva descripción, referencia, cantidad y precio impresos. Separa descuentos sucesivos: discount=comercial, discountExtra=adicional, promptPaymentDiscount=pronto pago; nunca los sumes. Guarda el total impreso de línea como evidencia y declara por separado cualquier diferencia con el cálculo neto.",
+        "Identifica emisor por su bloque y el CIF/NIF etiquetado junto a su razón social; no tomes el primer NIF, datos del comprador, dirección ni montador. Si nombre y CIF/NIF coinciden con Odoo, explica la evidencia; si no, pide revisión humana.",
+        "Si el número de factura aparece concatenado con fecha, serie u otros campos, omítelo y decláralo en unresolved. No infieras fechas, impuesto por línea, cuenta ni producto. Las cuotas/impuestos por línea solo se extraen si aparecen explícitamente; no conviertas el IVA global en asignaciones por línea.",
+        "Devuelve JSON estricto y compacto, sin Markdown: {reply:string,confidence:number,proposal:{fields:{supplier?:string,supplierVat?:string,country?:string,billingAddress?:string,currency?:string,invoiceNumber?:string,invoiceDate?:string,dueDate?:string,base?:number,taxes?:number,total?:number},lines:[{description:string,reference?:string,quantity?:number,priceUnit?:number,discount?:number,discountExtra?:number,promptPaymentDiscount?:number,taxNames?:string[],total?:number,productCandidateId?:number|null,purchaseOrderCandidateId?:number|null,candidateReason?:string}]},unresolved:string[]}. Incluye todas las líneas y valores PDF, aunque haya campos nulos. confidence es una autoevaluación 0–100, no una aprobación. Omite candidateReason salvo para explicar una duda real. Los IDs nunca son identidades confirmadas.",
+      ],
       documents: documentsForAgent,
       requestedBy: user.name,
     };
-    const runAgent = () => new Promise<string>((resolve, reject) => {
-      const child = spawn("openclaw", ["agent", "--agent", "raskibot", "--session-key", `agent:raskibot:invoice-review-v3-${docs[0].driveFileId}`, "--json", "--timeout", "120", "--message", JSON.stringify(task)], { stdio: ["ignore", "pipe", "pipe"] });
-      let stdout = "";
-      let stderr = "";
-      child.stdout.on("data", (chunk) => { stdout += String(chunk); });
-      child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-      child.on("error", reject);
-      child.on("close", (code) => code === 0 ? resolve(stdout) : reject(new Error((stderr || `Raskibot finalizó con código ${code}`).slice(0, 500))));
-    });
-    const parseAgentReply = (raw: string): { reply: string; proposal: any; unresolved: string[] } => {
-      const candidates = [raw, raw.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] ?? ""];
-      for (const candidate of candidates) {
-        try {
-          const parsed = JSON.parse(candidate);
-          const payloadText = Array.isArray(parsed?.result?.payloads) ? parsed.result.payloads.find((item: any) => typeof item?.text === "string")?.text : null;
-          const answer = typeof payloadText === "string" ? JSON.parse(payloadText) : parsed;
-          const text = typeof answer?.reply === "string" ? answer.reply : typeof answer?.result?.reply === "string" ? answer.result.reply : typeof answer?.text === "string" ? answer.text : "";
-          if (text) return { reply: text.slice(0, 1600), proposal: answer.proposal ?? answer.result?.proposal ?? null, unresolved: Array.isArray(answer.unresolved ?? answer.result?.unresolved) ? (answer.unresolved ?? answer.result.unresolved).map(String).slice(0, 12) : [] };
-        } catch { /* respuesta no estructurada */ }
-      }
-      return { reply: raw.trim().slice(0, 1600) || "Raskibot no devolvió una respuesta utilizable.", proposal: null, unresolved: [] };
-    };
+    if (visualReview) task.rules.push("Este PDF no tiene texto legible. Debes abrir el PDF local indicado en pdfPath con tu herramienta PDF de lectura visual/OCR y leer todas las páginas. No extraigas de datos antiguos, heurísticas o nombres de archivo. Separa commercial invoice y packing list; no dupliques las líneas del packing list. Si no puedes leerlo, devuelve proposal:null y explica el bloqueo. Toda propuesta visual se guardará como parcial para comprobación humana; no asignes identidades Odoo ni infieras IVA cero o precios/cantidades de portes ausentes.");
+    if (verifiedDetail) task.rules.push("Para esta plantilla Correos Express el backend ha leído TODOS los albaranes y el fuel por separado, ha contado cada fila impresa y ha conciliado exactamente la suma con la base y el total del PDF. verifiedPdfDetail contiene su resumen. Revisa la cabecera, identidad, periodo, vencimiento y dudas contra el PDF completo. Devuelve proposal.fields y proposal.lines: []: las líneas completas comprobadas las incorpora el backend; no las repitas, resumas ni sustituyas por una línea agregada. No asignes cuenta, impuesto Odoo ni producto sin evidencia.");
     try {
       docs.forEach((d) => raskibotInFlight.add(d.driveFileId));
-      const parsed = parseAgentReply(await runAgent());
+      const pdfDigest = createHash("sha256").update(readFileSync(documentsForAgent[0].pdfPath)).digest("hex");
+      // Automatic extraction is isolated by document version; local reviewChat
+      // remains the explicit history, without accumulating repeated full PDFs.
+      const reviewKey = question ? `agent:facturas:invoice-review-v1-${docs[0].driveFileId}`
+        : `agent:facturas:invoice-review-v2-${docs[0].driveFileId}-${pdfDigest.slice(0, 16)}`;
+      const parsed = await reviewInvoice(task, reviewKey, Boolean(question));
+      if (verifiedDetail && parsed.proposal?.fields) {
+        parsed.proposal.fields = { ...parsed.proposal.fields, ...verifiedDetail.fields };
+        parsed.proposal.lines = verifiedDetail.lines;
+      }
+      if (visualReview) parsed.unresolved.push("Propuesta obtenida de un PDF escaneado mediante lectura visual/OCR: requiere comprobar campos y líneas contra el original antes de validar; no se ha demostrado su cotejo automático completo.");
+      const proposalFields = parsed.proposal?.fields;
+      const proposalLines = parsed.proposal?.lines;
+      if (!question && (!parsed.proposal || !proposalFields || typeof proposalFields !== "object" || Array.isArray(proposalFields)
+          || !Array.isArray(proposalLines) || proposalLines.length === 0 || proposalLines.length > (verifiedDetail ? 5000 : 60)
+          || proposalLines.some((line: unknown) => !line || typeof line !== "object" || Array.isArray(line)
+            || typeof (line as any).description !== "string" || !(line as any).description.trim())
+          || parsed.confidence == null))
+        throw new Error("Raskibot no devolvió cabecera, todas las líneas y confianza en el formato requerido; no se aplicó el análisis al borrador local.");
       // Treat model IDs as untrusted suggestions. Keep only product candidates
       // proven by exact PDF reference evidence and unique, eligible explicit PO hits.
       const preparedDoc = documentsForAgent[0];
@@ -1655,70 +1918,195 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
         if (rejectedOrders) parsed.unresolved.push(`${rejectedOrders} sugerencia(s) de pedido se descartaron porque el backend no las confirmó como referencia explícita, proveedor coincidente y pedido pendiente elegible.`);
         parsed.unresolved = [...new Set(parsed.unresolved)].slice(0, 12);
       }
-      for (const doc of docs) {
-        doc.reviewChat = [...(doc.reviewChat ?? []), { at: new Date().toISOString(), role: "assistant", content: [parsed.reply, ...parsed.unresolved.map((item) => `Pendiente: ${item}`)].join("\n") }].slice(-60);
-        // El escaneo rellena sólo datos documentales locales; Odoo y las selecciones
-        // confirmadas por el operario permanecen intactos.
-        if (doc.extracted && parsed.proposal && typeof parsed.proposal === "object") {
-          const fields = parsed.proposal.fields && typeof parsed.proposal.fields === "object" ? parsed.proposal.fields : {};
-          const safeFields: Record<string, string | number> = {};
-          for (const key of ["supplier", "supplierVat", "invoiceNumber"] as const) if (typeof fields[key] === "string" && fields[key].trim()) safeFields[key] = fields[key].trim().slice(0, 60);
-          for (const key of ["country", "currency"] as const) if (typeof fields[key] === "string" && fields[key].trim()) safeFields[key] = fields[key].trim().slice(0, key === "currency" ? 3 : 20).toUpperCase();
-          if (typeof fields.billingAddress === "string" && fields.billingAddress.trim()) safeFields.billingAddress = fields.billingAddress.trim().slice(0, 200);
-          for (const key of ["invoiceDate", "dueDate"] as const) if (typeof fields[key] === "string") {
-            const date = parseDate(fields[key]);
-            if (date) safeFields[key] = date;
-          }
-          for (const key of ["base", "taxes", "total"] as const) if (fields[key] != null && fields[key] !== "" && Number.isFinite(Number(fields[key]))) safeFields[key] = Math.round(Number(fields[key]) * 100) / 100;
-          const safeLines = Array.isArray(parsed.proposal.lines) ? parsed.proposal.lines.slice(0, 60).map((line: any) => ({
-            description: String(line?.description ?? "(concepto)").slice(0, 200),
-            reference: line?.reference ? String(line.reference).slice(0, 60) : null,
-            quantity: line?.quantity != null && Number.isFinite(Number(line.quantity)) ? Number(line.quantity) : null,
-            priceUnit: line?.priceUnit != null && Number.isFinite(Number(line.priceUnit)) ? Number(line.priceUnit) : null,
-            discount: line?.discount != null && Number.isFinite(Number(line.discount)) && Number(line.discount) >= 0 && Number(line.discount) <= 100 ? Number(line.discount) : null,
-            discountExtra: line?.discountExtra != null && Number.isFinite(Number(line.discountExtra)) && Number(line.discountExtra) >= 0 && Number(line.discountExtra) <= 100 ? Number(line.discountExtra) : null,
-            promptPaymentDiscount: line?.promptPaymentDiscount != null && Number.isFinite(Number(line.promptPaymentDiscount)) && Number(line.promptPaymentDiscount) >= 0 && Number(line.promptPaymentDiscount) <= 100 ? Number(line.promptPaymentDiscount) : null,
-            taxNames: [], total: line?.total != null && Number.isFinite(Number(line.total)) ? Number(line.total) : null, confidence: 85,
-            aiProductCandidateId: Number.isInteger(Number(line?.productCandidateId)) && Number(line.productCandidateId) > 0 ? Number(line.productCandidateId) : null,
-            aiPurchaseOrderCandidateId: Number.isInteger(Number(line?.purchaseOrderCandidateId)) && Number(line.purchaseOrderCandidateId) > 0 ? Number(line.purchaseOrderCandidateId) : null,
-            aiCandidateReason: line?.candidateReason ? String(line.candidateReason).slice(0, 240) : null,
-          })) : [];
-          doc.reviewProposal = { at: new Date().toISOString(), fields: safeFields, lines: safeLines, unresolved: parsed.unresolved };
-          if (!question && doc.status !== "VALIDADA" && !doc.odooDraftMoveId) {
-            const hasConfirmedLines = (doc.assignedPurchaseOrderIds?.length ?? 0) > 0 || doc.extracted.lines.some((line) => Boolean(line.productId || line.sourcePurchaseOrderId));
-            const protectedReview = hasConfirmedLines || Boolean(doc.confirmedOdooPartnerId);
-            for (const [key, value] of Object.entries(safeFields)) {
-              if (!protectedReview || doc.extracted[key as keyof typeof doc.extracted] == null || doc.extracted[key as keyof typeof doc.extracted] === "")
-                (doc.extracted as any)[key] = value;
-            }
-            if (!hasConfirmedLines && safeLines.length) {
-              doc.extracted.lines = safeLines;
-              doc.pdfSourceLines = safeLines.map((line) => ({ ...line }));
-              doc.pdfLinesAccepted = false;
-            }
-            if (hasConfirmedLines && safeLines.length) doc.extracted.lines = doc.extracted.lines.map((existing) => {
-              if (!existing.productId || !existing.sourcePurchaseOrderId) return existing;
-              const matches = safeLines.filter((candidate) => candidate.aiProductCandidateId === existing.productId && candidate.aiPurchaseOrderCandidateId === existing.sourcePurchaseOrderId);
-              const sourceCount = doc.extracted!.lines.filter((line) => line.productId === existing.productId && line.sourcePurchaseOrderId === existing.sourcePurchaseOrderId).length;
-              if (matches.length !== 1 || sourceCount !== 1) return existing;
-              const discountExtra = existing.discountExtra ?? matches[0].discountExtra;
-              const promptPaymentDiscount = existing.promptPaymentDiscount ?? matches[0].promptPaymentDiscount;
-              if (discountExtra == null && promptPaymentDiscount == null) return existing;
-              const total = discountedBase(existing.quantity ?? 0, existing.priceUnit ?? 0, existing.discount, discountExtra, promptPaymentDiscount);
-              return { ...existing, discountExtra, promptPaymentDiscount, total, pdfPriceVerified: false };
-            });
-            doc.match = matchDocument(doc, invoiceService.getStore().invoices, buildPoIndex(poLedger.getStore()));
-            doc.reviewProposal = null;
+      const doc = docs[0];
+      const appliedFields: string[] = [];
+      const preservedFields: string[] = [];
+      let lineCountUpdated = 0;
+      let linesPreserved = false;
+      let scanStatus: "complete" | "partial" = "complete";
+      if (question) {
+        doc.reviewProposal = parsed.proposal && Array.isArray(parsed.proposal.lines)
+          ? { at: new Date().toISOString(), fields: parsed.proposal.fields as any, lines: parsed.proposal.lines as any, unresolved: parsed.unresolved }
+          : null;
+        doc.reviewChat = [...(doc.reviewChat ?? []), { at: new Date().toISOString(), role: "assistant", content: parsed.reply }].slice(-60);
+      } else {
+        const proposal = parsed.proposal!;
+        const fields = proposal.fields as Record<string, unknown>;
+        const safeFields: Record<string, string | number> = {};
+        for (const key of ["supplier", "supplierVat", "invoiceNumber"] as const)
+          if (typeof fields[key] === "string" && fields[key].trim()) safeFields[key] = fields[key].trim().slice(0, 60);
+        for (const key of ["country", "currency"] as const)
+          if (typeof fields[key] === "string" && fields[key].trim()) safeFields[key] = fields[key].trim().slice(0, key === "currency" ? 3 : 20).toUpperCase();
+        if (typeof fields.billingAddress === "string" && fields.billingAddress.trim()) safeFields.billingAddress = fields.billingAddress.trim().slice(0, 200);
+        for (const key of ["invoiceDate", "dueDate"] as const) if (typeof fields[key] === "string") {
+          const date = parseDate(fields[key]);
+          if (date) safeFields[key] = date;
+        }
+        for (const key of ["base", "taxes", "total"] as const)
+          if (fields[key] != null && fields[key] !== "" && Number.isFinite(Number(fields[key]))) safeFields[key] = Math.round(Number(fields[key]) * 100) / 100;
+        const safeLines = (proposal.lines as any[]).slice(0, verifiedDetail ? 5000 : 60).map((line: any) => ({
+          description: String(line?.description ?? "(concepto)").slice(0, 200),
+          reference: line?.reference ? String(line.reference).slice(0, 60) : null,
+          quantity: line?.quantity != null && Number.isFinite(Number(line.quantity)) ? Number(line.quantity) : null,
+          priceUnit: line?.priceUnit != null && Number.isFinite(Number(line.priceUnit)) ? Number(line.priceUnit) : null,
+          discount: line?.discount != null && Number.isFinite(Number(line.discount)) && Number(line.discount) >= 0 && Number(line.discount) <= 100 ? Number(line.discount) : null,
+          discountExtra: line?.discountExtra != null && Number.isFinite(Number(line.discountExtra)) && Number(line.discountExtra) >= 0 && Number(line.discountExtra) <= 100 ? Number(line.discountExtra) : null,
+          promptPaymentDiscount: line?.promptPaymentDiscount != null && Number.isFinite(Number(line.promptPaymentDiscount)) && Number(line.promptPaymentDiscount) >= 0 && Number(line.promptPaymentDiscount) <= 100 ? Number(line.promptPaymentDiscount) : null,
+          taxNames: Array.isArray(line?.taxNames) ? line.taxNames.filter((name: unknown): name is string => typeof name === "string" && Boolean(name.trim())).slice(0, 4) : [],
+          total: line?.total != null && Number.isFinite(Number(line.total)) ? Number(line.total) : null,
+          confidence: parsed.confidence!,
+          aiProductCandidateId: Number.isInteger(Number(line?.productCandidateId)) && Number(line.productCandidateId) > 0 ? Number(line.productCandidateId) : null,
+          aiPurchaseOrderCandidateId: Number.isInteger(Number(line?.purchaseOrderCandidateId)) && Number(line.purchaseOrderCandidateId) > 0 ? Number(line.purchaseOrderCandidateId) : null,
+          aiCandidateReason: line?.candidateReason ? String(line.candidateReason).slice(0, 240) : null,
+        }));
+        // A previous AI response/chat is not a human edit. Only explicit local
+        // edits/selections protect extracted fields and lines from a rescan.
+        const legacyFieldEdit = Boolean(doc.notes?.includes("Campos editados por"));
+        const protectedFieldKeys = new Set([...(doc.operatorEditedFields ?? []), ...(legacyFieldEdit ? Object.keys(safeFields) : [])]);
+        const legacyLineEdit = Boolean(doc.notes?.includes("Lineas editadas por"));
+        const preserveExistingLines = Boolean(doc.operatorLinesEdited || doc.pdfLinesAccepted || legacyLineEdit
+          || doc.assignedPurchaseOrderIds?.length || doc.extracted!.lines.some((line) => Boolean(line.productId || line.sourcePurchaseOrderId)));
+        const currentFields = doc.extracted! as unknown as Record<string, unknown>;
+        for (const [key, value] of Object.entries(safeFields)) {
+          const current = currentFields[key];
+          const protectedSupplier = Boolean(doc.confirmedOdooPartnerId || doc.assignedPurchaseOrderIds?.length)
+            && (key === "supplier" || key === "supplierVat");
+          if (protectedSupplier || protectedFieldKeys.has(key)) {
+            if (current !== value) preservedFields.push(key);
+          } else {
+            if (current !== value) appliedFields.push(key);
+            currentFields[key] = value;
           }
         }
-        doc.notes = [...(doc.notes ? [doc.notes] : []), `Análisis local de Raskibot solicitado por ${user.name}; pendiente de validación humana`].join("; ").slice(0, 400);
+        // An omitted due date is not evidence. Discard a previous heuristic/AI
+        // value unless the operator explicitly edited it, so an ambiguous PDF
+        // cannot leave a stale date in the review form.
+        if (!safeFields.dueDate && !protectedFieldKeys.has("dueDate") && doc.extracted!.dueDate) {
+          doc.extracted!.dueDate = null;
+          appliedFields.push("dueDate (sin evidencia → vacío)");
+        }
+        if (!protectedFieldKeys.has("invoiceNumber") && !doc.confirmedOdooPartnerId && !safeFields.invoiceNumber && isConcatenatedInvoiceNumber(doc.extracted!.invoiceNumber)) {
+          doc.extracted!.invoiceNumber = null;
+          appliedFields.push("invoiceNumber (ambiguous → vacío)");
+        }
+        const expectedLineCount = doc.pdfSourceLines?.length ?? doc.extracted!.lines.length;
+        const lineCountMatches = expectedLineCount === 0 || expectedLineCount === safeLines.length;
+        if (preserveExistingLines && !lineCountMatches) {
+          scanStatus = "partial";
+          linesPreserved = true;
+          parsed.unresolved.push(`El PDF tenía ${expectedLineCount} líneas en el borrador previo y la propuesta devuelve ${safeLines.length}; se conservaron las líneas existentes sin reemplazarlas.`);
+        } else if (!preserveExistingLines && safeLines.length) {
+          doc.pdfSourceLines = safeLines.map((line) => ({ ...line }));
+          doc.extracted!.lines = safeLines.map((line) => {
+            const hasExplicitDiscount = [line.discount, line.discountExtra, line.promptPaymentDiscount].some((rate) => rate != null && rate !== 0);
+            const total = hasExplicitDiscount && line.quantity != null && line.priceUnit != null
+              ? discountedBase(line.quantity, line.priceUnit, line.discount, line.discountExtra, line.promptPaymentDiscount)
+              : line.total;
+            return { ...line, total };
+          });
+          doc.pdfLinesAccepted = false;
+          lineCountUpdated = safeLines.length;
+        } else if (safeLines.length) {
+          linesPreserved = true;
+          const normalized = (value: string | null | undefined) => String(value ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+          const sameLine = (current: any, candidate: any) => {
+            const quantityMatch = current.quantity != null && candidate.quantity != null && Math.abs(current.quantity - candidate.quantity) < 0.01;
+            const priceMatch = current.priceUnit != null && candidate.priceUnit != null && Math.abs(current.priceUnit - candidate.priceUnit) < 0.00001;
+            const currentRef = normalized(current.reference), candidateRef = normalized(candidate.reference);
+            const identityMatch = currentRef && candidateRef ? currentRef === candidateRef : normalized(current.description) === normalized(candidate.description);
+            return Boolean(identityMatch && quantityMatch && priceMatch);
+          };
+          doc.extracted!.lines = doc.extracted!.lines.map((current) => {
+            if (current.productId || current.sourcePurchaseOrderId) return current;
+            const matches = safeLines.filter((candidate) => sameLine(current, candidate));
+            if (matches.length !== 1) return current;
+            const candidate = matches[0];
+            const next = { ...current };
+            if (!next.aiProductCandidateId && candidate.aiProductCandidateId) next.aiProductCandidateId = candidate.aiProductCandidateId;
+            if (!next.aiPurchaseOrderCandidateId && candidate.aiPurchaseOrderCandidateId) next.aiPurchaseOrderCandidateId = candidate.aiPurchaseOrderCandidateId;
+            if (!next.aiCandidateReason && candidate.aiCandidateReason) next.aiCandidateReason = candidate.aiCandidateReason;
+            if (!next.taxNames.length && candidate.taxNames.length) next.taxNames = candidate.taxNames;
+            if (next !== current && (next.aiProductCandidateId !== current.aiProductCandidateId || next.aiPurchaseOrderCandidateId !== current.aiPurchaseOrderCandidateId
+                || next.aiCandidateReason !== current.aiCandidateReason || next.taxNames !== current.taxNames)) lineCountUpdated += 1;
+            return next;
+          });
+        }
+        const extracted = doc.extracted!;
+        if (preservedFields.length) parsed.unresolved.push(`Se conservaron campos editados/confirmados por el operador: ${[...new Set(preservedFields)].join(", ")}.`);
+        if (preserveExistingLines && lineCountMatches) linesPreserved = true;
+        // Releer Odoo y aplicar solo identidades demostrables al borrador local.
+        // No se confirman IDs propuestos por la IA ni se escribe en Odoo/Drive.
+        if (hasOdooConfig(getOdooConfig(deps.env))) {
+          try {
+            const config = getOdooConfig(deps.env);
+            const uid = await authenticate(config);
+            const filled = await autoFillInvoiceDraft(doc, preparedDoc.pdfText, enrichedOrders(), {
+              search: (model, domain, fields) => searchRead(config, uid, model, domain, fields, { limit: 20 }),
+              read: (model, ids, fields) => readRows(config, uid, model, ids, fields),
+            }, preserveExistingLines);
+            if (filled.applied.length) appliedFields.push(...filled.applied);
+            if (filled.pending.length) parsed.unresolved.push(...filled.pending);
+          } catch (error) {
+            parsed.unresolved.push(`Autorrelleno Odoo no completado: ${error instanceof Error ? error.message.slice(0, 140) : "error"}`);
+          }
+        }
+        parsed.unresolved = [...new Set(parsed.unresolved)].slice(0, 12);
+        if (parsed.unresolved.length) scanStatus = "partial";
+        const staleAmountWarning = "No se han detectado importes de forma fiable.";
+        const taxReviewWarning = "El IVA global está leído, pero falta cotejar sus cuotas e impuestos por línea antes de pedir un borrador Odoo.";
+        const base = Number(extracted.base);
+        const linesBase = extracted.lines.every((line) => line.total != null)
+          ? round2(extracted.lines.reduce((sum, line) => sum + Number(line.total), 0))
+          : null;
+        const reconciliationWarning = linesBase != null && Number.isFinite(base) && Math.abs(round2(linesBase - base)) > 0.005
+          ? `La suma de líneas del borrador (${linesBase.toFixed(2)} ${extracted.currency ?? "EUR"}) difiere de la base impresa (${base.toFixed(2)} ${extracted.currency ?? "EUR"}); revisa descuentos y redondeo.`
+          : null;
+        const hasUnmappedTax = extracted.taxes != null && extracted.lines.some((line) => line.taxId == null || line.taxAmount == null);
+        const unresolvedWarnings = parsed.unresolved.map((item) => `Revisión IA: ${item}`);
+        extracted.warnings = [...new Set([
+          ...extracted.warnings.filter((warning) => warning !== staleAmountWarning && warning !== taxReviewWarning && !warning.startsWith("Revisión IA:") && !warning.startsWith("La suma de líneas del borrador (")),
+          ...((extracted.base != null || extracted.total != null) ? [] : [staleAmountWarning]),
+          ...(hasUnmappedTax ? [taxReviewWarning] : []),
+          ...(reconciliationWarning ? [reconciliationWarning] : []),
+          ...unresolvedWarnings,
+        ])].slice(0, 12);
+        doc.aiStatus = "ok";
+        doc.confidence = parsed.confidence ?? null;
+        doc.match = matchDocument(doc, invoiceService.getStore().invoices, buildPoIndex(poLedger.getStore()));
+        doc.reviewProposal = null;
+        doc.lastAiScan = {
+          at: new Date().toISOString(), status: scanStatus, fieldsUpdated: appliedFields,
+          fieldsPreserved: [...new Set(preservedFields)], lineCountUpdated, linesPreserved, unresolved: parsed.unresolved.slice(0, 12),
+        };
+        doc.processedAt = doc.lastAiScan.at;
+        doc.ocrStatus = visualReview ? "needs_ocr" : "ok";
+        doc.reviewChat = [...(doc.reviewChat ?? []), { at: new Date().toISOString(), role: "assistant", content: [parsed.reply, ...parsed.unresolved.map((item) => `Pendiente: ${item}`)].join("\n") }].slice(-60);
       }
-      inboxService.save();
-      sendJson(response, 200, { status: "ok", processed: docs.length, document: docs[0], message: "Datos leídos del PDF rellenados en LAB. Revisa y confirma proveedor y pedidos antes de crear un borrador." });
+      if (!inboxService.save()) {
+        sendJson(response, 500, { message: "El análisis terminó, pero no se pudo guardar en disco el borrador local de Dashboard. No lo consideres guardado; conserva el PDF y vuelve a intentarlo después de resolver el almacenamiento." });
+        return;
+      }
+      if (question) {
+        sendJson(response, 200, { status: "ok", processed: docs.length, document: doc, message: "Respuesta guardada en el historial local. El borrador no se modificó y no se creó nada en Odoo ni Drive." });
+        return;
+      }
+      const outcome = doc.lastAiScan!;
+      const changeCount = outcome.fieldsUpdated.length + outcome.lineCountUpdated;
+      const message = outcome.status === "partial"
+        ? `Análisis parcial guardado: ${outcome.fieldsUpdated.length} campo(s) y ${outcome.lineCountUpdated} sugerencia(s) actualizados; se conservaron las líneas existentes por discrepancia. Revisa los pendientes antes de validar.`
+        : changeCount === 0
+          ? "Análisis completo guardado sin cambios. Los datos ya coincidían o están protegidos por una revisión/edición previa; comprueba los pendientes y la evidencia antes de validar."
+          : `Borrador local guardado: ${outcome.fieldsUpdated.length} campo(s) y ${outcome.lineCountUpdated} sugerencia(s) de línea actualizados. Revisa pedidos, producto, IVA y cuenta; no se creó nada en Odoo ni Drive.`;
+      // Dictamen independiente y solo lectura. No crea borrador Odoo ni mueve el PDF.
+      const verification = await verifyInvoiceWithOdoo(doc, documentsForAgent[0].pdfText, deps.env);
+      const verificationText = verification.ready
+        ? "Verificador: datos actuales aptos para el paso de borrador; todavía no se ha escrito en Odoo ni movido el PDF."
+        : `Verificador: pendiente (${verification.blockers.length} bloqueo(s)): ${verification.blockers.slice(0, 3).join(" · ")}`;
+      sendJson(response, 200, { status: "ok", processed: docs.length, document: doc, scanOutcome: outcome, verification, message: `${message} ${verificationText}` });
     } catch (e) {
-      docs.forEach((d) => { d.reviewChat = [...(d.reviewChat ?? []), { at: new Date().toISOString(), role: "system", content: `Raskibot no respondió: ${e instanceof Error ? e.message.slice(0, 300) : "error desconocido"}` }].slice(-60); });
+      docs.forEach((d) => { d.reviewChat = [...(d.reviewChat ?? []), { at: new Date().toISOString(), role: "system", content: `Facturas no respondió: ${e instanceof Error ? e.message.slice(0, 300) : "error desconocido"}` }].slice(-60); });
       inboxService.save();
-      sendJson(response, 502, { message: e instanceof Error ? e.message : "No se pudo contactar con Raskibot" });
+      sendJson(response, 502, { message: e instanceof Error ? e.message : "No se pudo contactar con Facturas" });
     } finally {
       docs.forEach((d) => raskibotInFlight.delete(d.driveFileId));
     }
@@ -1746,18 +2134,20 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
       doc.extracted.lines = proposal.lines;
       doc.pdfSourceLines = proposal.lines.map((line) => ({ ...line }));
       doc.pdfLinesAccepted = false;
+      doc.operatorLinesEdited = true;
     }
+    doc.operatorEditedFields = [...new Set([...(doc.operatorEditedFields ?? []), ...Object.keys(acceptedFields)])];
     doc.reviewProposal = null;
     doc.match = matchDocument(doc, invoiceService.getStore().invoices, buildPoIndex(poLedger.getStore()));
     doc.reviewChat = [...(doc.reviewChat ?? []), { at: new Date().toISOString(), role: "system" as const, content: `Propuesta local aceptada por ${user.name}; proveedor, pedidos y productos aún requieren confirmación explícita.` }].slice(-60);
-    inboxService.save();
+    if (!inboxService.save()) return sendJson(response, 500, { message: "No se pudo guardar la propuesta en el borrador local." });
     sendJson(response, 200, { status: "ok", document: doc, message: "Propuesta aplicada al borrador local. Revisa los campos y confirma proveedor y pedidos." });
   });
 
   // ---------- Bandeja documental: lista (DESPUES de las sub-rutas) ----------
 
   server.middlewares.use("/api/odoo/supplier-invoices/inbox", async (request: any, response: any) => {
-    const user = requireUser(request, response);
+    const user = requireUser(request, response, "GET");
     if (!user) return;
     const url = new URL(request.url ?? "/", "http://local");
     const store = inboxService.getStore();
@@ -1852,11 +2242,40 @@ export function registerSupplierInvoicesPhase2Routes(server: MiddlewareServer, a
   });
 }
 
-function readBody(request: any): Promise<string> {
+function readBody(request: any, limit = 1e6): Promise<string> {
   return new Promise((resolve) => {
     let data = "";
-    request.on("data", (chunk: string) => { data += chunk; if (data.length > 1e6) request.destroy(); });
+    request.on("data", (chunk: string) => { data += chunk; if (data.length > limit) request.destroy(); });
     request.on("end", () => resolve(data));
     request.on("error", () => resolve(data));
+  });
+}
+
+function readBinaryBody(request: any, limit: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let length = 0;
+    let settled = false;
+    request.on("data", (chunk: Buffer | string) => {
+      if (settled) return;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      length += buffer.length;
+      if (length > limit) {
+        settled = true;
+        reject(new Error("El PDF supera el límite de 20 MB."));
+        return;
+      }
+      chunks.push(buffer);
+    });
+    request.on("end", () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks, length));
+    });
+    request.on("error", (error: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
   });
 }

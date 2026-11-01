@@ -107,11 +107,17 @@ export class DriveClient {
     return files.filter((f) => f.mimeType === "application/pdf" || /\.pdf$/i.test(f.name));
   }
 
-  async download(fileId: string, cacheDir: string): Promise<string> {
+  /** Metadatos actuales de un único PDF: evita listar toda la bandeja en cada cotejo. */
+  async getFileMeta(fileId: string): Promise<DriveFileMeta> {
+    if (!fileId || !/^[A-Za-z0-9_-]+$/.test(fileId)) throw new Error("ID Drive inválido");
+    return await this.request<DriveFileMeta>(`/files/${encodeURIComponent(fileId)}?fields=id,name,mimeType,size,modifiedTime,parents,webViewLink&supportsAllDrives=true`);
+  }
+
+  async download(fileId: string, cacheDir: string, refresh = false): Promise<string> {
     // Devuelve la ruta local del PDF (lectura unica de Drive; bytes cacheados en el LAB).
     mkdirSync(cacheDir, { recursive: true });
     const target = join(cacheDir, `${fileId}.pdf`);
-    if (existsSync(target)) return target;
+    if (!refresh && existsSync(target)) return target;
     if (!this.accessToken) await this.refreshAccessToken();
     const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`, {
       headers: { Authorization: `Bearer ${this.accessToken!}` },
@@ -121,8 +127,44 @@ export class DriveClient {
       throw new Error(`Descarga Drive ${response.status}: ${text}`);
     }
     const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.subarray(0, 5).toString() !== "%PDF-") throw new Error("La descarga Drive no contiene un PDF válido");
     writeFileSync(target, bytes);
     return target;
+  }
+
+  /** Sube un PDF nuevo exclusivamente a la carpeta conectada de bandeja. */
+  async uploadPdf(name: string, bytes: Buffer): Promise<DriveFileMeta> {
+    if (!this.folderId) throw new Error("Falta SUPPLIER_INVOICES_DRIVE_FOLDER_ID");
+    const boundary = `supplier_invoice_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const metadata = JSON.stringify({ name, mimeType: "application/pdf", parents: [this.folderId] });
+    const body = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n`),
+      Buffer.from(`--${boundary}\r\nContent-Type: application/pdf\r\n\r\n`),
+      bytes,
+      Buffer.from(`\r\n--${boundary}--`),
+    ]);
+    if (!this.accessToken) await this.refreshAccessToken();
+    const send = (token: string) => fetch(
+      `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,mimeType,size,modifiedTime,parents,webViewLink`,
+      { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": `multipart/related; boundary=${boundary}` }, body },
+    );
+    let response = await send(this.accessToken!);
+    if (response.status === 401) {
+      await this.refreshAccessToken();
+      response = await send(this.accessToken!);
+    }
+    const result = await response.json() as Partial<DriveFileMeta> & { error?: { message?: string } };
+    if (!response.ok || !result.id) throw new Error(`Drive upload ${response.status}: ${result.error?.message ?? "Drive no confirmó el archivo"}`);
+    if (!result.parents?.includes(this.folderId)) throw new Error("Drive creó el PDF sin confirmar la carpeta de bandeja");
+    return {
+      id: result.id,
+      name: result.name ?? name,
+      mimeType: result.mimeType ?? "application/pdf",
+      size: result.size == null ? bytes.length : Number(result.size),
+      modifiedTime: result.modifiedTime ?? null,
+      parents: result.parents,
+      webViewLink: result.webViewLink ?? null,
+    };
   }
 
   /** Streamea el PDF desde Drive directo al response HTTP (passthrough, sin cachear en disco). */

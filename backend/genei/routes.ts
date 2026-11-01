@@ -1,3 +1,4 @@
+import {assertIncidentLabelAllowed} from '../incidents/labelGuard.ts';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
@@ -75,10 +76,11 @@ export function registerGeneiRoutes(server: Server, auth: Auth, env: Record<stri
       }
       if (!user.permissions.includes("expeditions")) return sendJson(response, 403, { message: "Sin permiso de expediciones" });
       if (request.method === "POST" && path === "shipments") {
-        return sendJson(response, 201, { shipment: await genei.createShipment(await readJsonBody(request)) });
+        const input=await readJsonBody(request);await assertIncidentLabelAllowed(env,input);return sendJson(response, 201, { shipment: await genei.createShipment(input) });
       }
       if (request.method === "POST" && path === "shipments/test") {
         const input = await readJsonBody<{ destination?: Record<string, unknown>; packagesArray?: unknown[]; agencyId?: number; externalShippingCode?: string }>(request);
+        await assertIncidentLabelAllowed(env,input);
         if (!input.destination || !input.packagesArray?.length || !Number.isInteger(input.agencyId)) {
           return sendJson(response, 400, { message: "Faltan destino, bultos o agencia para crear la prueba" });
         }
@@ -114,6 +116,7 @@ export function registerGeneiRoutes(server: Server, auth: Auth, env: Record<stri
       }
       if (request.method === "POST" && path === "shipments/real") {
         const input = await readJsonBody<{ destination?: Record<string, unknown>; packagesArray?: unknown[]; agencyId?: number; externalShippingCode?: string }>(request);
+        await assertIncidentLabelAllowed(env,input);
         if (!input.destination || !input.packagesArray?.length || !Number.isInteger(input.agencyId)) {
           return sendJson(response, 400, { message: "Faltan destino, bultos o agencia para generar la etiqueta" });
         }

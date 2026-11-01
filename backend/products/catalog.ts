@@ -187,17 +187,24 @@ export function createProductCatalog(env: Record<string, string>) {
     const c = config();
     const uid = await rpc("common", "authenticate", [c.db, c.login, c.key, {}]);
     if (!uid) throw new Error("Odoo no aceptó la conexión de Productos");
-    return task((model, method, args, kwargs = {}) =>
-      rpc("object", "execute_kw", [
+    return task((model, method, args, kwargs = {}) => {
+      const suppliedContext = kwargs.context;
+      const context = suppliedContext && typeof suppliedContext === "object" && !Array.isArray(suppliedContext)
+        ? suppliedContext as Record<string, unknown>
+        : {};
+      const effectiveKwargs = model === "product.product"
+        ? { ...kwargs, context: { ...context, lang: "es_ES" } }
+        : kwargs;
+      return rpc("object", "execute_kw", [
         c.db,
         uid,
         c.key,
         model,
         method,
         args,
-        kwargs,
-      ]),
-    );
+        effectiveKwargs,
+      ]);
+    });
   };
   const sync = async (full = false) => {
     if (syncing) return read();

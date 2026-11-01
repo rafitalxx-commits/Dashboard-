@@ -1259,3 +1259,21 @@
 }
 
 .si-match-candidates { display: block; color: #92400e; margin-top: 0.25rem; font-weight: 500; }
+.si-mismatch-confirm { display: flex; align-items: flex-start; gap: 7px; margin-top: 7px; color: #8b3b00; font-size: 12px; line-height: 1.35; }
+.si-mismatch-confirm input { flex: 0 0 auto; margin: 2px 0 0; }
+.si-review-dialog { width: min(860px, calc(100vw - 24px)); max-height: calc(100dvh - 32px); box-sizing: border-box; overflow: auto; border: 1px solid #bccbd9; border-radius: 12px; padding: 22px; color: #203246; background: #fff; box-shadow: 0 16px 60px #0b22364d; }
+.si-review-dialog::backdrop { background: #10263c99; }
+.si-review-dialog h3 { margin-top: 0; }
+.si-review-dialog fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.si-review-dialog label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; margin: 10px 0; }
+.si-review-dialog input:not([type=checkbox]), .si-review-dialog select, .si-review-dialog textarea { width: 100%; min-width: 0; box-sizing: border-box; padding: 8px; border: 1px solid #a4b5c5; border-radius: 6px; font: inherit; }
+.si-review-dialog textarea { min-height: 70px; }
+.si-review-dialog .si-review-check { flex-direction: row; align-items: flex-start; gap: 9px; }
+.si-review-dialog input[type=checkbox] { width: 18px; height: 18px; flex: 0 0 18px; margin: 0; }
+.si-review-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 12px; }
+.si-review-pending { background: #fff7e2; border-left: 3px solid #d19a28; padding: 12px; overflow-wrap: anywhere; }
+.si-review-line { padding: 10px 0; border-bottom: 1px solid #e2e8ed; overflow-wrap: anywhere; }
+.si-review-exception { margin-top: 18px; border-top: 1px solid #cdd7df; }
+.si-review-dialog button { padding: 9px 12px; cursor: pointer; }
+.si-review-dialog button:disabled { cursor: wait; opacity: .55; }
+@media (max-width: 600px) { .si-review-grid { grid-template-columns: minmax(0, 1fr); } .si-review-dialog { padding: 14px; } .si-review-dialog .si-draft-confirm-actions { flex-direction: column; } }
