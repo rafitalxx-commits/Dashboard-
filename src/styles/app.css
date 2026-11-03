@@ -3537,3 +3537,21 @@ th {
 .products-grid-head,.products-grid-row{grid-template-columns:48px minmax(280px,1fr) 132px 90px 94px 94px 94px 240px}
 .products-grid-row>.product-locations-cell{display:flex;flex-wrap:wrap;align-items:center;gap:4px;white-space:normal;overflow:visible;padding-top:6px;padding-bottom:6px}
 .products-grid-row>.product-locations-cell .tag{max-width:none;overflow:visible;text-overflow:clip;white-space:normal;line-height:1.2}
+
+/* Manual shipment confirmation: separate from Odoo delivery validation. */
+.incident-row-actions { flex-wrap: wrap; }
+.shipment-confirm-dialog { width: min(540px, calc(100vw - 28px)); max-height: calc(100dvh - 28px); box-sizing: border-box; overflow: auto; padding: 24px; border: 1px solid #cbd5e1; border-radius: 14px; color: #172033; }
+.shipment-confirm-dialog::backdrop { background: rgb(15 23 42 / 55%); }
+.shipment-confirm-dialog h2 { margin-top: 0; font-size: 1.25rem; }
+.shipment-confirm-dialog p { line-height: 1.5; }
+.shipment-confirm-dialog label { display: grid; gap: 8px; margin-top: 16px; }
+.shipment-confirm-dialog textarea { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #94a3b8; border-radius: 6px; font: inherit; }
+.shipment-confirm-dialog .shipment-confirm-check { display: flex; align-items: flex-start; gap: 10px; line-height: 1.5; }
+.shipment-confirm-dialog .shipment-confirm-check input { width: 18px; height: 18px; flex: 0 0 18px; margin-top: 3px; }
+.shipment-confirm-tracking { overflow-wrap: anywhere; }
+.shipment-confirm-note { font-size: .85rem; color: #475569; }
+.shipment-confirm-error { padding: 10px; background: #fef2f2; color: #991b1b; border-radius: 6px; }
+.shipment-confirm-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.shipment-confirm-actions button { border: 1px solid #cbd5e1; border-radius: 7px; padding: 10px 12px; font: inherit; cursor: pointer; }
+.shipment-confirm-actions button[type=submit] { background: #166534; color: white; }
+.shipment-confirm-actions button:disabled { opacity: .55; cursor: not-allowed; }

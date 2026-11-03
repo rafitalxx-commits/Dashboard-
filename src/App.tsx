@@ -1,3 +1,4 @@
+import { ConfirmIncidentShipment } from './components/ConfirmIncidentShipment';
 import { Fragment, useEffect, useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import {
@@ -2241,14 +2242,14 @@ function App() {
                   incidents={deliveryIncidents}
                   loading={deliveryIncidentsLoading}
                   onRefresh={refreshDeliveryIncidents}
+                  onConfirmed={(incident) => setDeliveryIncidents(rows => rows.map(row => row.id === incident.id ? incident : row))}
                 />
               {false && odooDelivery === "Incidencia entrega Odoo" && (
                 <DeliveryIncidentsPanel
                   incidents={deliveryIncidents}
                   loading={deliveryIncidentsLoading}
                   onRefresh={refreshDeliveryIncidents}
-                  onResolve={resolveDeliveryIncident}
-                  onRetry={retryDeliveryIncidents}
+                  onConfirmed={(incident) => setDeliveryIncidents(rows => rows.map(row => row.id === incident.id ? incident : row))}
                 />
               )}
 
@@ -3262,7 +3263,9 @@ function DeliveryIncidentsPanel({
   incidents,
   loading,
   onRefresh,
+  onConfirmed,
 }: {
+  onConfirmed: (incident: DeliveryIncident) => void;
   incidents: DeliveryIncident[];
   loading: boolean;
   onRefresh: () => void | Promise<void>;
@@ -3270,6 +3273,8 @@ function DeliveryIncidentsPanel({
   const activeIncidents = incidents.filter((incident) => !incident.resolvedAt);
   const visibleIncidents = activeIncidents.slice(0, 100);
   const [expanded, setExpanded] = useState(false);
+  const [confirming, setConfirming] = useState<DeliveryIncident | null>(null);
+  const [savedMessage, setSavedMessage] = useState('');
 
   // El panel debe llamar la atención cuando aparezca una incidencia, pero no
   // reservar espacio en Pedidos cuando no haya nada que revisar.
@@ -3284,6 +3289,13 @@ function DeliveryIncidentsPanel({
       : `${activeIncidents.length} pendiente(s) de revisar`;
 
   return (
+    <>
+    {savedMessage && <p role="status" className="odoo-action-message">{savedMessage}</p>}
+    {confirming && <ConfirmIncidentShipment key={confirming.id} incident={confirming}
+      onClose={() => setConfirming(null)} onSaved={incident => {
+        onConfirmed(incident); setConfirming(null);
+        setSavedMessage(`${incident.orderName || '#' + incident.orderId}: enviado confirmado manualmente. Incidencia resuelta.`);
+      }}/>}
     <section className={`incident-panel${activeIncidents.length === 0 ? " incident-panel-empty" : ""}`}>
       <div className="incident-panel-header">
         <div>
@@ -3345,6 +3357,9 @@ function DeliveryIncidentsPanel({
                 <td>{incident.reason}</td>
                 <td>
                   <div className="incident-row-actions">
+                    <button type="button" disabled={loading || !incident.tracking?.trim()}
+                      title={incident.tracking?.trim() ? 'Confirmar envío sin modificar Odoo' : 'Se necesita un seguimiento para confirmar el envío'}
+                      onClick={() => setConfirming(incident)}>Resolver · enviado confirmado</button>
                     <a
                       href={`/api/odoo/orders/open-order?orderId=${incident.orderId}`}
                       rel="noreferrer"
@@ -3385,6 +3400,7 @@ function DeliveryIncidentsPanel({
         </>
       )}
     </section>
+    </>
   );
 }
 

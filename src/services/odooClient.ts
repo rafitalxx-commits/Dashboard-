@@ -1,3 +1,4 @@
+import type { ManualShipmentResolution, ShipmentConfirmation } from '../../backend/deliveryIncidentResolution';
 import {
   customerInvoices,
   orders,
@@ -668,7 +669,17 @@ export const odooClient = {
       reason: string;
       lastAttemptAt: string;
       resolvedAt?: string;
+      resolvedBy?: string;
+      manualResolution?: ManualShipmentResolution;
     }>;
+  },
+  async confirmIncidentShipped(input: ShipmentConfirmation) {
+    const response = await fetch("/api/odoo/orders/delivery-incidents/confirm-shipped", {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(input),
+    });
+    const payload = await readJson(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo confirmar el envío");
+    return payload as {ok: true; incident: Awaited<ReturnType<typeof odooClient.getDeliveryIncidents>>[number]};
   },
   async retryDeliveryIncidents(incidentIds?: string[]) {
     const response = await fetch("/api/odoo/orders/delivery-incidents/retry", {

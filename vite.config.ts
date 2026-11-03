@@ -1,3 +1,4 @@
+import { confirmIncidentShipment, mergeDeliveryIncident, preserveConcurrentShipmentConfirmations, type ManualShipmentResolution, type ShipmentConfirmation } from './backend/deliveryIncidentResolution';
 import { createExpeditionReplenishment } from "./backend/expeditionReplenishment/service";
 import { registerExpeditionReplenishmentRoutes } from "./backend/expeditionReplenishment/routes";
 import {assertInternalAutomationNote} from './backend/incidents/automationAuthor';
@@ -55,6 +56,7 @@ import {
 } from "./backend/products/catalog";
 import { withCatalogLocations } from "./backend/products/catalogLocations";
 import { createProductInventories } from "./backend/products/inventories";
+import { createCustomerReturnSync } from "./backend/products/customerReturnSync";
 import { createProductLocations, parseLocationCode } from "./backend/products/locations";
 import { createPendingReceipts } from "./backend/receptions/pendingReceipts";
 import { chooseSupplierPrice, type SupplierPriceRow } from "./backend/purchases/supplierPricing";
@@ -387,6 +389,7 @@ type OrdersCacheStore = {
 };
 
 type DeliveryValidationIncident = {
+  manualResolution?: ManualShipmentResolution;
   id: string;
   orderId: number;
   orderName?: string;
@@ -404,6 +407,7 @@ type DeliveryValidationIncident = {
 };
 
 type DeliveryValidationAuditEntry = {
+  manualShipmentResolution?: ManualShipmentResolution;
   id: string;
   createdAt: string;
   orderId?: number;
@@ -530,6 +534,8 @@ export default defineConfig(({ mode }) => {
     "INCIDENTS_SHEETS_WRITE_ENABLED",
     "INCIDENTS_DRIVE_WRITE_ENABLED",
     "INCIDENTS_SPREADSHEET_ID",
+    "SUPPLIER_INVOICES_AUTOMATION_ENABLED",
+    "SUPPLIER_INVOICES_AUTOMATION_TOKEN_SHA256",
     "SUPPLIER_INVOICES_ODOO_WRITE_ENABLED",
     "SUPPLIER_INVOICES_ODOO_ALLOWED_FILE_ID",
     "SUPPLIER_INVOICES_DRIVE_WRITE_ENABLED",
@@ -581,10 +587,32 @@ function odooReadOnlyApi(env: Record<string, string>) {
         (ids) => replenishmentPreview
           ? Promise.resolve(Object.fromEntries(ids.filter((id) => replenishmentPreview.images[id]).map((id) => [id, replenishmentPreview.images[id]])))
           : productCatalog.images(ids), replenishmentPreview?.capturedAt);
+      const customerReturnSync = createCustomerReturnSync({
+        locations: productLocations,
+        read: async () => {
+          const config = getOdooConfig(env); const uid = await authenticate(config);
+          return async (model, args, kwargs) => {
+            if (!["stock.location", "stock.move", "product.product", "uom.uom"].includes(model)) throw new Error("Modelo fuera de lectura de devoluciones");
+            return rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, "search_read", args, kwargs]);
+          };
+        },
+      });
+      // Persist the cutover even with polling disabled, so a restart before the
+      // first catalog refresh cannot lose returns received since deployment.
+      try { customerReturnSync.start(); }
+      catch (error) { console.error("Customer return sync cutover not started:", error); }
       let movementSyncInFlight: Promise<unknown> | null = null;
       const syncOdooMovements = (automatic = false) => {
         if (movementSyncInFlight) return movementSyncInFlight.then(() => syncOdooMovements(automatic));
         const work = (async () => {
+          // A return/UoM error must not stop the existing customer-delivery debits.
+          let returnSync: unknown;
+          try { returnSync = await customerReturnSync.sync(); }
+          catch (error) {
+            const message = error instanceof Error ? error.message : "Error sincronizando devoluciones";
+            console.error("Customer return location sync failed:", message);
+            returnSync = { error: message };
+          }
           const state = productLocations.summary().odooMovementSync;
           if (!state) throw new Error("Primero finaliza un inventario para crear la base de ubicaciones");
           const config = getOdooConfig(env); const uid = await authenticate(config);
@@ -605,7 +633,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
           const dateField = automatic ? "write_date" : "date";
           const domain = automatic
             ? ["&", "&", "&", "&", ["state", "=", "done"], [dateField, ">=", since], [dateField, "<=", until], ["location_id", "child_of", rootId], ["location_dest_id.usage", "=", "customer"]]
-            : ["&", ["state", "=", "done"], "&", "&", [dateField, ">=", since], [dateField, "<=", until], "|", ["location_id", "child_of", rootId], ["location_dest_id", "child_of", rootId]];
+            : ["&", ["location_id.usage", "!=", "customer"], "&", ["state", "=", "done"], "&", "&", [dateField, ">=", since], [dateField, "<=", until], "|", ["location_id", "child_of", rootId], ["location_dest_id", "child_of", rootId]];
           const moves: any[] = [];
           for (let offset = 0; ; offset += 1000) {
             const page = await call("stock.move", "search_read", [domain], { fields: ["id", "product_id", "quantity", "product_uom_qty", "location_id", "location_dest_id", "date", "write_date"], order: `${dateField} asc, id asc`, limit: 1000, offset });
@@ -622,7 +650,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
             if (!Number.isInteger(move.id) || !Number.isInteger(productId) || !Number.isFinite(quantity) || quantity <= 0) return [];
             return [{ id: move.id, productId, quantity, direction: destinationIn ? "in" as const : "out" as const }];
           });
-          return productLocations.applyOdooMovements({ moves: mapped, syncedAt, automatic });
+          return { ...productLocations.applyOdooMovements({ moves: mapped, syncedAt, automatic }), returnSync };
         })();
         movementSyncInFlight = work;
         void work.finally(() => { movementSyncInFlight = null; }).catch(() => {});
@@ -944,11 +972,13 @@ function odooReadOnlyApi(env: Record<string, string>) {
               return;
             }
             if (request.method === "POST" && url.pathname === "/sync") {
+              const returnSync = await customerReturnSync.sync();
               const rawCatalog = await productCatalog.sync(
                 url.searchParams.get("full") === "true",
               );
               sendJson(response, 200, {
                 ...rawCatalog,
+                returnSync,
                 products: withCatalogLocations(rawCatalog.products, productLocations.summary().locations),
               });
               return;
@@ -1972,6 +2002,31 @@ function odooReadOnlyApi(env: Record<string, string>) {
               }
               const payload = await readJsonBody<{ incidentIds?: string[] }>(request);
               sendJson(response, 200, await retryDeliveryIncidents(env, payload.incidentIds ?? []));
+              return;
+            }
+
+            if (url.pathname === "/delivery-incidents/confirm-shipped") {
+              if (request.method !== "POST") {
+                sendJson(response, 405, { message: "Metodo no permitido" });
+                return;
+              }
+              try {
+                const payload = await readJsonBody<ShipmentConfirmation>(request);
+                const store = readOrdersCache(env);
+                const target = store.incidents.find(i => i.id === payload?.incidentId);
+                const order = target && store.orders.find(o => Number(cleanText(o.odooRef).replace(/^#/, "")) === target.orderId);
+                const result = confirmIncidentShipment(store.incidents, payload, user,
+                  order?.sendcloud?.trackingNumber || target?.tracking);
+                if (result.incidents !== store.incidents) writeOrdersCache(env, {...store, incidents: result.incidents,
+                  audit: [...store.audit, {id: randomToken(), createdAt: result.incident.resolvedAt!,
+                    orderId: result.incident.orderId, orderName: result.incident.orderName,
+                    tracking: result.incident.manualResolution!.tracking, mode: "manual", trigger: "manual",
+                    durationMs: 0, result: "skipped", reason: "Enviado confirmado manualmente; sin modificar Odoo.",
+                    manualShipmentResolution: result.incident.manualResolution}].slice(-1000) as DeliveryValidationAuditEntry[]});
+                sendJson(response, 200, {ok: true, incident: result.incident});
+              } catch (error) {
+                sendJson(response, 400, {message: error instanceof Error ? error.message : "No se pudo confirmar el envío"});
+              }
               return;
             }
 
@@ -5595,6 +5650,7 @@ function readOrdersCache(env: Record<string, string>): OrdersCacheStore {
 }
 
 function writeOrdersCache(env: Record<string, string>, store: OrdersCacheStore) {
+  store = preserveConcurrentShipmentConfirmations(store, readOrdersCache(env));
   const storePath = getOrdersCachePath(env);
   mkdirSync(dirname(storePath), { recursive: true });
   writeFileSync(storePath, `${JSON.stringify(store, null, 2)}\n`, {
@@ -5932,12 +5988,7 @@ function mergeDeliveryIncidents(
   incoming.forEach((incident) => {
     if (!isReportableDeliveryIncidentReason(incident.reason)) return;
     const previous = rows.get(incident.id);
-    rows.set(incident.id, {
-      ...previous,
-      ...incident,
-      resolvedAt: undefined,
-      resolvedBy: undefined,
-    });
+    rows.set(incident.id, mergeDeliveryIncident(previous, incident));
   });
   return Array.from(rows.values()).sort((left, right) =>
     right.lastAttemptAt.localeCompare(left.lastAttemptAt),
