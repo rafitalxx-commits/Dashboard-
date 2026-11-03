@@ -1,3 +1,4 @@
+import type { ManualShipmentResolution, ShipmentConfirmation } from '../../backend/deliveryIncidentResolution';
 import {
   customerInvoices,
   orders,
@@ -21,6 +22,10 @@ import type {
   ReceptionOperator,
   ReceptionSession,
   PendingReceipt,
+  OperationalHomePayload,
+  OperationalHomePeriod,
+  OperationalHomeChart,
+  OperationalHomeComparison,
 } from "./odooTypes";
 
 type DashboardUserRole = "viewer" | "printer" | "admin";
@@ -37,6 +42,7 @@ type DashboardPermission =
   | "products"
   | "settings"
   | "odooWrite"
+  | "amazonMessages"
   | "amazonMessagesSendFinal";
 type DashboardUser = {
   id: string;
@@ -353,6 +359,11 @@ export const odooClient = {
     if (!response.ok) throw new Error(payload.message ?? "No se pudo leer el inventario");
     return payload;
   },
+  async discardProductInventory(id: string) {
+    const response = await fetch(`${inventoriesApi()}/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const payload = (await readJson(response)) as { ok?: boolean; message?: string };
+    if (!response.ok || !payload.ok) throw new Error(payload.message ?? "No se pudo cancelar el inventario");
+  },
   async inventoryAction(id: string, action: "start" | "review" | "validate", body: Record<string, unknown> = {}) {
     const response = await fetch(`${inventoriesApi()}/${encodeURIComponent(id)}/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const payload = (await readJson(response)) as import("./odooTypes").ProductInventory & { message?: string };
@@ -658,7 +669,17 @@ export const odooClient = {
       reason: string;
       lastAttemptAt: string;
       resolvedAt?: string;
+      resolvedBy?: string;
+      manualResolution?: ManualShipmentResolution;
     }>;
+  },
+  async confirmIncidentShipped(input: ShipmentConfirmation) {
+    const response = await fetch("/api/odoo/orders/delivery-incidents/confirm-shipped", {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(input),
+    });
+    const payload = await readJson(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo confirmar el envío");
+    return payload as {ok: true; incident: Awaited<ReturnType<typeof odooClient.getDeliveryIncidents>>[number]};
   },
   async retryDeliveryIncidents(incidentIds?: string[]) {
     const response = await fetch("/api/odoo/orders/delivery-incidents/retry", {
@@ -703,6 +724,31 @@ export const odooClient = {
       };
     }
   },
+  async getOperationalHome(refresh = false, signal?: AbortSignal): Promise<OperationalHomePayload> {
+    const response = await fetch(receptionsApiPath(`/api/odoo/dashboard/home${refresh ? "?refresh=1" : ""}`), { signal });
+    const payload = await readJson(response);
+    if (!response.ok) throw new Error(payload.message || "No se pudo cargar Inicio");
+    return payload as OperationalHomePayload;
+  },
+  async getOperationalHomeChart(kind: "shipments" | "sales", period: OperationalHomePeriod, channel = "all", refresh = false, signal?: AbortSignal): Promise<OperationalHomeChart> {
+    const params = new URLSearchParams({ period });
+    if (kind === "sales") params.set("channel", channel);
+    if (refresh) params.set("refresh", "1");
+    const response = await fetch(receptionsApiPath(`/api/odoo/dashboard/home/charts/${kind}?${params}`), { signal });
+    const payload = await readJson(response);
+    if (!response.ok) throw new Error(payload.message || `No se pudo cargar la gráfica de ${kind}`);
+    return payload as OperationalHomeChart;
+  },
+  async getOperationalHomeComparison(range: { from?: string; to?: string; period?: "48h" }, refresh = false, signal?: AbortSignal): Promise<OperationalHomeComparison> {
+    const query = new URLSearchParams();
+    if (range.period) query.set("period", range.period);
+    else if (range.from && range.to) { query.set("from", range.from); query.set("to", range.to); }
+    if (refresh) query.set("refresh", "1");
+    const response = await fetch(receptionsApiPath("/api/odoo/dashboard/home/charts/comparison?" + query.toString()), { signal });
+    const payload = await readJson(response);
+    if (!response.ok) throw new Error(payload.message || "No se pudo cargar el comparativo de Inicio");
+    return payload as OperationalHomeComparison;
+  },
   async getDashboardV2(params?: { from?: string; to?: string }) {
     const query = new URLSearchParams();
     if (params?.from) query.set("from", params.from);
@@ -733,7 +779,7 @@ export const odooClient = {
       if (params?.offset) query.set("offset", params.offset.toString());
       if (params?.search) query.set("search", params.search);
 
-      const response = await fetch(`/api/odoo/orders?${query.toString()}`);
+      const response = await fetch(receptionsApiPath(`/api/odoo/orders?${query.toString()}`));
       if (!response.ok) {
         throw new Error(`Odoo API returned ${response.status}`);
       }
@@ -777,7 +823,7 @@ export const odooClient = {
     if (params?.offset) query.set("offset", params.offset.toString());
     if (params?.search) query.set("search", params.search);
 
-    const response = await fetch(`/api/odoo/orders/v2?${query.toString()}`);
+    const response = await fetch(receptionsApiPath(`/api/odoo/orders/v2?${query.toString()}`));
     if (!response.ok) {
       throw new Error(`Pedidos V2 API returned ${response.status}`);
     }
@@ -840,6 +886,12 @@ export const odooClient = {
     }
     return payload;
   },
+  async getSalesPurchaseAlerts() {
+    const response = await fetch(receptionsApiPath("/api/odoo/sales-purchase-alerts"));
+    const payload = (await readJson(response)) as import("./odooTypes").SalesPurchaseAlertsPayload & { message?: string };
+    if (!response.ok) throw new Error(payload.message ?? "No se pudieron leer las compras vinculadas a ventas");
+    return payload;
+  },
   async getPendingPurchaseProducts(orderId: string, query: string, quantity = 1, partnerId?: string) {
     const params = new URLSearchParams({ orderId, q: query, quantity: String(quantity) });
     if (partnerId) params.set("partnerId", partnerId);
@@ -879,6 +931,28 @@ export const odooClient = {
     if (!response.ok || !payload.ok) throw new Error(payload.message ?? "No se pudo confirmar el pedido");
     return payload;
   },
+  async confirmAndSendPendingPurchase(orderId: string, simulate = false) {
+    const response = await fetch(receptionsApiPath("/api/odoo/pending-purchases/confirm-and-send-email"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orderId, simulate }),
+    });
+    const payload = await readJson<{ ok?: boolean; ref?: string; pickingRefs?: string[]; emailSent?: boolean; simulated?: boolean; message?: string }>(response);
+    if (!response.ok || !payload.ok || (!simulate && payload.emailSent !== true)) {
+      throw new Error(payload.message ?? "Odoo no confirmó el envío del email");
+    }
+    return payload;
+  },
+  async sendConfirmedPurchaseEmail(orderId: string, simulate = false) {
+    const response = await fetch(receptionsApiPath("/api/odoo/pending-purchases/send-email"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orderId, simulate }),
+    });
+    const payload = await readJson<{ ok?: boolean; ref?: string; emailSent?: boolean; simulated?: boolean; message?: string }>(response);
+    if (!response.ok || !payload.ok || (!simulate && payload.emailSent !== true)) {
+      throw new Error(payload.message ?? "Odoo no confirmó el envío del email");
+    }
+    return payload;
+  },
   async cancelPendingPurchase(orderId: string, simulate = false) {
     const response = await fetch(receptionsApiPath("/api/odoo/pending-purchases/cancel"), {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ orderId, simulate }),
@@ -898,13 +972,13 @@ export const odooClient = {
   async validateInventoryReception(input: {
     receptionId: string;
     createBackorder: boolean;
-    lines: Array<{ lineId: string; productId?: string; quantity: number }>;
+    lines: Array<{ lineId: string; productId?: string; quantity: number; allocations: Array<{ location: string; quantity: number }> }>;
   }) {
     const response = await fetch(receptionsApiPath("/api/odoo/inventory-receptions/validate"), {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
     });
-    const payload = await readJson<{ ok?: boolean; receptionRef?: string; state?: string; dateDone?: string; pendingReception?: { id: string; ref?: string; state?: string }; message?: string }>(response);
-    if (!response.ok || !payload.ok) throw new Error(payload.message ?? "No se pudo validar la recepción en Odoo");
+    const payload = await readJson<{ ok?: boolean; locationRecorded?: boolean; receptionRef?: string; state?: string; dateDone?: string; pendingReception?: { id: string; ref?: string; state?: string }; message?: string }>(response);
+    if (!response.ok || !payload.ok || !payload.locationRecorded) throw new Error(payload.message ?? "La recepción no confirmó las ubicaciones en Dashboard");
     return payload;
   },
   async cancelInventoryReception(receptionId: string, reason: string) {

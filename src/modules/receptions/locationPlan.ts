@@ -66,3 +66,14 @@ export function normalizedQuantity(value: unknown) {
   const quantity = Number(value);
   return Number.isFinite(quantity) && quantity >= 0 ? quantity : 0;
 }
+
+/** Pending physical receipt according to the saved local count, not Odoo validation. */
+export function isUnderOrderReceiptPending(
+  line: InventoryReceptionLine,
+  plan?: ReceptionLocationPlan,
+) {
+  const underOrder = line.classification === "under_order"
+    || (line.classification === "mixed" && (line.pendingShipmentQty ?? 0) > 0);
+  const counted = plan?.ready ? plan.receivedQty : 0;
+  return underOrder && line.pendingQty > counted;
+}

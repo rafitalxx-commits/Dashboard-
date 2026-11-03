@@ -245,17 +245,19 @@ export function createGmailReadonlySourceWithGogFallback(
         return await apiSource.listLabelMessages(input);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (
-          !/invalid_grant|expired|revoked|Faltan credenciales Gmail OAuth readonly|Campo Gmail requerido/i.test(
-            message,
-          )
-        ) {
+        if (!shouldFallbackToGog(message)) {
           throw error;
         }
         return gogSource.listLabelMessages(input);
       }
     },
   };
+}
+
+export function shouldFallbackToGog(message: string) {
+  return /invalid_grant|unauthorized_client|expired|revoked|Faltan credenciales Gmail OAuth readonly|Campo Gmail requerido/i.test(
+    message,
+  );
 }
 
 export function createGmailApiDraftSource(
@@ -384,11 +386,10 @@ async function getAccessToken(config: GmailReadonlyConfig | GmailDraftConfig) {
     error_description?: string;
   };
   if (!response.ok || !payload.access_token) {
-    throw new Error(
-      payload.error_description ??
-        payload.error ??
-        "No se pudo obtener access token Gmail",
-    );
+    const detail = [payload.error, payload.error_description]
+      .filter(Boolean)
+      .join(": ");
+    throw new Error(detail || "No se pudo obtener access token Gmail");
   }
   return payload.access_token;
 }

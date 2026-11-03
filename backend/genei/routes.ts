@@ -1,4 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {assertIncidentLabelAllowed} from '../incidents/labelGuard.ts';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { createGeneiClient } from "./client.ts";
 import { shrinkPdfLabelBase64 } from "../pdfLabelTools.ts";
@@ -74,10 +76,11 @@ export function registerGeneiRoutes(server: Server, auth: Auth, env: Record<stri
       }
       if (!user.permissions.includes("expeditions")) return sendJson(response, 403, { message: "Sin permiso de expediciones" });
       if (request.method === "POST" && path === "shipments") {
-        return sendJson(response, 201, { shipment: await genei.createShipment(await readJsonBody(request)) });
+        const input=await readJsonBody(request);await assertIncidentLabelAllowed(env,input);return sendJson(response, 201, { shipment: await genei.createShipment(input) });
       }
       if (request.method === "POST" && path === "shipments/test") {
         const input = await readJsonBody<{ destination?: Record<string, unknown>; packagesArray?: unknown[]; agencyId?: number; externalShippingCode?: string }>(request);
+        await assertIncidentLabelAllowed(env,input);
         if (!input.destination || !input.packagesArray?.length || !Number.isInteger(input.agencyId)) {
           return sendJson(response, 400, { message: "Faltan destino, bultos o agencia para crear la prueba" });
         }
@@ -113,6 +116,7 @@ export function registerGeneiRoutes(server: Server, auth: Auth, env: Record<stri
       }
       if (request.method === "POST" && path === "shipments/real") {
         const input = await readJsonBody<{ destination?: Record<string, unknown>; packagesArray?: unknown[]; agencyId?: number; externalShippingCode?: string }>(request);
+        await assertIncidentLabelAllowed(env,input);
         if (!input.destination || !input.packagesArray?.length || !Number.isInteger(input.agencyId)) {
           return sendJson(response, 400, { message: "Faltan destino, bultos o agencia para generar la etiqueta" });
         }
@@ -196,13 +200,25 @@ function createGeneratedLabelsRepository() {
 
   function readStore(): GeneratedLabelStore {
     ensureStore();
-    const parsed = JSON.parse(readFileSync(storePath, "utf8")) as Partial<GeneratedLabelStore>;
+    let parsed: Partial<GeneratedLabelStore>;
+    try {
+      parsed = JSON.parse(readFileSync(storePath, "utf8")) as Partial<GeneratedLabelStore>;
+    } catch {
+      throw new Error("El historial de etiquetas está dañado. No generes otra etiqueta: avisa a administración para recuperarlo.");
+    }
     return { labels: Array.isArray(parsed.labels) ? parsed.labels : [] };
   }
 
   function writeStore(store: GeneratedLabelStore) {
     mkdirSync(dirname(storePath), { recursive: true });
-    writeFileSync(storePath, `${JSON.stringify(store, null, 2)}\n`);
+    const temporaryPath = `${storePath}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(temporaryPath, `${JSON.stringify(store, null, 2)}\n`);
+      renameSync(temporaryPath, storePath);
+    } catch (error) {
+      rmSync(temporaryPath, { force: true });
+      throw error;
+    }
   }
 
   function findByReference(reference: string) {

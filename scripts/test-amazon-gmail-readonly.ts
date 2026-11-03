@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { syncAmazonMessagesFromGmail } from "../backend/amazonMessages/gmailSync.ts";
 import { createAmazonMessagesRepository } from "../backend/amazonMessages/repository.ts";
-import type { GmailReadonlySource } from "../backend/amazonMessages/gmailClient.ts";
+import {
+  shouldFallbackToGog,
+  type GmailReadonlySource,
+} from "../backend/amazonMessages/gmailClient.ts";
 import type { AmazonMessagesActor } from "../backend/amazonMessages/schema.ts";
 import {
   resolveOdooOrderContext,
@@ -87,6 +90,17 @@ Date: Sat, 20 Jun 2026 18:05:00 +0200
 Danke, bitte pruefen Sie die Sendungsnummer.`;
 
 try {
+  assert.equal(
+    shouldFallbackToGog("unauthorized_client: Unauthorized"),
+    true,
+    "OAuth unauthorized_client should use the configured gog fallback",
+  );
+  assert.equal(
+    shouldFallbackToGog("Gmail API rate limit exceeded"),
+    false,
+    "unrelated Gmail API errors must not be hidden by the fallback",
+  );
+
   const missing = await syncAmazonMessagesFromGmail(repository, actor, {
     config: {
       account: "juanitoopenclaw@gmail.com",
@@ -174,6 +188,26 @@ try {
     (item) => item.conversationId === conversation.conversationId,
   );
   assert.equal(importedMessages.length, 2, "two non-duplicate messages should persist");
+  assert.equal(
+    store.draftRequests.length,
+    2,
+    "each non-duplicate customer message should enqueue an automatic agent draft",
+  );
+  assert.ok(store.draftRequests.every((request) => request.status === "PENDING"));
+  assert.ok(
+    store.draftRequests.every((request) => request.trigger === "AUTO_GMAIL"),
+  );
+  assert.deepEqual(
+    store.draftRequests.map((request) => request.gmailMessageId),
+    ["gmail-1", "gmail-2"],
+  );
+  assert.equal(detail.draftRequests.length, 2);
+  assert.ok(
+    store.auditLogs.some(
+      (item) => item.eventType === "agent_draft_automatically_requested",
+    ),
+    "automatic agent request should be audited",
+  );
   assert.ok(
     store.attachments.some((item) => item.sanitizedName === "foto-paquete.jpg"),
     "attachment metadata should persist",
@@ -201,6 +235,23 @@ try {
     store.gmailSync?.errorCount,
     0,
     "OAuth preflight failure is recorded in sync history, not import errorCount",
+  );
+
+  await repository.importGmailMessage(actor, {
+    gmailMessageId: "gmail-system-notice",
+    rawEmail: `Message-ID: <gmail-system-notice@example.amazon.com>
+X-Space-Notification-Type: BRC_SELLER_NOTIFICATION
+From: Amazon Seller Central <donotreply@amazon.com>
+To: Juanito <juanitoopenclaw@gmail.com>
+Subject: Aviso automatico de Amazon
+Date: Sat, 20 Jun 2026 18:10:00 +0200
+
+Este es un aviso automatico de Seller Central.`,
+  });
+  assert.equal(
+    repository.readStoreForTests().draftRequests.length,
+    2,
+    "Amazon system notifications must not enqueue an agent draft",
   );
 
   const autoResult = await syncAmazonMessagesFromGmail(repository, actor, {

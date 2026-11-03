@@ -71,7 +71,7 @@ export function createMrwClient(env: Record<string, string>) {
   };
   const serviceCodes: Record<string, string> = {
     "mrw-urgent-1900-expedition": env.MRW_SERVICE_URGENT_1900_EXPEDITION_CODE || env.MRW_SERVICE_URGENTE_CODE || "0205",
-    "mrw-urgent-1400-expedition": env.MRW_SERVICE_URGENT_1400_EXPEDITION_CODE || env.MRW_SERVICE_URGENTE_14_CODE || "0110",
+    "mrw-urgent-1400-expedition": env.MRW_SERVICE_URGENT_1400_EXPEDITION_CODE || env.MRW_SERVICE_URGENTE_14_CODE || "0115",
     "mrw-urgente": env.MRW_SERVICE_URGENT_1900_EXPEDITION_CODE || env.MRW_SERVICE_URGENTE_CODE || "0205",
     "mrw-ecommerce": env.MRW_SERVICE_ECOMMERCE_CODE || "",
   };

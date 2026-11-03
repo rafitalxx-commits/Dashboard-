@@ -4,6 +4,13 @@ import { readFileSync } from "node:fs";
 const vite = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
 const client = readFileSync(new URL("../src/services/odooClient.ts", import.meta.url), "utf8");
 const view = readFileSync(new URL("../src/modules/receptions/InventoryReceptionsView.tsx", import.meta.url), "utf8");
+const readOnlyModels = vite.match(/const readOnlyModels = new Set\(\[([\s\S]*?)\]\);/)?.[1] ?? "";
+const readOnlyMethods = vite.match(/const readOnlyMethods = new Set\(\[([\s\S]*?)\]\);/)?.[1] ?? "";
+
+assert.match(readOnlyModels, /[\"']stock\.location[\"']/);
+assert.match(readOnlyMethods, /[\"']search_read[\"']/);
+assert.doesNotMatch(readOnlyMethods, /[\"'](?:create|write|unlink|button_validate)[\"']/);
+assert.match(vite, /if \(!readOnlyModels\.has\(model\) \|\| !readOnlyMethods\.has\(method\)\)/);
 
 assert.match(vite, /url\.pathname === "\/validate"/);
 assert.match(vite, /url\.pathname === "\/cancel"/);
@@ -19,9 +26,9 @@ assert.match(client, /cancelInventoryReception/);
 assert.match(view, /Validando…/);
 assert.match(view, /Cancelando en Odoo…/);
 assert.match(view, /disabled=\{validating/);
-assert.match(vite, /fields: \["id", "partner_ref", "order_type"\]/);
+assert.match(vite, /fields: \["id", "partner_ref", "order_type", "date_approve"\]/);
 assert.match(vite, /=== "rebastecimiento"/);
-assert.match(view, /useState<ReceptionFilter>\("Esperando"\)/);
+assert.match(view, /useState<ReceptionFilter>\(\(\) => incidentsLab \? 'Devoluciones' : [^\n]*\.has\("dev"\) \? "Devoluciones" : initialIds \? "Todos" : "Esperando"\)/);
 assert.match(view, /filter === "Importaciones" \? item\.isImportation/);
 assert.match(view, /item\.status === filter && !item\.isImportation/);
 assert.match(view, /Página \{historyPage\} de \{historyPages\}/);

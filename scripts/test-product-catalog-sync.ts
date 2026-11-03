@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  catalogOnHand,
   formatCatalogProductName,
   reconcileCatalogProducts,
   type CatalogProduct,
@@ -47,6 +48,11 @@ assert.deepEqual(
 
 const full = reconcileCatalogProducts(previous, [renamed], [1], true);
 assert.deepEqual(full, [renamed]);
+
+assert.equal(catalogOnHand({ qty_available: 60 }, 86, [{ type: "phantom" }]), 60);
+assert.equal(catalogOnHand({ qty_available: 60 }, 86, [{ type: "normal" }]), 86);
+assert.equal(catalogOnHand({ qty_available: 60 }, 86, []), 86);
+assert.equal(catalogOnHand({ qty_available: 0 }, 86, [{ type: "phantom" }]), 0);
 
 assert.equal(
   formatCatalogProductName({

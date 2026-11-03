@@ -1,3 +1,16 @@
+import { confirmIncidentShipment, mergeDeliveryIncident, preserveConcurrentShipmentConfirmations, type ManualShipmentResolution, type ShipmentConfirmation } from './backend/deliveryIncidentResolution';
+import { createExpeditionReplenishment } from "./backend/expeditionReplenishment/service";
+import { registerExpeditionReplenishmentRoutes } from "./backend/expeditionReplenishment/routes";
+import {assertInternalAutomationNote} from './backend/incidents/automationAuthor';
+import {IncidentChatter} from './backend/incidents/chatter';
+import { enrichIncidentKits } from './backend/incidents/kits';
+import { orderMerchandise } from './backend/incidents/merchandise';
+import { operationalOdooTarget, operationalRexWritable, assertOperationalRexRpc } from './backend/incidents/odooRuntime';
+import { OdooDemoReader } from './backend/incidents/odooDemo';
+import { IncidentOdooStock, ControlledStockExecutor, StockJournal, TEST_TARGET } from './backend/incidents/odooStock';
+import { incidentVolumes } from './backend/incidents/statistics';
+import { searchIncidentCatalog } from "./backend/incidents/catalog";
+import { registerIncidentRoutes } from "./backend/incidents/routes";
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import {
@@ -20,22 +33,30 @@ import { registerGeneiRoutes } from "./backend/genei/routes";
 import { registerMrwRoutes } from "./backend/mrw/routes";
 import { registerCorreosExpressRoutes } from "./backend/correosExpress/routes";
 import { registerDhlRoutes } from "./backend/dhl/routes";
+import { registerGlsRoutes } from "./backend/gls/routes";
 import { registerShippingRulesRoutes } from "./backend/shippingRules/routes";
 import { registerPrestashopRoutes } from "./backend/prestashop/routes";
 import { registerPublicTrackingRoutes } from "./backend/publicTracking/routes";
+import { registerSupplierInvoicesRoutes } from "./backend/supplierInvoices/routes";
+import { registerSupplierInvoicesPhase2Routes } from "./backend/supplierInvoices/phase2Routes";
 import { registerWarehouseWorkersRoutes } from "./backend/warehouseWorkers/routes";
 import { registerExpeditionDestinationOverridesRoutes } from "./backend/expeditionDestinationOverrides/routes";
-import { isDeliveryIncidentStillPending, isServiceOnlyOrder } from "./backend/odooDeliveryIncidentRules";
+import { isDeliveryIncidentStillPending, isReportableDeliveryIncidentReason, isServiceOnlyOrder } from "./backend/odooDeliveryIncidentRules";
+import { isDeliveryStatusEligible, isRecordedDashboardLabel } from "./backend/odooDeliveryStatus";
 import {
   buildExactExpeditionOrderDomain,
   isCompleteExpeditionOrderReference,
 } from "./backend/expeditionOrderReference";
 import { formatOdooMadrid } from "./backend/odooDateTime";
+import { groupShipmentLabels, isHomeOrderUnprinted, isHomeOrderUnsent, labelReferences, periodBounds, selectHomeNoStockProducts, type HomePeriod, type ShippingLabel } from "./backend/home/metrics";
+import { buildHomeComparison, buildHomeComparisonRange, buildHomeComparisonRolling48h, comparisonBounds, comparisonChannel, parseOdooUtc, type SentSale } from "./backend/home/comparison";
 import {
   createProductCatalog,
   formatCatalogProductName,
 } from "./backend/products/catalog";
+import { withCatalogLocations } from "./backend/products/catalogLocations";
 import { createProductInventories } from "./backend/products/inventories";
+import { createCustomerReturnSync } from "./backend/products/customerReturnSync";
 import { createProductLocations, parseLocationCode } from "./backend/products/locations";
 import { createPendingReceipts } from "./backend/receptions/pendingReceipts";
 import { chooseSupplierPrice, type SupplierPriceRow } from "./backend/purchases/supplierPricing";
@@ -81,6 +102,7 @@ type OdooPickingRecord = {
   state?: string;
   printed?: boolean;
   scheduled_date?: string | false;
+  create_date?: string | false;
   origin?: string;
   date_done?: string | false;
   move_ids_without_package?: number[];
@@ -139,6 +161,7 @@ type OdooOrderLine = {
 type OdooPurchaseOrderRecord = {
   id: number;
   name?: string;
+  origin?: string | false;
   partner_id?: false | [number, string];
   date_order?: string | false;
   date_planned?: string | false;
@@ -151,6 +174,8 @@ type OdooPurchaseOrderRecord = {
 type OdooPurchaseLineRecord = {
   id: number;
   order_id?: false | [number, string];
+  sale_order_id?: false | [number, string];
+  sale_line_id?: false | [number, string];
   product_id?: false | [number, string];
   name?: string;
   product_qty?: number;
@@ -244,6 +269,7 @@ type DashboardPermission =
   | "products"
   | "settings"
   | "odooWrite"
+  | "amazonMessages"
   | "amazonMessagesSendFinal";
 type StoredDashboardUser = {
   id: string;
@@ -363,6 +389,7 @@ type OrdersCacheStore = {
 };
 
 type DeliveryValidationIncident = {
+  manualResolution?: ManualShipmentResolution;
   id: string;
   orderId: number;
   orderName?: string;
@@ -380,6 +407,7 @@ type DeliveryValidationIncident = {
 };
 
 type DeliveryValidationAuditEntry = {
+  manualShipmentResolution?: ManualShipmentResolution;
   id: string;
   createdAt: string;
   orderId?: number;
@@ -444,18 +472,26 @@ const readOnlyModels = new Set([
   "sale.order",
   "sale.order.line",
   "stock.picking",
+  "stock.location",
+  "stock.warehouse",
+  "stock.picking.type",
   "stock.move",
   "purchase.order",
   "purchase.order.line",
+  "mail.message",
   "res.partner",
+  "res.company",
+  "res.country",
   "product.product",
   "product.category",
   "product.supplierinfo",
   "ir.model.data",
   "mrp.bom",
   "mrp.bom.line",
+  "crm.team",
 ]);
 const readOnlyMethods = new Set([
+  "search",
   "search_read",
   "search_count",
   "read",
@@ -465,6 +501,49 @@ const readOnlyMethods = new Set([
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
+  // The service owns this safety switch. Vite's loadEnv only reads files, so
+  // preserve an explicitly configured service value for the Odoo write routes.
+  env.ODOO_WRITE_ENABLED = process.env.ODOO_WRITE_ENABLED ?? env.ODOO_WRITE_ENABLED;
+  env.DASHBOARD_AUTO_LOCATION_MOVEMENTS = process.env.DASHBOARD_AUTO_LOCATION_MOVEMENTS ?? env.DASHBOARD_AUTO_LOCATION_MOVEMENTS;
+  // Keep supplier-invoice write gates under systemd control even if a stale
+  // local env file contains different values.
+  for (const key of [
+    "DASHBOARD_DATA_DIR",
+    "DASHBOARD_AUTH_STORE",
+    "DASHBOARD_DEV_BYPASS_AUTH",
+    "INCIDENTS_ODOO_WRITE_ENABLED",
+    "INCIDENTS_ODOO_READ_ENABLED",
+    "INCIDENTS_ODOO_MODE",
+    "INCIDENTS_REX_WRITE_ENABLED",
+    "INCIDENTS_DOCUMENTS_WRITE_ENABLED",
+    "INCIDENTS_OPERATIONAL_WORKFLOW_ENABLED",
+    "INCIDENTS_DATA_DIR",
+    "INCIDENTS_GOOGLE_ACCOUNT",
+    "INCIDENTS_GOOGLE_TOKENS_PATH",
+    "INCIDENTS_GOOGLE_CLIENT_PATH",
+    "INCIDENTS_DRIVE_ROOT_ID",
+    "INCIDENTS_LEDGER_DATA_DIR",
+    "INCIDENTS_TEST_EXTERNAL_EFFECTS_ISOLATED",
+    "INCIDENTS_ODOO_URL",
+    "INCIDENTS_ODOO_DATABASE",
+    "INCIDENTS_ODOO_USERNAME",
+    "INCIDENTS_ODOO_API_KEY",
+    "CREDENTIALS_DIRECTORY",
+    "INCIDENTS_ODOO_APPROVED_DIGEST",
+    "INCIDENTS_ODOO_APPROVED_OPERATION",
+    "INCIDENTS_SHEETS_WRITE_ENABLED",
+    "INCIDENTS_DRIVE_WRITE_ENABLED",
+    "INCIDENTS_SPREADSHEET_ID",
+    "SUPPLIER_INVOICES_AUTOMATION_ENABLED",
+    "SUPPLIER_INVOICES_AUTOMATION_TOKEN_SHA256",
+    "SUPPLIER_INVOICES_ODOO_WRITE_ENABLED",
+    "SUPPLIER_INVOICES_ODOO_ALLOWED_FILE_ID",
+    "SUPPLIER_INVOICES_DRIVE_WRITE_ENABLED",
+    "SUPPLIER_INVOICES_DRIVE_ALLOWED_FILE_ID",
+    "SUPPLIER_INVOICES_SUPPLIER_PRICE_WRITE_ENABLED",
+  ]) {
+    env[key] = process.env[key] ?? env[key];
+  }
 
   return {
     cacheDir: process.env.VITE_CACHE_DIR || "node_modules/.vite",
@@ -485,6 +564,12 @@ function odooReadOnlyApi(env: Record<string, string>) {
   return {
     name: "odoo-read-only-api",
     configureServer(server) {
+      // Same isolated API works through Caddy's stripped public prefix and directly in local QA.
+      server.middlewares.use((request, _response, next) => {
+        const base = server.config.base;
+        if (base !== "/" && request.url?.startsWith(base + "api/")) request.url = request.url.slice(base.length - 1);
+        next();
+      });
       const auth = createAuthRepository(env);
       const tasks = createTaskRepository(env);
       const calendar = createCalendarRepository(env);
@@ -492,6 +577,111 @@ function odooReadOnlyApi(env: Record<string, string>) {
       const productLocations = createProductLocations({
         dataDir: env.DASHBOARD_DATA_DIR,
       });
+      // Review snapshots are confined to LAB. Production always reads catalog images normally.
+      const replenishmentPreviewFile = join(env.DASHBOARD_DATA_DIR || ".dashboard-data", "expedition-replenishment-lab-preview.json");
+      const replenishmentPreview = server.config.base.includes("lab") && existsSync(replenishmentPreviewFile)
+        ? JSON.parse(readFileSync(replenishmentPreviewFile, "utf8")) as { capturedAt: string; images: Record<string, string> }
+        : null;
+      registerExpeditionReplenishmentRoutes(server, auth,
+        createExpeditionReplenishment(productLocations, productCatalog),
+        (ids) => replenishmentPreview
+          ? Promise.resolve(Object.fromEntries(ids.filter((id) => replenishmentPreview.images[id]).map((id) => [id, replenishmentPreview.images[id]])))
+          : productCatalog.images(ids), replenishmentPreview?.capturedAt);
+      const customerReturnSync = createCustomerReturnSync({
+        locations: productLocations,
+        read: async () => {
+          const config = getOdooConfig(env); const uid = await authenticate(config);
+          return async (model, args, kwargs) => {
+            if (!["stock.location", "stock.move", "product.product", "uom.uom"].includes(model)) throw new Error("Modelo fuera de lectura de devoluciones");
+            return rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, "search_read", args, kwargs]);
+          };
+        },
+      });
+      // Persist the cutover even with polling disabled, so a restart before the
+      // first catalog refresh cannot lose returns received since deployment.
+      try { customerReturnSync.start(); }
+      catch (error) { console.error("Customer return sync cutover not started:", error); }
+      let movementSyncInFlight: Promise<unknown> | null = null;
+      const syncOdooMovements = (automatic = false) => {
+        if (movementSyncInFlight) return movementSyncInFlight.then(() => syncOdooMovements(automatic));
+        const work = (async () => {
+          // A return/UoM error must not stop the existing customer-delivery debits.
+          let returnSync: unknown;
+          try { returnSync = await customerReturnSync.sync(); }
+          catch (error) {
+            const message = error instanceof Error ? error.message : "Error sincronizando devoluciones";
+            console.error("Customer return location sync failed:", message);
+            returnSync = { error: message };
+          }
+          const state = productLocations.summary().odooMovementSync;
+          if (!state) throw new Error("Primero finaliza un inventario para crear la base de ubicaciones");
+          const config = getOdooConfig(env); const uid = await authenticate(config);
+          const call = (model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) => rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
+          const roots = await call("stock.location", "search_read", [[["complete_name", "=", "ALM/Stock"]]], { fields: ["id"], limit: 1 });
+          const rootId = roots[0]?.id;
+          if (!rootId) throw new Error("No se encontró ALM/Stock en Odoo");
+          const warehouseLocations: Array<{ id?: number }> = [];
+          for (let offset = 0; ; offset += 1000) {
+            const page = await call("stock.location", "search_read", [[["id", "child_of", rootId]]], { fields: ["id"], limit: 1000, offset });
+            warehouseLocations.push(...page);
+            if (page.length < 1000) break;
+          }
+          const warehouseIds = new Set<number>(warehouseLocations.map((location: { id?: number }) => Number(location.id)).filter(Number.isInteger));
+          const since = new Date(automatic ? state.automaticLastSyncedAt || state.automaticStartedAt || state.lastSyncedAt : state.lastSyncedAt).toISOString().slice(0, 19).replace("T", " ");
+          const syncedAt = new Date().toISOString();
+          const until = syncedAt.slice(0, 19).replace("T", " ");
+          const dateField = automatic ? "write_date" : "date";
+          const domain = automatic
+            ? ["&", "&", "&", "&", ["state", "=", "done"], [dateField, ">=", since], [dateField, "<=", until], ["location_id", "child_of", rootId], ["location_dest_id.usage", "=", "customer"]]
+            : ["&", ["location_id.usage", "!=", "customer"], "&", ["state", "=", "done"], "&", "&", [dateField, ">=", since], [dateField, "<=", until], "|", ["location_id", "child_of", rootId], ["location_dest_id", "child_of", rootId]];
+          const moves: any[] = [];
+          for (let offset = 0; ; offset += 1000) {
+            const page = await call("stock.move", "search_read", [domain], { fields: ["id", "product_id", "quantity", "product_uom_qty", "location_id", "location_dest_id", "date", "write_date"], order: `${dateField} asc, id asc`, limit: 1000, offset });
+            moves.push(...page);
+            if (page.length < 1000) break;
+          }
+          const mapped = moves.flatMap((move: any) => {
+            const sourceId = Array.isArray(move.location_id) ? Number(move.location_id[0]) : 0;
+            const destinationId = Array.isArray(move.location_dest_id) ? Number(move.location_dest_id[0]) : 0;
+            const sourceIn = warehouseIds.has(sourceId); const destinationIn = warehouseIds.has(destinationId);
+            if (sourceIn === destinationIn) return [];
+            const productId = Array.isArray(move.product_id) ? Number(move.product_id[0]) : 0;
+            const quantity = Number(move.quantity ?? move.product_uom_qty ?? 0);
+            if (!Number.isInteger(move.id) || !Number.isInteger(productId) || !Number.isFinite(quantity) || quantity <= 0) return [];
+            return [{ id: move.id, productId, quantity, direction: destinationIn ? "in" as const : "out" as const }];
+          });
+          return { ...productLocations.applyOdooMovements({ moves: mapped, syncedAt, automatic }), returnSync };
+        })();
+        movementSyncInFlight = work;
+        void work.finally(() => { movementSyncInFlight = null; }).catch(() => {});
+        return work;
+      };
+      // Odoo and Dashboard deliveries both finish as Odoo stock moves. The
+      // same read-only poll picks up either source without a second decrement.
+      if (env.DASHBOARD_AUTO_LOCATION_MOVEMENTS === "true") {
+        try {
+          productLocations.startAutomaticOdooMovements();
+          const timer = setInterval(() => { void syncOdooMovements(true).catch((error) => console.error("Automatic location movement sync failed:", error)); }, 60_000);
+          timer.unref();
+          server.httpServer?.once("close", () => clearInterval(timer));
+        } catch (error) { console.error("Automatic location movement sync not started:", error); }
+      }
+      // Keep the operational Home isolated from the old page's per-card reads.
+      let homeKpiCache: { expiresAt: number; value: unknown } | null = null;
+      let homeKpiInflight: Promise<unknown> | null = null;
+      const homeKpis = (refresh: boolean) => {
+        if (!refresh && homeKpiCache && homeKpiCache.expiresAt > Date.now()) return Promise.resolve(homeKpiCache.value);
+        if (!refresh && homeKpiInflight) return homeKpiInflight;
+        const work = buildOperationalHomeKpis(env, productCatalog, productLocations).then((value) => {
+          homeKpiCache = { expiresAt: Date.now() + 45_000, value };
+          return value;
+        }).finally(() => { homeKpiInflight = null; });
+        homeKpiInflight = work;
+        return work;
+      };
+      const homeSalesCache = new Map<string, { expiresAt: number; value: unknown }>();
+      const homeComparisonCacheByRange = new Map<string, { expiresAt: number; value: unknown }>();
+      const homeComparisonPendingByRange = new Map<string, Promise<unknown>>();
       const receptionSessions = createReceptionSessions({
         dataDir: env.DASHBOARD_DATA_DIR,
       });
@@ -509,12 +699,74 @@ function odooReadOnlyApi(env: Record<string, string>) {
           }));
         },
       });
+      const operationalTarget=env.INCIDENTS_ODOO_MODE==='operational'?operationalOdooTarget(env):undefined;
+      const incidentsTest = !operationalTarget&&env.INCIDENTS_ODOO_READ_ENABLED === 'true' ? new OdooDemoReader(env) : undefined;
+      const incidentCall = async (model:string,method:string,args:unknown[],kwargs:Record<string,unknown>={}) => {
+        if (incidentsTest) return incidentsTest.read(model,method,args,kwargs);
+        const config=getOdooConfig(env);const uid=await authenticate(config);
+        return executeKw(config,uid,model,method,args,kwargs);
+      };
+      const operationalWrite=async(model:string,method:string,args:unknown[],kwargs:Record<string,unknown>={})=>{
+        assertOperationalRexRpc(env,operationalTarget||'',model,method,args);
+        if(method==='message_post')await assertInternalAutomationNote(incidentCall,kwargs);
+        const config=getOdooConfig(env),uid=await authenticate(config);
+        return rpc(config.url,'object','execute_kw',[config.database,uid,config.apiKey,model,method,args,{...kwargs,context:{...((kwargs.context||{}) as object),mail_create_nosubscribe:true,mail_create_nolog:true,mail_notrack:true,tracking_disable:true,mail_notify_force_send:false,mail_post_autofollow:false}}]);
+      };
+      const incidentTarget=operationalTarget||TEST_TARGET;
+      const incidentWrite=operationalTarget?operationalWrite:incidentsTest?.controlledWrite.bind(incidentsTest);
+      registerIncidentRoutes(server, auth, env, {
+        odoo: incidentWrite ? {
+          mode: operationalTarget?'operational':'test',target:incidentTarget,
+          stock: new IncidentOdooStock(incidentCall,incidentTarget),
+          executor: new ControlledStockExecutor(incidentCall,incidentWrite,new StockJournal(env.INCIDENTS_DATA_DIR||env.DASHBOARD_DATA_DIR||'.dashboard-data',operationalTarget?'operational':'test'),env,new IncidentChatter(incidentCall,incidentWrite,env.INCIDENTS_DATA_DIR||env.DASHBOARD_DATA_DIR||'.dashboard-data')),
+          inspect: operationalTarget ? async()=>({target:operationalTarget,mode:'operational',readOnly:true,writesEnabled:operationalRexWritable(env,operationalTarget),companies:await incidentCall('res.company','search_read',[[]],{fields:['id','name'],limit:20})}) : () => incidentsTest!.inspect(),
+          read: incidentCall,
+          isolate: incidentsTest ? incidentsTest.isolated.bind(incidentsTest) : undefined,
+        } : undefined,
+        catalog: async (query, id) => {
+          return searchIncidentCatalog((model, method, args, kwargs) => incidentCall(model, method, args, kwargs), query, id);
+        },
+        lookup: async (query) => {
+          const call = (model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) => incidentCall(model, method, args, kwargs);
+          const found = await call("sale.order", "search_read", [["|", "|", ["name", "=", query], ["client_order_ref", "=", query], ["picking_ids.carrier_tracking_ref", "=", query]]], {fields:["id","name","client_order_ref","date_order","partner_id","partner_shipping_id","team_id","amount_untaxed","company_id"],limit:2}) as any[];
+          if (found.length !== 1) throw new Error(found.length ? "Coincide con varios pedidos; concreta la referencia" : "Pedido no encontrado");
+          const order = found[0];
+          const recipientId=order.partner_shipping_id?.[0]||order.partner_id?.[0];
+          const recipients=await call('res.partner','read',[[recipientId]],{fields:['name','street','street2','zip','city','country_id','phone','mobile','email']}) as any[];
+          if(recipients.length!==1)throw Error('No se pudo verificar el destinatario de envío');const recipient=recipients[0];
+          const countries=recipient.country_id?.[0]?await call('res.country','read',[[recipient.country_id[0]]],{fields:['code']}) as any[]:[];
+          const shippingDestination={name:String(recipient.name||''),address:[recipient.street,recipient.street2].filter(Boolean).join(' '),postalCode:String(recipient.zip||''),city:String(recipient.city||''),country:String(countries[0]?.code||''),phone:String(recipient.mobile||recipient.phone||''),email:String(recipient.email||'')};
+          const lines = await call("sale.order.line", "search_read", [[["order_id","=",order.id],["display_type","=",false]]], {fields:["product_id","name","product_uom_qty","price_unit","discount"],limit:500}) as any[];
+          const ids = [...new Set(lines.map(l => l.product_id?.[0]).filter(Boolean))];
+          const products = ids.length ? await call("product.product","read",[ids],{fields:["id","default_code","name","standard_price","type"]}) as any[] : [];
+          const goods=orderMerchandise(lines,products).map(p=>({...p,imageUrl:`${server.config.base === "/" ? "" : server.config.base.replace(/\/$/, "")}/api/incidents/product-image?id=${p.productId}`}));
+          const merchandise=await enrichIncidentKits(call,order.id,Number(order.company_id?.[0]),lines,goods,server.config.base === "/" ? "" : server.config.base.replace(/\/$/, ""));
+          const picking = await call("stock.picking","search_read",[[["sale_id","=",order.id],["picking_type_id.code","=","outgoing"]]],{fields:["carrier_tracking_ref","carrier_id","state"],order:"id desc",limit:1}) as any[];
+          const labels = readHomeShippingLabels({...env,DASHBOARD_DATA_DIR:env.INCIDENTS_LEDGER_DATA_DIR || env.DASHBOARD_DATA_DIR}) as any[];
+          const label = (incidentsTest ? [] : labels).filter(l => [l.odooOrderRef,l.externalOrderRef,...(l.orderRefs||[])].includes(order.name)).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+          return {source:"odoo" as const,order:{shippingDestination,odooId:order.id,odooReference:order.name,channelReference:order.client_order_ref||"",channel:order.team_id?.[1]||"Sales",customerName:order.partner_id?.[1]||"",orderDate:String(order.date_order).replace(" ","T")+"Z",shippedAt:label?.createdAt||undefined,saleWithoutTax:Number(order.amount_untaxed),carrier:label?.shipper||picking[0]?.carrier_id?.[1]||"",tracking:label?.tracking||picking[0]?.carrier_tracking_ref||"",preparedBy:label?.operator||label?.user||""},products:merchandise,excludedServiceCount:lines.filter(l=>products.some(p=>p.id===l.product_id?.[0]&&p.type==='service')).length};
+        },
+        image: async (id) => {
+          const products=await incidentCall("product.product","read",[[id]],{fields:["image_128"]}) as any[];
+          if(!products[0]?.image_128)throw new Error("El producto no tiene imagen");
+          return Buffer.from(products[0].image_128,"base64");
+        },
+        statistics: async (from,to,channel) => {
+          const start=new Date(from+"T00:00:00");const end=new Date(Math.min(Date.now(),new Date(to+"T23:59:59.999").getTime()));
+          const domain:any[]=[["state","in",["sale","done"]],["date_order",">=",start.toISOString().slice(0,19).replace("T"," ")],["date_order","<=",end.toISOString().slice(0,19).replace("T"," ")]];
+          if(channel){const teams=await incidentCall("crm.team","search_read",[[["name","=",channel]]],{fields:["id"],limit:10}) as any[];if(!teams.length)throw new Error("Canal no reconocido en Odoo");domain.push(["team_id","in",teams.map(t=>t.id)]);}
+          const rows=await incidentCall("sale.order","read_group",[domain,["amount_untaxed:sum"],[]],{lazy:false}) as any[];
+          const labels=(readHomeShippingLabels({...env,DASHBOARD_DATA_DIR:env.INCIDENTS_LEDGER_DATA_DIR || env.DASHBOARD_DATA_DIR}) as any[]).filter(l=>{const date=new Date(l.createdAt||"");return Boolean(l.tracking)&&date>=start&&date<=end;});
+          return {salesWithoutTax:Number(rows[0]?.amount_untaxed||0),salesSource:"sale.order.amount_untaxed · sale/done · misma base que Inicio",range:{from,to},...incidentVolumes(incidentsTest ? [] : labels,channel)};
+        }
+      });
       registerQzSigningRoutes(server, auth, env);
       registerPublicTrackingRoutes(server, env);
       registerGeneiRoutes(server, auth, env);
       registerMrwRoutes(server, auth, env);
       registerCorreosExpressRoutes(server, auth, env);
       registerDhlRoutes(server, auth, env);
+      registerGlsRoutes(server, auth, env);
       registerExpeditionsSettingsRoutes(server, auth, {
         dataDir: env.DASHBOARD_DATA_DIR,
       });
@@ -528,6 +780,15 @@ function odooReadOnlyApi(env: Record<string, string>) {
         dataDir: env.DASHBOARD_DATA_DIR,
       });
       registerPrestashopRoutes(server, auth, env);
+      // Fase 2 primero: prefijos especificos (/inbox, /unbilled) deben ganar al catch-all de Fase 1.
+      registerSupplierInvoicesPhase2Routes(server, auth, {
+        env,
+        dataDir: env.DASHBOARD_DATA_DIR || ".dashboard-data",
+      });
+      registerSupplierInvoicesRoutes(server, auth, {
+        env,
+        dataDir: env.DASHBOARD_DATA_DIR || ".dashboard-data",
+      });
       registerAmazonMessagesRoutes(server, auth, {
         dataDir: env.DASHBOARD_DATA_DIR,
       });
@@ -587,6 +848,22 @@ function odooReadOnlyApi(env: Record<string, string>) {
               });
               return;
             }
+            if (request.method === "GET" && url.pathname === "/locations/incidents") {
+              const productsById = new Map(productCatalog.list().products.map((product) => [product.id, product]));
+              sendJson(response, 200, {
+                incidents: productLocations.pendingMovementAlerts().map((incident) => ({
+                  ...incident,
+                  reference: productsById.get(incident.productId)?.reference || "",
+                  name: productsById.get(incident.productId)?.name || "",
+                })),
+              });
+              return;
+            }
+            if (request.method === "POST" && url.pathname === "/locations/incidents/dismiss") {
+              const input = await readJsonBody<{ moveIds?: unknown }>(request);
+              sendJson(response, 200, productLocations.dismissPendingMovementAlerts(input.moveIds));
+              return;
+            }
             if (request.method === "POST" && url.pathname === "/locations") {
               sendJson(
                 response,
@@ -601,6 +878,8 @@ function odooReadOnlyApi(env: Record<string, string>) {
               const targetQuantity = Number(input.quantity);
               if (!Number.isInteger(productId) || productId <= 0 || !Number.isFinite(targetQuantity) || targetQuantity < 0) throw new Error("Ajuste de ubicación inválido");
               parseLocationCode(code);
+              // Reject a missing preference before the optional Odoo stock write.
+              productLocations.validateSave(input);
               if (!productLocations.summary().odooMovementSync) throw new Error("Primero finaliza un inventario para crear la base de ubicaciones");
               const previousQuantity = productLocations.forProduct(productId).find((item) => item.code === code)?.quantity || 0;
               const delta = targetQuantity - previousQuantity;
@@ -635,32 +914,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
               return;
             }
             if (request.method === "POST" && url.pathname === "/locations/sync-odoo") {
-              const summary = productLocations.summary();
-              const syncState = summary.odooMovementSync;
-              if (!syncState) throw new Error("Primero finaliza un inventario para crear la base de ubicaciones");
-              const config = getOdooConfig(env); const uid = await authenticate(config);
-              const call = (model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) => rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
-              const roots = await call("stock.location", "search_read", [[["complete_name", "=", "ALM/Stock"]]], { fields: ["id"], limit: 1 });
-              const rootId = roots[0]?.id;
-              if (!rootId) throw new Error("No se encontró ALM/Stock en Odoo");
-              const warehouseLocations = await call("stock.location", "search_read", [[["id", "child_of", rootId]]], { fields: ["id"], limit: 2000 });
-              const warehouseIds = new Set<number>(warehouseLocations.map((location: { id?: number }) => Number(location.id)).filter(Number.isInteger));
-              const since = new Date(syncState.lastSyncedAt).toISOString().slice(0, 19).replace("T", " ");
-              const moves = await call("stock.move", "search_read", [[
-                "&", ["state", "=", "done"], "&", ["date", ">=", since],
-                "|", ["location_id", "child_of", rootId], ["location_dest_id", "child_of", rootId],
-              ]], { fields: ["id", "product_id", "quantity", "product_uom_qty", "location_id", "location_dest_id", "date"], order: "date asc, id asc", limit: 10000 });
-              const mapped = moves.flatMap((move: any) => {
-                const sourceId = Array.isArray(move.location_id) ? Number(move.location_id[0]) : 0;
-                const destinationId = Array.isArray(move.location_dest_id) ? Number(move.location_dest_id[0]) : 0;
-                const sourceIn = warehouseIds.has(sourceId); const destinationIn = warehouseIds.has(destinationId);
-                if (sourceIn === destinationIn) return [];
-                const productId = Array.isArray(move.product_id) ? Number(move.product_id[0]) : 0;
-                const quantity = Number(move.quantity ?? move.product_uom_qty ?? 0);
-                if (!Number.isInteger(move.id) || !Number.isInteger(productId) || !Number.isFinite(quantity) || quantity <= 0) return [];
-                return [{ id: move.id, productId, quantity, direction: destinationIn ? "in" as const : "out" as const }];
-              });
-              sendJson(response, 200, productLocations.applyOdooMovements({ moves: mapped, syncedAt: new Date().toISOString() }));
+              sendJson(response, 200, await syncOdooMovements());
               return;
             }
             if (request.method === "POST" && url.pathname === "/barcode") {
@@ -718,13 +972,15 @@ function odooReadOnlyApi(env: Record<string, string>) {
               return;
             }
             if (request.method === "POST" && url.pathname === "/sync") {
-              sendJson(
-                response,
-                200,
-                await productCatalog.sync(
-                  url.searchParams.get("full") === "true",
-                ),
+              const returnSync = await customerReturnSync.sync();
+              const rawCatalog = await productCatalog.sync(
+                url.searchParams.get("full") === "true",
               );
+              sendJson(response, 200, {
+                ...rawCatalog,
+                returnSync,
+                products: withCatalogLocations(rawCatalog.products, productLocations.summary().locations),
+              });
               return;
             }
             if (request.method !== "GET") {
@@ -735,28 +991,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
             const locations = productLocations.summary().locations;
             sendJson(response, 200, {
               ...catalog,
-              products: catalog.products.map((product) => {
-                const productLocations = locations.filter(
-                  (item) => item.productId === product.id,
-                );
-                const preferred = productLocations.find(
-                  (item) => item.preferred,
-                );
-                return {
-                  ...product,
-                  physicalLocations: productLocations.map((item) => item.code),
-                  locationSummary: {
-                    preferredCode: preferred?.code,
-                    preferredQuantity: preferred?.quantity,
-                    replenishmentMin: preferred?.replenishmentMin,
-                    needsReplenishment: Boolean(
-                      preferred &&
-                      preferred.replenishmentMin !== undefined &&
-                      preferred.quantity <= preferred.replenishmentMin,
-                    ),
-                  },
-                };
-              }),
+              products: withCatalogLocations(catalog.products, locations),
             });
           } catch (error) {
             sendJson(response, 500, {
@@ -794,6 +1029,11 @@ function odooReadOnlyApi(env: Record<string, string>) {
               sendJson(response, 200, productInventories.start(parts[0], (await readJsonBody(request)).operator));
               return;
             }
+            if (request.method === "DELETE" && parts.length === 1 && parts[0]) {
+              productInventories.discard(parts[0]);
+              sendJson(response, 200, { ok: true });
+              return;
+            }
             if (request.method === "POST" && parts.length === 2 && parts[1] === "counts") {
               sendJson(response, 200, productInventories.count(parts[0], await readJsonBody(request)));
               return;
@@ -810,6 +1050,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
               const payload = await readJsonBody<{ operator?: { id: string; code: string; name: string } }>(request);
               const inventory = productInventories.find(parts[0]);
               if (inventory.status !== "validated") throw new Error("Primero valida el inventario");
+              productInventories.assertNoManufacturedCounts(parts[0]);
               if (!payload.operator?.name?.trim()) throw new Error("Indica el operario que envía a Odoo");
               const config = getOdooConfig(env); const uid = await authenticate(config);
               const call = (model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) => rpc(config.url, "object", "execute_kw", [config.database, uid, config.apiKey, model, method, args, kwargs]);
@@ -1119,6 +1360,61 @@ function odooReadOnlyApi(env: Record<string, string>) {
           }
           try {
             const url = new URL(request.url ?? "/", "http://local");
+            if (url.pathname === "/home") {
+              if (request.method !== "GET") { sendJson(response, 405, { message: "Método no permitido" }); return; }
+              sendJson(response, 200, await homeKpis(url.searchParams.get("refresh") === "1"));
+              return;
+            }
+            if (url.pathname === "/home/charts/shipments") {
+              if (request.method !== "GET") { sendJson(response, 405, { message: "Método no permitido" }); return; }
+              const period = parseHomePeriod(url.searchParams.get("period"));
+              sendJson(response, 200, { period, ...groupShipmentLabels(readHomeShippingLabels(env), period), updatedAt: new Date().toISOString() });
+              return;
+            }
+            if (url.pathname === "/home/charts/comparison") {
+              if (request.method !== "GET") { sendJson(response, 405, { message: "Método no permitido" }); return; }
+              const refresh = url.searchParams.get("refresh") === "1";
+              const preset = url.searchParams.get("period") || "";
+              const from = url.searchParams.get("from") || "";
+              const to = url.searchParams.get("to") || "";
+              const rolling48h = preset === "48h";
+              const validDay = (value: string) => {
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+                const date = new Date(`${value}T00:00:00Z`);
+                return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+              };
+              const rangeDays = from && to ? (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1 : 0;
+              if ((preset && !rolling48h) || (rolling48h && (from || to)) || Boolean(from) !== Boolean(to) || (from && (!validDay(from) || !validDay(to) || from > to || rangeDays > 3660))) {
+                sendJson(response, 400, { message: "Selecciona un rango de fechas válido" }); return;
+              }
+              const cacheKey = rolling48h ? "48h" : from ? `${from}:${to}` : "default";
+              const cached = homeComparisonCacheByRange.get(cacheKey);
+              if (!refresh && cached && cached.expiresAt > Date.now()) { sendJson(response, 200, cached.value); return; }
+              if (!homeComparisonPendingByRange.has(cacheKey)) {
+                const pending = getOperationalHomeComparison(env, from || undefined, to || undefined, rolling48h).then((value) => {
+                  homeComparisonCacheByRange.set(cacheKey, { expiresAt: Date.now() + 45_000, value });
+                  if (homeComparisonCacheByRange.size > 64) homeComparisonCacheByRange.delete(homeComparisonCacheByRange.keys().next().value!);
+                  return value;
+                }).finally(() => { homeComparisonPendingByRange.delete(cacheKey); });
+                homeComparisonPendingByRange.set(cacheKey, pending);
+              }
+              sendJson(response, 200, await homeComparisonPendingByRange.get(cacheKey));
+              return;
+            }
+            if (url.pathname === "/home/charts/sales") {
+              if (request.method !== "GET") { sendJson(response, 405, { message: "Método no permitido" }); return; }
+              const period = parseHomePeriod(url.searchParams.get("period"));
+              const channel = parseHomeSalesChannel(url.searchParams.get("channel"));
+              const key = `${period}:${channel}`;
+              const cached = homeSalesCache.get(key);
+              if (url.searchParams.get("refresh") !== "1" && cached && cached.expiresAt > Date.now()) {
+                sendJson(response, 200, cached.value); return;
+              }
+              const value = await getOperationalHomeSales(env, period, channel);
+              homeSalesCache.set(key, { expiresAt: Date.now() + 45_000, value });
+              sendJson(response, 200, value);
+              return;
+            }
             if (url.pathname === "/v2") {
               const payload = await getOdooDashboardV2(env, {
                 from: url.searchParams.get("from") ?? undefined,
@@ -1158,6 +1454,26 @@ function odooReadOnlyApi(env: Record<string, string>) {
       );
 
       server.middlewares.use(
+        "/api/odoo/sales-purchase-alerts",
+        async (request, response) => {
+          const user = auth.getSessionUser(request.headers.cookie);
+          if (!user || !user.permissions.includes("orders")) {
+            sendJson(response, 401, { message: "Login requerido" });
+            return;
+          }
+          if (request.method !== "GET") {
+            sendJson(response, 405, { message: "Metodo no permitido" });
+            return;
+          }
+          try {
+            sendJson(response, 200, await getOdooSalesPurchaseAlerts(env));
+          } catch (error) {
+            sendJson(response, 500, { message: error instanceof Error ? error.message : "No se pudieron leer las compras vinculadas a ventas" });
+          }
+        },
+      );
+
+      server.middlewares.use(
         "/api/odoo/pending-purchases",
         async (request, response) => {
           const user = auth.getSessionUser(request.headers.cookie);
@@ -1185,7 +1501,25 @@ function odooReadOnlyApi(env: Record<string, string>) {
                 sendJson(response, 403, { message: "Sin permiso para escribir en Odoo" });
                 return;
               }
-              sendJson(response, 200, await confirmOdooPurchaseQuotation(env, await readJsonBody(request)));
+              const input = await readJsonBody<Record<string, unknown>>(request);
+              sendJson(response, 200, await confirmOdooPurchaseQuotation(env, { ...input, sendEmail: false }));
+              return;
+            }
+            if (action === "confirm-and-send-email" && request.method === "POST") {
+              if (!user.permissions.includes("odooWrite")) {
+                sendJson(response, 403, { message: "Sin permiso para escribir en Odoo" });
+                return;
+              }
+              const input = await readJsonBody<Record<string, unknown>>(request);
+              sendJson(response, 200, await confirmOdooPurchaseQuotation(env, { ...input, sendEmail: true }));
+              return;
+            }
+            if (action === "send-email" && request.method === "POST") {
+              if (!user.permissions.includes("odooWrite")) {
+                sendJson(response, 403, { message: "Sin permiso para escribir en Odoo" });
+                return;
+              }
+              sendJson(response, 200, await sendOdooPurchaseOrderEmail(env, await readJsonBody(request)));
               return;
             }
             if (action === "cancel" && request.method === "POST") {
@@ -1319,8 +1653,13 @@ function odooReadOnlyApi(env: Record<string, string>) {
               sendJson(response, 403, { message: "Sin permiso para escribir en Odoo" });
               return;
             }
+            if (env.ODOO_WRITE_ENABLED !== "true") {
+              sendJson(response, 403, { message: "Validación de recepciones desactivada" });
+              return;
+            }
             try {
-              sendJson(response, 200, await validateOdooInventoryReception(env, await readJsonBody(request)));
+              const input = await readJsonBody<{ receptionId?: unknown }>(request);
+              sendJson(response, 200, await validateOdooInventoryReception(env, input, productLocations));
             } catch (error) {
               sendJson(response, 400, { message: error instanceof Error ? error.message : "No se pudo validar la recepción en Odoo" });
             }
@@ -1663,6 +2002,31 @@ function odooReadOnlyApi(env: Record<string, string>) {
               }
               const payload = await readJsonBody<{ incidentIds?: string[] }>(request);
               sendJson(response, 200, await retryDeliveryIncidents(env, payload.incidentIds ?? []));
+              return;
+            }
+
+            if (url.pathname === "/delivery-incidents/confirm-shipped") {
+              if (request.method !== "POST") {
+                sendJson(response, 405, { message: "Metodo no permitido" });
+                return;
+              }
+              try {
+                const payload = await readJsonBody<ShipmentConfirmation>(request);
+                const store = readOrdersCache(env);
+                const target = store.incidents.find(i => i.id === payload?.incidentId);
+                const order = target && store.orders.find(o => Number(cleanText(o.odooRef).replace(/^#/, "")) === target.orderId);
+                const result = confirmIncidentShipment(store.incidents, payload, user,
+                  order?.sendcloud?.trackingNumber || target?.tracking);
+                if (result.incidents !== store.incidents) writeOrdersCache(env, {...store, incidents: result.incidents,
+                  audit: [...store.audit, {id: randomToken(), createdAt: result.incident.resolvedAt!,
+                    orderId: result.incident.orderId, orderName: result.incident.orderName,
+                    tracking: result.incident.manualResolution!.tracking, mode: "manual", trigger: "manual",
+                    durationMs: 0, result: "skipped", reason: "Enviado confirmado manualmente; sin modificar Odoo.",
+                    manualShipmentResolution: result.incident.manualResolution}].slice(-1000) as DeliveryValidationAuditEntry[]});
+                sendJson(response, 200, {ok: true, incident: result.incident});
+              } catch (error) {
+                sendJson(response, 400, {message: error instanceof Error ? error.message : "No se pudo confirmar el envío"});
+              }
               return;
             }
 
@@ -3674,6 +4038,7 @@ function permissionsForRole(role: DashboardUserRole): DashboardPermission[] {
       "products",
       "settings",
       "odooWrite",
+      "amazonMessages",
       "amazonMessagesSendFinal",
     ];
   }
@@ -3693,6 +4058,7 @@ function normalizePermissions(values: DashboardPermission[]) {
     "products",
     "settings",
     "odooWrite",
+    "amazonMessages",
     "amazonMessagesSendFinal",
   ]);
   return Array.from(new Set(values.filter((value) => allowed.has(value))));
@@ -3705,6 +4071,9 @@ function migrateStoredUserPermissions(user: StoredDashboardUser): StoredDashboar
     !permissions.includes("expeditions")
   ) {
     permissions.push("expeditions");
+  }
+  if (user.role === "admin" && !permissions.includes("amazonMessages")) {
+    permissions.push("amazonMessages");
   }
   return permissions.join("|") === user.permissions.join("|")
     ? user
@@ -4037,9 +4406,12 @@ async function getOdooOrdersFull(
   );
   const products = productIds.length
     ? ((await executeKwProfiled(profiler, "images", config, uid, "product.product", "read", [productIds], {
-        fields: ["id", "product_tmpl_id", "image_128", "type"],
+        fields: ["id", "name", "display_name", "default_code", "product_tmpl_id", "image_128", "type"],
       })) as ProductRecord[])
     : [];
+  const productNamesById = new Map(
+    products.map((product) => [product.id, formatCatalogProductName(product)]),
+  );
   const productImagesById = new Map(
     products.map((product) => [product.id, formatProductImage(product.image_128)]),
   );
@@ -4107,9 +4479,12 @@ async function getOdooOrdersFull(
         "product.product",
         "read",
         [componentProductIds],
-        { fields: ["id", "image_128"] },
+        { fields: ["id", "name", "display_name", "default_code", "image_128"] },
       )) as ProductRecord[])
     : [];
+  const componentNamesById = new Map(
+    componentProducts.map((product) => [product.id, formatCatalogProductName(product)]),
+  );
   const componentImagesById = new Map(
     componentProducts.map((product) => [
       product.id,
@@ -4224,6 +4599,7 @@ async function getOdooOrdersFull(
               getRelationName(line.product_id) ||
               `Linea ${line.id}`,
             name:
+              productNamesById.get(productId ?? 0) ||
               line.name || getRelationName(line.product_id) || "Sin producto",
             quantity: orderQuantity,
             price: line.price_unit ?? line.price_subtotal ?? 0,
@@ -4237,6 +4613,7 @@ async function getOdooOrdersFull(
                     getRelationName(component.product_id) ||
                     `Componente ${component.id}`,
                   name:
+                    componentNamesById.get(getRelationId(component.product_id) ?? 0) ||
                     stripProductCode(getRelationName(component.product_id)) ||
                     getRelationName(component.product_id) ||
                     `Componente ${component.id}`,
@@ -4603,9 +4980,12 @@ async function getOdooOrdersBatchDemandContext(
   );
   const products = productIds.length
     ? ((await executeKwProfiled(profiler, "images", config, uid, "product.product", "read", [productIds], {
-        fields: ["id", "product_tmpl_id", "image_128", "type"],
+        fields: ["id", "name", "display_name", "default_code", "product_tmpl_id", "image_128", "type"],
       })) as ProductRecord[])
     : [];
+  const productNamesById = new Map(
+    products.map((product) => [product.id, formatCatalogProductName(product)]),
+  );
   const productImagesById = new Map(
     products.map((product) => [product.id, formatProductImage(product.image_128)]),
   );
@@ -4673,9 +5053,12 @@ async function getOdooOrdersBatchDemandContext(
         "product.product",
         "read",
         [componentProductIds],
-        { fields: ["id", "image_128"] },
+        { fields: ["id", "name", "display_name", "default_code", "image_128"] },
       )) as ProductRecord[])
     : [];
+  const componentNamesById = new Map(
+    componentProducts.map((product) => [product.id, formatCatalogProductName(product)]),
+  );
   const componentImagesById = new Map(
     componentProducts.map((product) => [
       product.id,
@@ -4785,6 +5168,7 @@ async function getOdooOrdersBatchDemandContext(
               getRelationName(line.product_id) ||
               `Linea ${line.id}`,
             name:
+              productNamesById.get(productId ?? 0) ||
               line.name || getRelationName(line.product_id) || "Sin producto",
             quantity: orderQuantity,
             price: line.price_unit ?? line.price_subtotal ?? 0,
@@ -4798,6 +5182,7 @@ async function getOdooOrdersBatchDemandContext(
                     getRelationName(component.product_id) ||
                     `Componente ${component.id}`,
                   name:
+                    componentNamesById.get(getRelationId(component.product_id) ?? 0) ||
                     stripProductCode(getRelationName(component.product_id)) ||
                     getRelationName(component.product_id) ||
                     `Componente ${component.id}`,
@@ -5265,6 +5650,7 @@ function readOrdersCache(env: Record<string, string>): OrdersCacheStore {
 }
 
 function writeOrdersCache(env: Record<string, string>, store: OrdersCacheStore) {
+  store = preserveConcurrentShipmentConfirmations(store, readOrdersCache(env));
   const storePath = getOrdersCachePath(env);
   mkdirSync(dirname(storePath), { recursive: true });
   writeFileSync(storePath, `${JSON.stringify(store, null, 2)}\n`, {
@@ -5423,7 +5809,7 @@ async function runAutomaticDeliveryValidation(
   const candidates = orders.filter(
     (order) =>
       order.odooDeliveryValidation?.status === "ready" &&
-      Boolean(order.sendcloud?.trackingNumber),
+      Boolean(order.sendcloud?.shipmentCode || order.sendcloud?.trackingNumber),
   );
   if (candidates.length === 0) {
     return {
@@ -5572,6 +5958,7 @@ async function reconcileDeliveryIncidents(env: Record<string, string>) {
     });
     const incidents = store.incidents.filter((incident) => {
       if (incident.resolvedAt) return true;
+      if (!isReportableDeliveryIncidentReason(incident.reason)) return false;
       const pickingState = stateByPickingId.get(Number(incident.pickingId));
       const hasPicking = Number.isInteger(Number(incident.pickingId)) && Number(incident.pickingId) > 0;
       return isDeliveryIncidentStillPending(
@@ -5595,15 +5982,13 @@ function mergeDeliveryIncidents(
   current: DeliveryValidationIncident[],
   incoming: DeliveryValidationIncident[],
 ) {
-  const rows = new Map(current.map((incident) => [incident.id, incident]));
+  const rows = new Map(current
+    .filter((incident) => isReportableDeliveryIncidentReason(incident.reason))
+    .map((incident) => [incident.id, incident]));
   incoming.forEach((incident) => {
+    if (!isReportableDeliveryIncidentReason(incident.reason)) return;
     const previous = rows.get(incident.id);
-    rows.set(incident.id, {
-      ...previous,
-      ...incident,
-      resolvedAt: undefined,
-      resolvedBy: undefined,
-    });
+    rows.set(incident.id, mergeDeliveryIncident(previous, incident));
   });
   return Array.from(rows.values()).sort((left, right) =>
     right.lastAttemptAt.localeCompare(left.lastAttemptAt),
@@ -5950,6 +6335,228 @@ function sumNumbers(values: number[]) {
   return values.reduce((total, value) => total + value, 0);
 }
 
+function parseHomePeriod(value: string | null): HomePeriod {
+  return value === "day" || value === "week" || value === "month" ? value : "48h";
+}
+
+type HomeSalesChannel = "all" | "fbm" | "fba" | "website" | "sales";
+function parseHomeSalesChannel(value: string | null): HomeSalesChannel {
+  return value === "fbm" || value === "fba" || value === "website" || value === "sales" ? value : "all";
+}
+
+async function getOperationalHomeComparison(env: Record<string, string>, from?: string, to?: string, rolling48h = false) {
+  const config = getOdooConfig(env);
+  if (!config.url || !config.database || !config.username || !config.apiKey) throw new Error("Falta la conexión con Odoo para el comparativo");
+  const uid = await authenticate(config);
+  const now = new Date();
+  const bounds = comparisonBounds(now);
+  const utcText = (date: Date) => date.toISOString().slice(0, 19).replace("T", " ");
+  let queryStart = rolling48h ? new Date(now.getTime() - 48 * 3_600_000) : bounds.start;
+  let queryEnd = now;
+  if (from && to) {
+    const valid = (value: string) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+      const date = new Date(`${value}T00:00:00Z`);
+      return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+    };
+    if (!valid(from) || !valid(to) || from > to) throw new Error("Selecciona un rango de fechas válido");
+    const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
+    if (days > 3660) throw new Error("El rango máximo es de 10 años");
+    const dayStart = (key: string) => {
+      const [year, month, day] = key.split("-").map(Number);
+      const midnight = Date.UTC(year, month - 1, day);
+      for (let offset = 3; offset >= -1; offset--) {
+        const candidate = new Date(midnight - offset * 3_600_000);
+        const local = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Madrid", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23" }).formatToParts(candidate);
+        const parts = Object.fromEntries(local.map((part) => [part.type, part.value]));
+        if (`${parts.year}-${parts.month}-${parts.day}` === key && parts.hour === "00") return candidate;
+      }
+      throw new Error(`No se pudo calcular el inicio del día ${key}`);
+    };
+    queryStart = dayStart(from);
+    const afterTo = new Date(Date.parse(`${to}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+    queryEnd = dayStart(afterTo);
+  }
+  const effectiveEnd = new Date(Math.min(queryEnd.getTime(), now.getTime()));
+  type Picking = { id: number; sale_id?: false | [number, string]; date_done?: string | false };
+  type Sale = { id: number; team_id?: false | [number, string]; amz_fulfillment_by?: string | false; amount_untaxed?: number; currency_id?: false | [number, string]; currency_rate?: number };
+  const recent: Picking[] = [];
+  const domain = [["state", "=", "done"], ["picking_type_code", "=", "outgoing"], ["date_done", ">=", utcText(queryStart)], ["date_done", "<", utcText(effectiveEnd)]];
+  for (let offset = 0; ; offset += 500) {
+    const page = await executeKw(config, uid, "stock.picking", "search_read", [domain], { fields: ["id", "sale_id", "date_done"], order: "date_done asc, id asc", limit: 500, offset }) as Picking[];
+    recent.push(...page);
+    if (page.length < 500) break;
+  }
+  const ids = [...new Set(recent.flatMap((picking) => Array.isArray(picking.sale_id) ? [picking.sale_id[0]] : []))];
+  if (!ids.length) return rolling48h ? buildHomeComparisonRolling48h([], now) : from && to ? buildHomeComparisonRange([], from, to, now) : buildHomeComparison([], now);
+  const allDone: Picking[] = [];
+  const sales: Sale[] = [];
+  for (let index = 0; index < ids.length; index += 200) {
+    const batch = ids.slice(index, index + 200);
+    const orders = await executeKw(config, uid, "sale.order", "read", [batch], { fields: ["id", "team_id", "amz_fulfillment_by", "amount_untaxed", "currency_id", "currency_rate"] }) as Sale[];
+    const pickingDomain = [["sale_id", "in", batch], ["state", "=", "done"], ["picking_type_code", "=", "outgoing"]];
+    const pageSize = 500;
+    for (let offset = 0; ; offset += pageSize) {
+      const page = await executeKw(config, uid, "stock.picking", "search_read", [pickingDomain], { fields: ["id", "sale_id", "date_done"], order: "date_done asc, id asc", limit: pageSize, offset }) as Picking[];
+      allDone.push(...page);
+      if (page.length < pageSize) break;
+    }
+    sales.push(...orders);
+  }
+  const firstDone = new Map<number, Date>();
+  for (const picking of allDone) {
+    if (!Array.isArray(picking.sale_id) || !picking.date_done) continue;
+    const date = parseOdooUtc(picking.date_done);
+    const id = picking.sale_id[0];
+    if (!firstDone.has(id) || date < firstDone.get(id)!) firstDone.set(id, date);
+  }
+  const events: SentSale[] = sales.flatMap((sale) => {
+    const date = firstDone.get(sale.id);
+    if (!date || date < queryStart || date >= queryEnd || date > now) return [];
+    const event = {
+      id: sale.id, dateDone: date.toISOString(), amountUntaxed: Number(sale.amount_untaxed || 0),
+      team: Array.isArray(sale.team_id) ? sale.team_id[1] : "", fulfillmentBy: typeof sale.amz_fulfillment_by === "string" ? sale.amz_fulfillment_by : "",
+    } satisfies SentSale;
+    if (comparisonChannel(event) && Array.isArray(sale.currency_id) && !["EUR", "Eu"].includes(sale.currency_id[1])) {
+      throw new Error(`Moneda de venta no convertible con seguridad para Inicio: ${sale.currency_id[1]}`);
+    }
+    if (comparisonChannel(event) && sale.currency_rate !== undefined && Math.abs(sale.currency_rate - 1) > 0.000001) {
+      throw new Error("Inicio encontró una venta con tipo de cambio distinto de EUR; revisar conversión antes de mostrarla");
+    }
+    return [event];
+  });
+  return rolling48h ? buildHomeComparisonRolling48h(events, now) : from && to ? buildHomeComparisonRange(events, from, to, now) : buildHomeComparison(events, now);
+}
+
+async function getOperationalHomeSales(env: Record<string, string>, period: HomePeriod, channel: HomeSalesChannel) {
+  const config = getOdooConfig(env);
+  if (!config.url || !config.database || !config.username || !config.apiKey) throw new Error("Falta la conexión con Odoo para ventas");
+  const uid = await authenticate(config);
+  const { start, end } = periodBounds(period);
+  const domain: unknown[] = [
+    ["state", "in", ["sale", "done"]],
+    ["date_order", ">=", start.toISOString().replace("T", " ").slice(0, 19)],
+    ["date_order", "<=", end.toISOString().replace("T", " ").slice(0, 19)],
+  ];
+  if (channel !== "all") {
+    const teams = await executeKw(config, uid, "crm.team", "search_read", [[]], { fields: ["id", "name"], limit: 100 }) as Array<{ id: number; name: string }>;
+    const named = (needle: string) => teams.filter((team) => team.name.toLowerCase().includes(needle)).map((team) => team.id);
+    if (channel === "website") domain.push(["team_id", "in", named("website")]);
+    if (channel === "sales") domain.push(["team_id", "in", named("sales")]);
+    if (channel === "fbm") domain.push("|", ["amz_fulfillment_by", "=", "FBM"], ["team_id", "in", named("amazon fbm")]);
+    if (channel === "fba") domain.push("|", ["amz_fulfillment_by", "=", "FBA"], "&", ["team_id", "in", named("amazon")], ["client_order_ref", "ilike", "FBA%"]);
+  }
+  const grouping = period === "48h" || period === "day" ? "date_order:hour" : "date_order:day";
+  const rows = await executeKw(config, uid, "sale.order", "read_group", [domain, ["amount_untaxed:sum"], [grouping]], {
+    lazy: false,
+    context: { tz: "UTC", lang: "en_US" },
+  }) as Array<Record<string, unknown>>;
+  const values = new Map<string, number>();
+  for (const row of rows) {
+    const range = row.__range as Record<string, { from?: string }> | undefined;
+    const raw = range?.[grouping]?.from || String(row[grouping] || "");
+    const parsed = new Date(raw.replace(" ", "T") + (/Z|[+-]\d\d:\d\d$/.test(raw) ? "" : "Z"));
+    if (!Number.isFinite(parsed.getTime())) throw new Error(`Odoo devolvió una franja de ventas no reconocible: ${raw}`);
+    const key = grouping.endsWith("hour") ? parsed.toISOString().slice(0, 13) : parsed.toISOString().slice(0, 10);
+    values.set(key, (values.get(key) || 0) + Number(row.amount_untaxed || 0));
+  }
+  const points: Array<{ at: string; value: number }> = [];
+  const cursor = new Date(start);
+  cursor.setUTCHours(grouping.endsWith("hour") ? cursor.getUTCHours() : 0, 0, 0, 0);
+  while (cursor <= end) {
+    const key = grouping.endsWith("hour") ? cursor.toISOString().slice(0, 13) : cursor.toISOString().slice(0, 10);
+    points.push({ at: key, value: Math.round((values.get(key) || 0) * 100) / 100 });
+    if (grouping.endsWith("hour")) cursor.setUTCHours(cursor.getUTCHours() + 1);
+    else cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return { period, channel, currency: "EUR", total: Math.round(points.reduce((sum, point) => sum + point.value, 0) * 100) / 100, points, updatedAt: new Date().toISOString() };
+}
+
+function readHomeShippingLabels(env: Record<string, string>): ShippingLabel[] {
+  const path = join(env.DASHBOARD_DATA_DIR || join(process.cwd(), ".dashboard-data"), "genei-shipping-labels.json");
+  if (!existsSync(path)) return [];
+  const store = JSON.parse(readFileSync(path, "utf8")) as { labels?: ShippingLabel[] };
+  if (!Array.isArray(store.labels)) throw new Error("El historial de etiquetas no tiene un formato válido");
+  return store.labels;
+}
+
+async function buildOperationalHomeKpis(
+  env: Record<string, string>,
+  productCatalog: ReturnType<typeof createProductCatalog>,
+  productLocations: ReturnType<typeof createProductLocations>,
+) {
+  const today = new Date();
+  const start = new Date(today);
+  start.setDate(today.getDate() - 3);
+  const range = { from: start.toISOString().slice(0, 10), to: today.toISOString().slice(0, 10) };
+  const ordersStore = readOrdersCache(env);
+  const orders = filterCachedOrders(ordersStore.orders, range);
+  const locationsStore = productLocations.summary();
+  const physicalCodes = new Set(locationsStore.locationCatalog.filter((item) => item.kind === "physical").map((item) => item.code));
+  const preferredZoneProductIds = locationsStore.locations
+    .filter((item) => item.preferred && physicalCodes.has(item.code))
+    .map((item) => item.productId);
+  const catalogProducts = productCatalog.list().products;
+  const noStock = selectHomeNoStockProducts(catalogProducts, preferredZoneProductIds);
+  const values: Record<string, { count?: number; ids?: string[]; error?: string }> = {
+    noStock: { count: noStock.length, ids: noStock.map((id) => String(id)) },
+  };
+  const [ordersResult, receptions, alerts, purchases] = await Promise.allSettled([
+    getHomeUnprintedOrders(env, range, orders),
+    getOdooInventoryReceptions(env),
+    getOdooSalesPurchaseAlerts(env),
+    getOdooPurchaseReceptions(env),
+  ]);
+  if (ordersResult.status === "fulfilled") {
+    const sharedOrders = ordersResult.value;
+    const unprinted = sharedOrders.filter(isHomeOrderUnprinted);
+    values.unprinted = { count: unprinted.length, ids: unprinted.map((order) => order.id) };
+    try {
+      const unsent = sharedOrders.filter(isHomeOrderUnsent);
+      values.unsent = { count: unsent.length, ids: unsent.map((order) => order.id) };
+    } catch (error) {
+      values.unsent = { error: String(error) };
+    }
+  } else {
+    values.unprinted = { error: String(ordersResult.reason) };
+    values.unsent = { error: String(ordersResult.reason) };
+  }
+  if (receptions.status === "fulfilled") {
+    const rows = receptions.value.receptions.filter((item) => !item.isImportation && (item.status === "Pendiente" || item.status === "Esperando"));
+    values.receptions = { count: rows.length, ids: rows.map((item) => item.id) };
+  } else values.receptions = { error: String(receptions.reason) };
+  if (alerts.status === "fulfilled") {
+    const rows = alerts.value.alerts.filter((item) => item.state === "draft" || item.state === "sent");
+    // Multiple alert lines can point to the same purchase order. The
+    // destination is one row per purchase order, so count and IDs must use
+    // the same unique set.
+    const purchaseIds = [...new Set(rows.map((item) => item.purchaseId).filter(Boolean))];
+    values.underOrder = { count: purchaseIds.length, ids: purchaseIds };
+  } else values.underOrder = { error: String(alerts.reason) };
+  if (purchases.status === "fulfilled") values.pendingPurchases = { count: purchases.value.total, ids: purchases.value.receptions.map((item) => item.id) };
+  else values.pendingPurchases = { error: String(purchases.reason) };
+  return { updatedAt: new Date().toISOString(), range, source: ordersFastCacheEnabled(env) ? "dashboard-cache" : "odoo-live", values, cacheUpdatedAt: ordersStore.updatedAt };
+}
+
+async function getHomeUnprintedOrders(
+  env: Record<string, string>,
+  range: { from: string; to: string },
+  cachedOrders: OrdersCacheStore["orders"],
+) {
+  // Pedidos uses Odoo directly when the fast cache is disabled. Home must use
+  // that same source, including every page, or the card can disagree with its destination.
+  if (ordersFastCacheEnabled(env)) return cachedOrders;
+  const orders: Awaited<ReturnType<typeof getOdooOrdersFull>>["orders"] = [];
+  const pageLimit = 500;
+  for (let offset = 0; ; offset += pageLimit) {
+    const page = await getOdooOrdersFull(env, { ...range, limit: pageLimit, offset });
+    if (page.mode !== "live") throw new Error(page.message || "No se pudieron consultar los pedidos de Odoo");
+    orders.push(...page.orders);
+    if (orders.length >= page.total || page.orders.length < pageLimit) break;
+  }
+  return orders;
+}
+
 
 async function getOdooDashboardFull(
   env: Record<string, string>,
@@ -6122,9 +6729,9 @@ async function getOdooDashboardFull(
   };
 }
 
-type InventoryReceptionWriteLine = { lineId?: unknown; productId?: unknown; quantity?: unknown };
+type InventoryReceptionWriteLine = { lineId?: unknown; productId?: unknown; quantity?: unknown; allocations?: Array<{ location?: unknown; quantity?: unknown }> };
 
-async function validateOdooInventoryReception(env: Record<string, string>, raw: unknown) {
+async function validateOdooInventoryReception(env: Record<string, string>, raw: unknown, productLocations: ReturnType<typeof createProductLocations>) {
   const input = (raw && typeof raw === "object" ? raw : {}) as {
     receptionId?: unknown;
     createBackorder?: unknown;
@@ -6141,23 +6748,46 @@ async function validateOdooInventoryReception(env: Record<string, string>, raw: 
     fields: ["id", "name", "state", "picking_type_code", "location_id", "location_dest_id", "move_ids_without_package"],
   })) as Array<OdooPickingRecord & { location_id?: false | [number, string] }>;
   if (!picking || picking.picking_type_code !== "incoming") throw new Error("El albarán no es una recepción de entrada");
-  if (picking.state === "done") return { ok: true, idempotent: true, receptionRef: picking.name, state: "done" };
+  const alreadyDone = picking.state === "done";
   if (picking.state === "cancel") throw new Error("La recepción está cancelada en Odoo");
 
   const existingIds = new Set(picking.move_ids_without_package ?? []);
   const requestedExisting = input.lines.filter((line) => Number.isInteger(Number(line.lineId)));
   const requestedIds = new Set(requestedExisting.map((line) => Number(line.lineId)));
-  if (requestedExisting.length !== requestedIds.size || existingIds.size !== requestedIds.size || [...existingIds].some((id) => !requestedIds.has(id))) {
+  if (!alreadyDone && (requestedExisting.length !== requestedIds.size || existingIds.size !== requestedIds.size || [...existingIds].some((id) => !requestedIds.has(id)))) {
     throw new Error("Las líneas han cambiado en Odoo. Actualiza la recepción antes de validar");
   }
   const quantities = input.lines.map((line) => ({ ...line, quantity: Number(line.quantity) }));
   if (quantities.some((line) => !Number.isFinite(line.quantity) || line.quantity < 0)) throw new Error("Hay cantidades recibidas no válidas");
   if (!quantities.some((line) => line.quantity > 0)) throw new Error("Indica al menos una unidad recibida");
+  const planned = quantities.flatMap((line) => {
+    if (line.quantity === 0) return [];
+    if (!Array.isArray(line.allocations) || !line.allocations.length) throw new Error("Indica una ubicación para cada producto recibido");
+    const allocations = line.allocations.map((allocation) => ({ location: String(allocation.location ?? "").trim().toUpperCase(), quantity: Number(allocation.quantity) }));
+    if (allocations.some((allocation) => !Number.isFinite(allocation.quantity) || allocation.quantity <= 0) || Math.abs(allocations.reduce((sum, allocation) => sum + allocation.quantity, 0) - line.quantity) > 0.0001) throw new Error("El reparto de ubicaciones no coincide con la cantidad recibida");
+    for (const allocation of allocations) {
+      if (!productLocations.isActive(allocation.location, allocation.location === "PENDIENTE_ENVIO" ? "dispatch" : "physical")) throw new Error(`La ubicación ${allocation.location} no existe o no está activa en Dashboard`);
+    }
+    return allocations.map((allocation) => ({ productId: Number(line.productId), code: allocation.location, quantity: allocation.quantity }));
+  });
+  productLocations.validateReceptionAllocations(planned.filter((allocation) => allocation.code !== "PENDIENTE_ENVIO"));
+  const physical = planned.filter((allocation) => allocation.code !== "PENDIENTE_ENVIO");
+  const newLocationIds = [...new Set(physical.map((item) => item.productId))].filter((id) => productLocations.forProduct(id).length === 0);
+  let stockLocationId: number | undefined;
+  if (newLocationIds.length) {
+    const [stockLocation] = (await executeKw(config, uid, "stock.location", "search_read", [[["complete_name", "=", "ALM/Stock"]]], { fields: ["id"], limit: 1 })) as Array<{ id: number }>;
+    if (!stockLocation) throw new Error("No se encontró ALM/Stock para cotejar las ubicaciones de la recepción");
+    stockLocationId = stockLocation.id;
+  }
 
   const existingMoves = (await executeKw(config, uid, "stock.move", "read", [[...existingIds]], {
     fields: ["id", "product_id", "product_uom_qty", "product_uom", "state"],
   })) as OdooMoveRecord[];
   for (const line of quantities.filter((item) => Number.isInteger(Number(item.lineId)))) {
+    const move = existingMoves.find((item) => item.id === Number(line.lineId));
+    if (move && getRelationId(move.product_id) !== Number(line.productId)) throw new Error("El producto de una línea cambió en Odoo. Actualiza la recepción");
+  }
+  for (const line of quantities.filter((item) => !alreadyDone && Number.isInteger(Number(item.lineId)))) {
     const moveId = Number(line.lineId);
     const move = existingMoves.find((item) => item.id === moveId);
     if (!move || move.state === "done" || move.state === "cancel") throw new Error(`La línea ${moveId} ya no se puede modificar`);
@@ -6166,7 +6796,7 @@ async function validateOdooInventoryReception(env: Record<string, string>, raw: 
 
   const sourceId = getRelationId(picking.location_id);
   const destinationId = getRelationId(picking.location_dest_id);
-  for (const line of quantities.filter((item) => !Number.isInteger(Number(item.lineId)) && item.quantity > 0)) {
+  for (const line of quantities.filter((item) => !alreadyDone && !Number.isInteger(Number(item.lineId)) && item.quantity > 0)) {
     const productId = Number(line.productId);
     if (!Number.isInteger(productId) || productId <= 0 || !sourceId || !destinationId) throw new Error("Producto inesperado no válido");
     const [product] = (await executeKw(config, uid, "product.product", "read", [[productId]], { fields: ["id", "display_name", "uom_id"] })) as Array<ProductRecord & { uom_id?: false | [number, string] }>;
@@ -6186,7 +6816,7 @@ async function validateOdooInventoryReception(env: Record<string, string>, raw: 
   }
 
   const context = { button_validate_picking_ids: [pickingId], active_id: pickingId, active_ids: [pickingId], active_model: "stock.picking" };
-  const result = await executeInventoryReceptionWrite(config, uid, "stock.picking", "button_validate", [[pickingId]], { context });
+  const result = alreadyDone ? true : await executeInventoryReceptionWrite(config, uid, "stock.picking", "button_validate", [[pickingId]], { context });
   if (result && typeof result === "object") {
     const model = (result as { res_model?: string }).res_model;
     if (model !== "stock.backorder.confirmation") throw new Error(`Odoo requiere un asistente no soportado: ${model || "desconocido"}`);
@@ -6195,8 +6825,30 @@ async function validateOdooInventoryReception(env: Record<string, string>, raw: 
   }
   const [finished] = (await executeKw(config, uid, "stock.picking", "read", [[pickingId]], { fields: ["id", "name", "state", "date_done"] })) as OdooPickingRecord[];
   if (finished?.state !== "done") throw new Error(`Odoo no confirmó la recepción; estado ${finished?.state || "desconocido"}`);
+  const [completedPicking] = (await executeKw(config, uid, "stock.picking", "read", [[pickingId]], { fields: ["move_ids_without_package"] })) as OdooPickingRecord[];
+  const completedIds = completedPicking?.move_ids_without_package ?? [];
+  const completedMoves = completedIds.length ? (await executeKw(config, uid, "stock.move", "read", [completedIds], { fields: ["id", "product_id", "quantity", "state"] })) as OdooMoveRecord[] : [];
+  const actual = new Map<number, number>();
+  for (const move of completedMoves.filter((item) => item.state === "done")) {
+    const productId = getRelationId(move.product_id);
+    if (productId) actual.set(productId, (actual.get(productId) || 0) + Number(move.quantity || 0));
+  }
+  const plannedTotals = new Map<number, number>();
+  for (const allocation of planned) plannedTotals.set(allocation.productId, (plannedTotals.get(allocation.productId) || 0) + allocation.quantity);
+  if (actual.size !== plannedTotals.size || [...actual].some(([productId, quantity]) => Math.abs(quantity - (plannedTotals.get(productId) || 0)) > 0.0001)) throw new Error("Odoo validó la recepción, pero las cantidades no coinciden con el reparto de Dashboard. No repitas la recepción; revisa las ubicaciones.");
+  const initialStockByProduct: Record<number, number> = {};
+  if (newLocationIds.length) {
+    const stocks = (await executeKw(config, uid, "product.product", "read", [newLocationIds], { fields: ["id", "qty_available"], context: { location: stockLocationId } })) as Array<{ id: number; qty_available: number }>;
+    for (const id of newLocationIds) {
+      const onHand = Number(stocks.find((item) => item.id === id)?.qty_available);
+      if (!Number.isFinite(onHand)) throw new Error(`Odoo validó la recepción, pero no se pudo cotejar el stock del producto ${id}. No repitas la recepción; revisa las ubicaciones.`);
+      const pendingDispatch = planned.filter((item) => item.productId === id && item.code === "PENDIENTE_ENVIO").reduce((sum, item) => sum + item.quantity, 0);
+      initialStockByProduct[id] = onHand - pendingDispatch;
+    }
+  }
+  const recorded = productLocations.applyValidatedReception({ receptionId: pickingId, allocations: physical, moveIds: completedMoves.filter((item) => item.state === "done").map((item) => item.id), initialStockByProduct });
   const backorders = createBackorder ? (await executeKw(config, uid, "stock.picking", "search_read", [[["backorder_id", "=", pickingId], ["state", "not in", ["done", "cancel"]]]], { fields: ["id", "name", "state"], order: "id desc", limit: 1 })) as OdooPickingRecord[] : [];
-  return { ok: true, idempotent: false, receptionRef: finished.name, state: finished.state, dateDone: finished.date_done, pendingReception: backorders[0] ? { id: String(backorders[0].id), ref: backorders[0].name, state: backorders[0].state } : undefined };
+  return { ok: true, idempotent: alreadyDone || !recorded.applied, locationRecorded: true, receptionRef: finished.name, state: finished.state, dateDone: finished.date_done, pendingReception: backorders[0] ? { id: String(backorders[0].id), ref: backorders[0].name, state: backorders[0].state } : undefined };
 }
 
 async function cancelOdooInventoryReception(env: Record<string, string>, raw: unknown) {
@@ -6251,6 +6903,7 @@ async function getOdooInventoryReceptions(
         "purchase_id",
         "state",
         "scheduled_date",
+        "create_date",
         "location_dest_id",
         "backorder_id",
         "move_ids_without_package",
@@ -6369,14 +7022,17 @@ async function getOdooInventoryReceptions(
   );
   const purchaseReferences = purchaseIds.length
     ? (await executeKw(config, uid, "purchase.order", "read", [purchaseIds], {
-        fields: ["id", "partner_ref", "order_type"],
-      })) as Array<{ id: number; partner_ref?: string | false; order_type?: [number, string] | false }>
+        fields: ["id", "partner_ref", "order_type", "date_approve"],
+      })) as Array<{ id: number; partner_ref?: string | false; order_type?: [number, string] | false; date_approve?: string | false }>
     : [];
   const supplierRefsByPurchaseId = new Map(
     purchaseReferences.map((purchase) => [purchase.id, cleanText(purchase.partner_ref)]),
   );
   const orderTypesByPurchaseId = new Map(
     purchaseReferences.map((purchase) => [purchase.id, getRelationName(purchase.order_type)]),
+  );
+  const orderConfirmedAtByPurchaseId = new Map(
+    purchaseReferences.map((purchase) => [purchase.id, formatDate(cleanText(purchase.date_approve)) || undefined]),
   );
   const productIds = Array.from(
     new Set(
@@ -6476,6 +7132,10 @@ async function getOdooInventoryReceptions(
       orderType: orderType || undefined,
       isImportation,
       scheduledDate: cleanText(picking.scheduled_date),
+      orderConfirmedAt: orderConfirmedAtByPurchaseId.get(getRelationId(picking.purchase_id) ?? -1),
+      partialEntryCreatedAt: getRelationId(picking.backorder_id)
+        ? formatDate(cleanText(picking.create_date)) || undefined
+        : undefined,
       state,
       status,
       destination: getRelationName(picking.location_dest_id),
@@ -6499,6 +7159,174 @@ async function getOdooInventoryReceptions(
     ),
   };
 }
+
+async function getOdooSalesPurchaseAlerts(env: Record<string, string>) {
+  const config = getOdooConfig(env);
+  if (!config.url || !config.database || !config.username || !config.apiKey) {
+    throw new Error("Faltan variables de conexión con Odoo");
+  }
+  const uid = await authenticate(config);
+  const purchases = (await executeKw(
+    config,
+    uid,
+    "purchase.order",
+    "search_read",
+    [[["state", "in", ["draft", "sent", "purchase", "done"]]]],
+    {
+      fields: ["id", "name", "origin", "partner_id", "state", "amount_total", "currency_id", "order_line"],
+      // Keep the bounded alert feed focused on current purchases so confirmed
+      // MTO links, e.g. P05000 → S101316, are not excluded by historic rows.
+      order: "date_order desc, id desc",
+      limit: 400,
+    },
+  )) as OdooPurchaseOrderRecord[];
+  if (!purchases.length) return { mode: "live" as const, total: 0, alerts: [] };
+
+  const purchaseIds = purchases.map((purchase) => purchase.id);
+  const lines = (await executeKw(
+    config,
+    uid,
+    "purchase.order.line",
+    "search_read",
+    [[["order_id", "in", purchaseIds], ["display_type", "=", false]]],
+    { fields: ["id", "order_id", "sale_order_id", "sale_line_id"], limit: 4000 },
+  )) as OdooPurchaseLineRecord[];
+  const saleOrderIdsByPurchaseId = new Map<number, Set<number>>();
+  const addSaleOrder = (purchaseId: number, saleOrderId?: number) => {
+    if (!saleOrderId) return;
+    const ids = saleOrderIdsByPurchaseId.get(purchaseId) ?? new Set<number>();
+    ids.add(saleOrderId);
+    saleOrderIdsByPurchaseId.set(purchaseId, ids);
+  };
+
+  // Odoo can link an MTO purchase quotation only through its explicit
+  // `origin` reference (for example, "S101094"). This is still an Odoo
+  // relation—not a product/SKU guess—and covers quotations whose move chain
+  // has not yet been materialised on the purchase line.
+  const originRefsByPurchaseId = new Map<number, string[]>();
+  purchases.forEach((purchase) => {
+    const refs = String(purchase.origin ?? "")
+      .split(/[\n,]/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (refs.length) originRefsByPurchaseId.set(purchase.id, refs);
+  });
+  const originRefs = Array.from(new Set(Array.from(originRefsByPurchaseId.values()).flat()));
+  if (originRefs.length) {
+    const originSales = (await executeKw(
+      config,
+      uid,
+      "sale.order",
+      "search_read",
+      [[["name", "in", originRefs]]],
+      { fields: ["id", "name"], limit: originRefs.length },
+    )) as Array<{ id: number; name?: string }>;
+    const originSaleIdByRef = new Map(
+      originSales.filter((sale) => sale.name).map((sale) => [sale.name as string, sale.id]),
+    );
+    originRefsByPurchaseId.forEach((refs, purchaseId) => {
+      refs.forEach((ref) => addSaleOrder(purchaseId, originSaleIdByRef.get(ref)));
+    });
+  }
+  const purchaseIdByLineId = new Map(
+    lines.map((line) => [line.id, getRelationId(line.order_id)]),
+  );
+  lines.forEach((line) => addSaleOrder(
+    getRelationId(line.order_id) ?? 0,
+    getRelationId(line.sale_order_id),
+  ));
+
+  // MTO can be represented only by stock moves. Follow the explicit move
+  // destination relation and obtain the sale line from that chain.
+  const purchaseLineIds = lines.map((line) => line.id);
+  const moves = purchaseLineIds.length
+    ? ((await executeKw(
+        config,
+        uid,
+        "stock.move",
+        "search_read",
+        [[["purchase_line_id", "in", purchaseLineIds]]],
+        { fields: ["id", "purchase_line_id", "sale_line_id", "move_dest_ids"], limit: 5000 },
+      )) as OdooMoveRecord[])
+    : [];
+  const destinationIds = Array.from(new Set(moves.flatMap((move) => move.move_dest_ids ?? [])));
+  const destinationMoves = destinationIds.length
+    ? ((await executeKw(
+        config,
+        uid,
+        "stock.move",
+        "read",
+        [destinationIds],
+        { fields: ["id", "sale_line_id"] },
+      )) as OdooMoveRecord[])
+    : [];
+  const destinationSaleLineByMoveId = new Map(
+    destinationMoves.map((move) => [move.id, getRelationId(move.sale_line_id)]),
+  );
+  const saleLineToPurchaseIds = new Map<number, Set<number>>();
+  const addSaleLine = (purchaseId: number | undefined, saleLineId?: number) => {
+    if (!purchaseId || !saleLineId) return;
+    const ids = saleLineToPurchaseIds.get(saleLineId) ?? new Set<number>();
+    ids.add(purchaseId);
+    saleLineToPurchaseIds.set(saleLineId, ids);
+  };
+  lines.forEach((line) => addSaleLine(getRelationId(line.order_id), getRelationId(line.sale_line_id)));
+  moves.forEach((move) => {
+    const purchaseId = purchaseIdByLineId.get(getRelationId(move.purchase_line_id) ?? 0);
+    addSaleLine(purchaseId, getRelationId(move.sale_line_id));
+    (move.move_dest_ids ?? []).forEach((moveId) => addSaleLine(purchaseId, destinationSaleLineByMoveId.get(moveId)));
+  });
+  const saleLineIds = Array.from(saleLineToPurchaseIds.keys());
+  const saleLines = saleLineIds.length
+    ? ((await executeKw(config, uid, "sale.order.line", "read", [saleLineIds], {
+        fields: ["id", "order_id"],
+      })) as Array<{ id: number; order_id?: false | [number, string] }>)
+    : [];
+  saleLines.forEach((line) => {
+    const saleOrderId = getRelationId(line.order_id);
+    (saleLineToPurchaseIds.get(line.id) ?? []).forEach((purchaseId) => addSaleOrder(purchaseId, saleOrderId));
+  });
+
+  const allSaleOrderIds = Array.from(new Set(Array.from(saleOrderIdsByPurchaseId.values()).flatMap((ids) => Array.from(ids))));
+  const sales = allSaleOrderIds.length
+    ? ((await executeKw(config, uid, "sale.order", "read", [allSaleOrderIds], {
+        fields: ["id", "name", "state", "delivery_is_printed"],
+      })) as Array<{ id: number; name?: string; state?: string; delivery_is_printed?: boolean }>)
+    : [];
+  // Printing a delivery is independent from supplier purchase status. Keep
+  // explicit sale↔purchase links visible after the delivery is printed.
+  const eligibleSales = new Map(
+    sales.filter((sale) => ["sale", "done"].includes(sale.state ?? "")).map((sale) => [sale.id, sale]),
+  );
+  const lineCountByPurchaseId = new Map<number, number>();
+  lines.forEach((line) => {
+    const id = getRelationId(line.order_id);
+    if (id) lineCountByPurchaseId.set(id, (lineCountByPurchaseId.get(id) ?? 0) + 1);
+  });
+  const alerts = purchases.flatMap((purchase) => {
+    const matchingSales = Array.from(saleOrderIdsByPurchaseId.get(purchase.id) ?? []).map((id) => eligibleSales.get(id)).filter(Boolean) as Array<{ id: number; name?: string }>;
+    if (!matchingSales.length) return [];
+    return [{
+      purchaseId: String(purchase.id),
+      purchaseRef: purchase.name || `PO #${purchase.id}`,
+      supplier: getRelationName(purchase.partner_id) || "Proveedor sin nombre",
+      state: purchase.state === "sent"
+        ? "sent" as const
+        : purchase.state === "purchase"
+          ? "purchase" as const
+          : purchase.state === "done"
+            ? "done" as const
+            : "draft" as const,
+      saleOrderIds: matchingSales.map((sale) => `#${sale.id}`),
+      saleOrderRefs: matchingSales.map((sale) => sale.name || `SO #${sale.id}`),
+      lineCount: lineCountByPurchaseId.get(purchase.id) ?? 0,
+      amountTotal: Number(purchase.amount_total ?? 0),
+      currency: getRelationName(purchase.currency_id) || "EUR",
+    }];
+  });
+  return { mode: "live" as const, total: alerts.length, alerts };
+}
+
 
 async function getOdooPurchaseReceptions(env: Record<string, string>) {
   const config = getOdooConfig(env);
@@ -6613,7 +7441,6 @@ async function getOdooPurchaseReceptions(env: Record<string, string>) {
 
   const receptions = purchaseOrders.flatMap((order) => {
     const sourceLines = linesByOrderId.get(order.id) ?? [];
-    if (sourceLines.length === 0) return [];
     const lines = sourceLines.map((line) => {
       const productId = getRelationId(line.product_id);
       const product = productId ? productsById.get(productId) : undefined;
@@ -6649,7 +7476,9 @@ async function getOdooPurchaseReceptions(env: Record<string, string>) {
       .filter(Boolean)
       .sort();
     const expectedDate =
-      expectedDates[0] || cleanText(order.date_planned).slice(0, 10);
+      expectedDates[0] ||
+      cleanText(order.date_planned).slice(0, 10) ||
+      cleanText(order.date_order).slice(0, 10);
     const receivedQty = lines.reduce((total, line) => total + line.receivedQty, 0);
     const pendingQty = lines.reduce((total, line) => total + line.pendingQty, 0);
     return [
@@ -6776,12 +7605,98 @@ async function confirmOdooPurchaseQuotation(env: Record<string, string>, raw: un
   if (!confirmed || !["purchase", "done"].includes(confirmed.state || "")) throw new Error("Odoo no confirmó el pedido de compra");
   let emailSent = false;
   if (sendEmail) {
-    await executePurchaseOrderAction(config, uid, "mail.template", "send_mail", [[templateId], orderId], { force_send: true, raise_exception: true });
+    await sendNativePurchaseOrderEmail(config, uid, orderId);
     emailSent = true;
   }
   const pickingIds = confirmed.picking_ids ?? [];
   const pickings = pickingIds.length ? await executeKw(config, uid, "stock.picking", "read", [pickingIds], { fields: ["id", "name"] }) as Array<{ id: number; name?: string }> : [];
   return { ok: true, ref: confirmed.name || preview.ref, emailSent, pickingRefs: pickings.map((picking) => cleanText(picking.name)).filter(Boolean) };
+}
+
+async function sendOdooPurchaseOrderEmail(env: Record<string, string>, raw: unknown) {
+  const input = (raw && typeof raw === "object" ? raw : {}) as { orderId?: unknown; simulate?: unknown };
+  const orderId = Number(input.orderId);
+  if (!Number.isInteger(orderId) || orderId <= 0) throw new Error("Pedido no válido");
+  const config = getOdooConfig(env);
+  const uid = await authenticate(config);
+  const [order] = await executeKw(config, uid, "purchase.order", "read", [[orderId]], { fields: ["id", "name", "state", "partner_id"] }) as OdooPurchaseOrderRecord[];
+  if (!order || !["purchase", "done"].includes(order.state || "")) throw new Error("El pedido debe estar confirmado antes de enviar el email");
+  const partnerId = getRelationId(order.partner_id);
+  const [partner] = partnerId ? await executeKw(config, uid, "res.partner", "read", [[partnerId]], { fields: ["email"] }) as Array<{ email?: string | false }> : [];
+  if (!cleanText(partner?.email)) throw new Error("El proveedor no tiene email en su ficha de contacto");
+  if (input.simulate === true) return { ok: true, simulated: true, ref: order.name || `PO #${orderId}`, emailSent: false };
+  if (env.ODOO_WRITE_ENABLED !== "true") throw new Error("Escritura en Odoo desactivada en este entorno de pruebas");
+  await sendNativePurchaseOrderEmail(config, uid, orderId);
+  return { ok: true, ref: order.name || `PO #${orderId}`, emailSent: true };
+}
+
+async function sendNativePurchaseOrderEmail(config: ReturnType<typeof getOdooConfig>, uid: number, orderId: number) {
+  const previousMessages = await executeKw(
+    config,
+    uid,
+    "mail.message",
+    "search",
+    [[["model", "=", "purchase.order"], ["res_id", "=", orderId]]],
+    { order: "id desc", limit: 100 },
+  ) as number[];
+  const action = await executePurchaseOrderAction(config, uid, "purchase.order", "action_rfq_send", [[orderId]]) as {
+    res_model?: string;
+    context?: Record<string, unknown>;
+  };
+  const context = action?.context ?? {};
+  const templateId = Number(context.default_template_id ?? 0);
+  const resIds = Array.isArray(context.default_res_ids) ? context.default_res_ids.map(Number) : [];
+  if (
+    action?.res_model !== "mail.compose.message" ||
+    context.default_model !== "purchase.order" ||
+    resIds.length !== 1 || resIds[0] !== orderId ||
+    !Number.isInteger(templateId) || templateId <= 0
+  ) {
+    throw new Error("Odoo no preparó el compositor nativo del pedido");
+  }
+  const composerValues = {
+    composition_mode: cleanText(context.default_composition_mode) || "comment",
+    model: "purchase.order",
+    res_ids: JSON.stringify(resIds),
+    template_id: templateId,
+    email_layout_xmlid: cleanText(context.default_email_layout_xmlid) || undefined,
+  };
+  const composerId = await rpc(config.url, "object", "execute_kw", [
+    config.database,
+    uid,
+    config.apiKey,
+    "mail.compose.message",
+    "create",
+    [composerValues],
+    { context },
+  ]);
+  if (!Number.isInteger(Number(composerId)) || Number(composerId) <= 0) {
+    throw new Error("Odoo no creó el compositor nativo del pedido");
+  }
+  await rpc(config.url, "object", "execute_kw", [
+    config.database,
+    uid,
+    config.apiKey,
+    "mail.compose.message",
+    "action_send_mail",
+    [[Number(composerId)]],
+    { context },
+  ]);
+  const newMessages = await executeKw(
+    config,
+    uid,
+    "mail.message",
+    "search_read",
+    [[["model", "=", "purchase.order"], ["res_id", "=", orderId], ["id", "not in", previousMessages]]],
+    { fields: ["id", "message_type", "subject"], order: "id desc", limit: 10 },
+  ) as Array<{ id?: number; message_type?: string; subject?: string | false }>;
+  const sentMessage = newMessages.find(
+    (message) => message.message_type === "comment" && Boolean(cleanText(message.subject)),
+  );
+  if (!Number.isInteger(Number(sentMessage?.id)) || Number(sentMessage?.id) <= 0) {
+    throw new Error("Odoo no dejó confirmación del correo enviado");
+  }
+  return Number(sentMessage.id);
 }
 
 async function cancelOdooPurchaseQuotation(env: Record<string, string>, raw: unknown) {
@@ -7515,8 +8430,8 @@ async function validateOdooDeliveries(
       ),
     ),
   );
-  // La etiqueta debe existir en el registro local y ser de un transportista
-  // gestionado por Dashboard antes de permitir una escritura automática en Odoo.
+  // El flujo Dashboard exige una etiqueta generada y vinculada al pedido;
+  // ni el nombre del transportista ni el tracking condicionan la escritura Odoo.
   const dashboardLabelsByOrderId = options.source === "dashboard-label"
     ? getDashboardLabelStatuses(env, orders)
     : new Map<number, SendcloudStatus>();
@@ -7556,7 +8471,7 @@ async function validateOdooDeliveries(
     const idempotencyKey = createDeliveryValidationIdempotencyKey(
       `#${order.id}`,
       precheck.pickingId,
-      sendcloud?.trackingNumber,
+      sendcloud?.shipmentCode || sendcloud?.trackingNumber,
     );
     if (seenIdempotencyKeys.has(idempotencyKey)) {
       incidents.push(incidentDetails("Validacion duplicada ignorada por idempotencia."));
@@ -8011,14 +8926,14 @@ async function executePurchaseQuotationWrite(
   if (method === "write") {
     const ids = args[0];
     const values = args[1];
-    const allowed = new Set(["product_qty", "price_unit", "date_planned", "name"]);
+    const allowed = new Set(["product_qty", "price_unit", "discount", "date_planned", "name"]);
     if (!Array.isArray(ids) || ids.length !== 1 || !ids.every((id) => Number.isInteger(id) && Number(id) > 0) || !values || typeof values !== "object" || Array.isArray(values) || Object.keys(values).some((field) => !allowed.has(field))) throw new Error("Operación de edición de compra bloqueada");
   } else if (method === "unlink") {
     const ids = args[0];
     if (!Array.isArray(ids) || ids.length === 0 || !ids.every((id) => Number.isInteger(id) && Number(id) > 0)) throw new Error("Operación de borrado de compra bloqueada");
   } else if (method === "create") {
     const values = args[0];
-    const allowed = new Set(["order_id", "product_id", "name", "product_qty", "product_uom", "price_unit", "date_planned", "taxes_id"]);
+    const allowed = new Set(["order_id", "product_id", "name", "product_qty", "product_uom", "price_unit", "discount", "date_planned", "taxes_id"]);
     if (!values || typeof values !== "object" || Array.isArray(values) || Object.keys(values).some((field) => !allowed.has(field))) throw new Error("Operación de alta de compra bloqueada");
   } else {
     throw new Error("Operación de compra bloqueada");
@@ -8027,7 +8942,7 @@ async function executePurchaseQuotationWrite(
 }
 
 async function executePurchaseOrderAction(config: ReturnType<typeof getOdooConfig>, uid: number, model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) {
-  if (model === "purchase.order" && ["button_confirm", "button_cancel"].includes(method)) {
+  if (model === "purchase.order" && ["button_confirm", "button_cancel", "action_rfq_send"].includes(method)) {
     const ids = args[0];
     if (!Array.isArray(ids) || ids.length !== 1 || !ids.every((id) => Number.isInteger(id) && Number(id) > 0)) throw new Error("Confirmación de compra bloqueada");
   } else if (model === "mail.template" && method === "send_mail") {
@@ -8296,12 +9211,15 @@ function getDashboardLabelStatuses(env: Record<string, string>, orders: OdooReco
   const file = join(env.DASHBOARD_DATA_DIR || join(process.cwd(), ".dashboard-data"), "genei-shipping-labels.json");
   if (!existsSync(file)) return new Map<number, SendcloudStatus>();
   try {
-    const labels = (JSON.parse(readFileSync(file, "utf8")) as { labels?: Array<{ orderRefs?: string[]; odooOrderRef?: string; externalOrderRef?: string; tracking?: string; trackingUrl?: string; shipper?: string; carrierStatus?: string }> }).labels ?? [];
-    const eligibleLabels = labels.filter(
-      (label) => isDashboardDeliveryCarrier(label.shipper) && Boolean(cleanText(label.tracking)),
-    );
+    const labels = (JSON.parse(readFileSync(file, "utf8")) as { labels?: Array<{ orderRefs?: string[]; odooOrderRef?: string; externalOrderRef?: string; shipmentCode?: string; source?: string; tracking?: string; trackingUrl?: string; shipper?: string; carrierStatus?: string; reissuedAt?: string }> }).labels ?? [];
+    const eligibleLabels = labels.filter(isRecordedDashboardLabel);
     const byRef = new Map<string, (typeof labels)[number]>();
-    eligibleLabels.forEach((label) => [label.odooOrderRef, label.externalOrderRef, ...(label.orderRefs ?? [])].map(cleanText).filter(Boolean).forEach((ref) => byRef.set(ref.toUpperCase(), label)));
+    eligibleLabels.forEach((label) => (cleanText(label.odooOrderRef)
+      ? [label.odooOrderRef]
+      : [label.externalOrderRef, ...(label.orderRefs ?? [])]).map(cleanText).filter(Boolean).forEach((ref) => {
+      const key = ref.toUpperCase();
+      if (!byRef.has(key)) byRef.set(key, label);
+    }));
     return new Map(orders.flatMap((order) => {
       const cachedOrder = order as OdooRecord & { odooRef?: string; externalRef?: string };
       const orderId = typeof order.id === "number"
@@ -8314,19 +9232,11 @@ function getDashboardLabelStatuses(env: Record<string, string>, orders: OdooReco
         cachedOrder.odooRef,
         cachedOrder.externalRef,
       ].map(cleanText).map((ref) => byRef.get(ref.toUpperCase())).find(Boolean);
-      return label?.tracking && Number.isInteger(orderId) && orderId > 0
-        ? [[orderId, { reference: cleanText(label.externalOrderRef) || order.name || `#${orderId}`, status: "Etiqueta creada Dashboard", rawStatus: cleanText(label.carrierStatus) || "dashboard-label-created", trackingNumber: cleanText(label.tracking), trackingUrl: cleanText(label.trackingUrl), carrier: cleanText(label.shipper) || "Dashboard", hasTracking: true } satisfies SendcloudStatus] as const]
+      return label && Number.isInteger(orderId) && orderId > 0
+        ? [[orderId, { reference: cleanText(label.externalOrderRef) || order.name || `#${orderId}`, status: "Etiqueta creada Dashboard", rawStatus: "dashboard-shipment-recorded", shipmentCode: cleanText(label.shipmentCode), trackingNumber: cleanText(label.tracking), trackingUrl: cleanText(label.trackingUrl), carrier: cleanText(label.shipper) || "Dashboard", hasTracking: Boolean(cleanText(label.tracking)) } satisfies SendcloudStatus] as const]
         : [];
     }));
   } catch { return new Map<number, SendcloudStatus>(); }
-}
-
-function isDashboardDeliveryCarrier(value?: string) {
-  const carrier = cleanText(value)
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
-  return carrier === "mrw" || carrier === "dhl" || carrier === "genei" || carrier === "correos express";
 }
 
 async function authenticate(config: ReturnType<typeof getOdooConfig>) {
@@ -8354,6 +9264,14 @@ async function executeKw(
     throw new Error("Operacion Odoo bloqueada: solo lectura");
   }
 
+  const suppliedContext = kwargs.context;
+  const context = suppliedContext && typeof suppliedContext === "object" && !Array.isArray(suppliedContext)
+    ? suppliedContext as Record<string, unknown>
+    : {};
+  const effectiveKwargs = model === "product.product"
+    ? { ...kwargs, context: { ...context, lang: "es_ES" } }
+    : kwargs;
+
   return rpc(config.url, "object", "execute_kw", [
     config.database,
     uid,
@@ -8361,7 +9279,7 @@ async function executeKw(
     model,
     method,
     args,
-    kwargs,
+    effectiveKwargs,
   ]);
 }
 
@@ -8542,7 +9460,7 @@ function buildOdooActionPreview(
   const hasPickings = pickings.length > 0;
   const pickingStates = pickings.map((picking) => picking?.state).filter(Boolean);
   const dashboardLabelReadyToValidate = Boolean(
-    sendcloud?.trackingNumber && isDashboardDeliveryCarrier(sendcloud.carrier),
+    isDeliveryStatusEligible(sendcloud?.rawStatus, sendcloud?.trackingNumber, sendcloud?.carrier, sendcloud?.shipmentCode),
   );
   const hasAssignedPicking = pickingStates.includes("assigned");
   const hasDonePicking = pickingStates.includes("done");
@@ -8611,7 +9529,7 @@ function buildOdooActionPreview(
     deliveryValidation = {
       status: "blocked",
       label: "Bloqueado",
-      reason: "La etiqueta no procede de MRW, DHL, Genei o Correos Express desde el dashboard.",
+      reason: "No hay una etiqueta generada y vinculada al pedido en Dashboard.",
     };
   } else if (!hasAssignedPicking) {
     deliveryValidation = {
@@ -8725,12 +9643,12 @@ function buildOdooDeliveryValidation(
     };
   }
 
-  if (!sendcloud.trackingNumber || !isDashboardDeliveryCarrier(sendcloud.carrier)) {
+  if (!isDeliveryStatusEligible(sendcloud.rawStatus, sendcloud.trackingNumber, sendcloud.carrier, sendcloud.shipmentCode)) {
     return {
       status: "pending" as const,
       tone: "neutral" as const,
       label: "Pendiente etiqueta",
-      reason: "La etiqueta no procede de MRW, DHL, Genei o Correos Express desde el dashboard.",
+      reason: "No hay una etiqueta generada y vinculada al pedido en Dashboard.",
       pickingId: String(firstPicking.id),
       canValidate: false,
     };
