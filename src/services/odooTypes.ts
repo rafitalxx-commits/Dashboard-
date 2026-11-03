@@ -1,5 +1,36 @@
 export type StatusTone = "ok" | "warning" | "danger" | "neutral" | "info";
 
+export type OperationalHomeMetric = "unprinted" | "unsent" | "receptions" | "underOrder" | "noStock" | "pendingPurchases";
+export type OperationalHomePayload = {
+  updatedAt: string;
+  cacheUpdatedAt?: string;
+  range: { from: string; to: string };
+  values: Record<OperationalHomeMetric, { count?: number; ids?: string[]; error?: string }>;
+};
+export type OperationalHomePeriod = "48h" | "day" | "week" | "month";
+export type OperationalHomeChart = {
+  period: OperationalHomePeriod;
+  channel?: "all" | "fbm" | "fba" | "website" | "sales";
+  currency?: "EUR";
+  total: number;
+  points: Array<{ at: string; value: number }>;
+  updatedAt: string;
+};
+export type OperationalHomeComparisonBucket = {
+  key: string; label: string;
+  fbmOrders: number; websiteOrders: number;
+  fbmSales: number; websiteSales: number;
+};
+export type OperationalHomeComparison = {
+  buckets: OperationalHomeComparisonBucket[];
+  granularity: "hour" | "day" | "month";
+  range: { from: string; to: string };
+  period?: "48h";
+  timezone: "Europe/Madrid";
+  source: string;
+  updatedAt: string;
+};
+
 export type CatalogProduct = {
   id: number;
   templateId?: number;
@@ -17,6 +48,7 @@ export type CatalogProduct = {
   isKit: boolean;
   componentCount: number;
   physicalLocations: string[];
+  localLocations: Pick<ProductLocation, "code" | "quantity" | "preferred">[];
   supplierNames: string[];
   locationSummary?: {
     preferredCode?: string;
@@ -131,6 +163,7 @@ export type Order = {
     reference: string;
     status: string;
     rawStatus?: string;
+    shipmentCode?: string;
     trackingNumber?: string;
     trackingUrl?: string;
     carrier?: string;
@@ -200,7 +233,22 @@ export type Order = {
       checkedAt?: string;
     };
   };
+  pendingPurchases?: Array<{ id: string; ref: string; supplier: string; state: "draft" | "sent" }>;
 };
+
+export type SalesPurchaseAlert = {
+  purchaseId: string;
+  purchaseRef: string;
+  supplier: string;
+  state: "draft" | "sent" | "purchase" | "done";
+  saleOrderIds: string[];
+  saleOrderRefs: string[];
+  lineCount: number;
+  amountTotal: number;
+  currency: string;
+};
+
+export type SalesPurchaseAlertsPayload = { mode: "live" | "demo"; total: number; alerts: SalesPurchaseAlert[] };
 
 export type DashboardRow = {
   label: string;
@@ -512,7 +560,10 @@ export type ReceptionHistory = {
   operatorName: string;
   outcome: "total" | "partial_backorder" | "partial_no_backorder" | "cancelled";
   pendingReceptionRef?: string;
-  lines: PendingReceipt["lines"];
+  cancellationReason?: string;
+  lines: Array<PendingReceipt["lines"][number] & {
+    locationAllocations?: Array<{ location: string; quantity: number }>;
+  }>;
   createdAt: string;
 };
 
@@ -541,6 +592,8 @@ export type InventoryReception = {
   orderType?: string;
   isImportation: boolean;
   scheduledDate: string;
+  orderConfirmedAt?: string;
+  partialEntryCreatedAt?: string;
   state: string;
   status: "Esperando" | "Pendiente" | "Borrador" | "Otra";
   destination: string;

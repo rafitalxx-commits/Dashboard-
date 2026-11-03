@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 
 export type ProductLocation = {
@@ -25,7 +26,16 @@ export type LocationCatalogEntry = {
 
 export const DISPATCH_PENDING_LOCATION = "PENDIENTE_ENVIO";
 
-export type ProductLocationChange = {
+export type OdooMovementEvidence = {
+  odooMoveId?: number;
+  pickingReference?: string;
+  originReference?: string;
+  returnedMoveId?: number;
+};
+
+export type LocationMovement = OdooMovementEvidence & { id: number; productId: number; quantity: number; direction: "in" | "out" };
+
+export type ProductLocationChange = OdooMovementEvidence & {
   id: string;
   productId: number;
   code: string;
@@ -44,17 +54,35 @@ export type OdooMovementSyncResult = {
   lastSyncedAt?: string;
 };
 
+export type PendingLocationMovement = OdooMovementEvidence & {
+  id: number;
+  productId: number;
+  quantity: number;
+  direction: "in" | "out";
+  firstSeenAt: string;
+  reason: "missing_preferred" | "invalid_quantity";
+};
+
 type Store = {
   version: 3;
   locations: ProductLocation[];
   locationCatalog: LocationCatalogEntry[];
   changes: ProductLocationChange[];
+  transferRequests?: Record<string, string>;
+  processedReceptionIds?: number[];
   odooMovementSync?: {
     baselineAt: string;
     lastSyncedAt: string;
     processedMoveIds: number[];
+    pendingMovements?: PendingLocationMovement[];
+    dismissedMovementAlertIds?: number[];
+    automaticStartedAt?: string;
+    automaticLastSyncedAt?: string;
+    customerReturnsStartedAt?: string;
+    customerReturnsLastSyncedAt?: string;
   };
 };
+type LocationSaveInput = { productId: number; code: unknown; quantity?: unknown; preferred?: unknown; replenishmentMin?: unknown; reason?: "manual" | "replenishment" };
 const empty = (): Store => ({ version: 3, locations: [], locationCatalog: [], changes: [] });
 
 /** A101 means row A, shelf 1 and height 01.  P/V are not location concepts. */
@@ -103,12 +131,27 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
         locations,
         locationCatalog: [...catalogByCode.values()],
         changes: stored.changes || [],
+        transferRequests: stored.transferRequests || {},
+        processedReceptionIds: stored.processedReceptionIds || [],
         odooMovementSync: stored.odooMovementSync,
       };
     }
-    catch { return empty(); }
+    catch { throw new Error("No se pudieron leer las ubicaciones del Dashboard. Revisa el almacén antes de realizar un movimiento."); }
   };
-  const write = (store: Store) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 }); };
+  const write = (store: Store) => {
+    mkdirSync(dirname(file), { recursive: true });
+    const temp = `${file}.tmp-${process.pid}-${randomUUID()}`;
+    let fd: number | undefined;
+    try {
+      fd = openSync(temp, "wx", 0o600);
+      writeFileSync(fd, `${JSON.stringify(store, null, 2)}\n`);
+      fsyncSync(fd); closeSync(fd); fd = undefined;
+      renameSync(temp, file);
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+      if (existsSync(temp)) unlinkSync(temp);
+    }
+  };
   const catalog = (activeOnly = false) => read().locationCatalog
     .filter((item) => !activeOnly || item.active)
     .sort((left, right) => Number(right.active) - Number(left.active) || left.label.localeCompare(right.label, "es"));
@@ -156,7 +199,17 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     return { location: store.locationCatalog[index], locations: catalogFrom(store) };
   };
   const forProduct = (productId: number) => read().locations.filter((item) => item.productId === productId).sort((a, b) => Number(b.preferred) - Number(a.preferred) || a.code.localeCompare(b.code));
-  const save = (input: { productId: number; code: unknown; quantity?: unknown; preferred?: unknown; replenishmentMin?: unknown; reason?: "manual" | "replenishment" }) => {
+  const assertPreferredAfterSave = (store: Store, input: LocationSaveInput) => {
+    const productId = Number(input.productId);
+    const code = parseLocationCode(input.code).code;
+    const previous = store.locations.find((item) => item.productId === productId && item.code === code);
+    const preferred = input.preferred === undefined ? previous?.preferred ?? false : Boolean(input.preferred);
+    if (!preferred && !store.locations.some((item) => item.productId === productId && item.code !== code && item.preferred)) {
+      throw new Error("Selecciona una ubicación preferente antes de guardar el producto");
+    }
+  };
+  const validateSave = (input: LocationSaveInput) => assertPreferredAfterSave(read(), input);
+  const save = (input: LocationSaveInput) => {
     const productId = Number(input.productId);
     if (!Number.isInteger(productId) || productId <= 0) throw new Error("Producto inválido");
     const location = parseLocationCode(input.code);
@@ -164,7 +217,7 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     if (!Number.isFinite(quantity)) throw new Error("Cantidad inválida");
     const minimum = input.replenishmentMin === undefined || input.replenishmentMin === "" ? undefined : Number(input.replenishmentMin);
     if (minimum !== undefined && (!Number.isFinite(minimum) || minimum < 0)) throw new Error("Mínimo de reposición inválido");
-    const store = read(); requireActive(store, location.code, "physical"); const now = new Date().toISOString(); const index = store.locations.findIndex((item) => item.productId === productId && item.code === location.code);
+    const store = read(); requireActive(store, location.code, "physical"); assertPreferredAfterSave(store, input); const now = new Date().toISOString(); const index = store.locations.findIndex((item) => item.productId === productId && item.code === location.code);
     const previous = index >= 0 ? store.locations[index] : undefined;
     const preferred = input.preferred === undefined ? previous?.preferred ?? false : Boolean(input.preferred);
     if (preferred) store.locations = store.locations.map((item) => item.productId === productId ? { ...item, preferred: false, replenishmentMin: undefined } : item);
@@ -176,13 +229,27 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
   const remove = (productId: number, code: unknown) => {
     const parsed = parseLocationCode(code); const store = read(); const before = store.locations.length;
     store.locations = store.locations.filter((item) => !(item.productId === productId && item.code === parsed.code));
-    if (store.locations.length === before) throw new Error("Ubicación no encontrada"); write(store); return { locations: forProductFrom(store, productId) };
+    if (store.locations.length === before) throw new Error("Ubicación no encontrada");
+    if (store.locations.some((item) => item.productId === productId) && !store.locations.some((item) => item.productId === productId && item.preferred)) {
+      throw new Error("Selecciona otra ubicación preferente antes de eliminar esta");
+    }
+    write(store); return { locations: forProductFrom(store, productId) };
   };
-  const transfer = (input: { productId: number; fromCode: unknown; toCode: unknown; quantity: unknown }) => {
+  const transfer = (input: { productId: number; fromCode: unknown; toCode: unknown; quantity: unknown; requestId?: string }) => {
     const productId = Number(input.productId); const from = parseLocationCode(input.fromCode); const to = parseLocationCode(input.toCode); const quantity = Number(input.quantity);
     if (!Number.isInteger(productId) || productId <= 0 || !Number.isFinite(quantity) || quantity <= 0) throw new Error("Movimiento de reposición inválido");
     if (from.code === to.code) throw new Error("El origen y el destino deben ser distintos");
-    const store = read(); requireActive(store, from.code, "physical"); requireActive(store, to.code, "physical"); const fromIndex = store.locations.findIndex((item) => item.productId === productId && item.code === from.code);
+    const store = read();
+    const fingerprint = JSON.stringify([productId, from.code, to.code, quantity]);
+    if (input.requestId) {
+      if (!/^[a-zA-Z0-9-]{16,100}$/.test(input.requestId)) throw new Error("Identificador de movimiento inválido");
+      const previous = store.transferRequests?.[input.requestId];
+      if (previous) {
+        if (previous !== fingerprint) throw new Error("Este identificador ya corresponde a otro movimiento");
+        return { locations: forProductFrom(store, productId) };
+      }
+    }
+    requireActive(store, from.code, "physical"); requireActive(store, to.code, "physical"); const fromIndex = store.locations.findIndex((item) => item.productId === productId && item.code === from.code);
     if (fromIndex < 0) throw new Error("Ubicación de origen no encontrada");
     const source = store.locations[fromIndex]; if (source.quantity < quantity) throw new Error("No hay cantidad suficiente en la ubicación de origen");
     const toIndex = store.locations.findIndex((item) => item.productId === productId && item.code === to.code); const target = toIndex >= 0 ? store.locations[toIndex] : undefined; const now = new Date().toISOString();
@@ -190,6 +257,7 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     const destination: ProductLocation = target ? { ...target, quantity: target.quantity + quantity, updatedAt: now } : { productId, ...to, quantity, preferred: false, createdAt: now, updatedAt: now };
     if (toIndex >= 0) store.locations[toIndex] = destination; else store.locations.push(destination);
     store.changes.unshift({ id: `loc-${Date.now()}-to`, productId, code: to.code, previousQuantity: target?.quantity ?? 0, quantity: destination.quantity, reason: "replenishment", createdAt: now }, { id: `loc-${Date.now()}-from`, productId, code: from.code, previousQuantity: source.quantity, quantity: source.quantity - quantity, reason: "replenishment", createdAt: now });
+    if (input.requestId) store.transferRequests = { ...store.transferRequests, [input.requestId]: fingerprint };
     write(store); return { locations: forProductFrom(store, productId) };
   };
   type InventoryCountInput = { productId: number; locationCode: string; quantity: number };
@@ -230,37 +298,165 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
     if (!store.odooMovementSync) store.odooMovementSync = { baselineAt, lastSyncedAt: baselineAt, processedMoveIds: [] };
     write(store); return { locations: store.locations, baselineAt: store.odooMovementSync.baselineAt };
   };
-  const applyOdooMovements = (input: { moves: Array<{ id: number; productId: number; quantity: number; direction: "in" | "out" }>; syncedAt?: string }): OdooMovementSyncResult => {
+  const validateReceptionAllocations = (allocations: Array<{ productId: number; code: string; quantity: number }>) => {
+    const store = read();
+    for (const allocation of allocations) {
+      if (!Number.isInteger(allocation.productId) || allocation.productId <= 0 || !Number.isFinite(allocation.quantity) || allocation.quantity <= 0) throw new Error("Reparto de recepción inválido");
+      const location = parseLocationCode(allocation.code);
+      requireActive(store, location.code, "physical");
+    }
+  };
+  const applyValidatedReception = (input: { receptionId: number; allocations: Array<{ productId: number; code: string; quantity: number }>; moveIds: number[]; initialStockByProduct?: Record<number, number> }) => {
+    if (!Number.isInteger(input.receptionId) || input.receptionId <= 0 || !input.moveIds.every((id) => Number.isInteger(id) && id > 0)) throw new Error("Recepción validada inválida");
+    const store = read();
+    if (store.processedReceptionIds?.includes(input.receptionId)) return { applied: false, locations: store.locations };
+    const previouslyLocated = new Set(store.locations.map((item) => item.productId));
+    validateReceptionAllocations(input.allocations);
+    if (input.moveIds.some((id) => store.odooMovementSync?.processedMoveIds.includes(id))) throw new Error("La sincronización ya registró este movimiento de Odoo. Revisa las ubicaciones antes de volver a aplicarlo");
+    const now = new Date().toISOString();
+    const combined = new Map<string, { productId: number; code: string; quantity: number }>();
+    for (const allocation of input.allocations) {
+      const code = parseLocationCode(allocation.code).code;
+      const key = `${allocation.productId}:${code}`;
+      const previous = combined.get(key);
+      combined.set(key, { productId: allocation.productId, code, quantity: (previous?.quantity || 0) + allocation.quantity });
+    }
+    for (const allocation of combined.values()) {
+      const parsed = parseLocationCode(allocation.code);
+      const index = store.locations.findIndex((item) => item.productId === allocation.productId && item.code === parsed.code);
+      const previous = index >= 0 ? store.locations[index] : undefined;
+      const quantity = (previous?.quantity || 0) + allocation.quantity;
+      const value: ProductLocation = previous
+        ? { ...previous, quantity, updatedAt: now }
+        : { productId: allocation.productId, ...parsed, quantity, preferred: !store.locations.some((item) => item.productId === allocation.productId && item.preferred), createdAt: now, updatedAt: now };
+      if (index >= 0) store.locations[index] = value; else store.locations.push(value);
+      store.changes.unshift({ id: `reception-${input.receptionId}-${allocation.productId}-${parsed.code}`, productId: allocation.productId, code: parsed.code, previousQuantity: previous?.quantity || 0, quantity, reason: "odoo_movement", createdAt: now });
+    }
+    for (const [id, stock] of Object.entries(input.initialStockByProduct || {})) {
+      const productId = Number(id);
+      if (!Number.isInteger(productId) || !Number.isFinite(stock)) throw new Error("Stock Odoo de recepción inválido");
+      const firstCode = [...combined.values()].find((item) => item.productId === productId)?.code;
+      if (!firstCode) continue;
+      // Never reconcile an already located product: its physical distribution is curated.
+      if (previouslyLocated.has(productId)) continue;
+      const locations = store.locations.filter((item) => item.productId === productId);
+      const preferred = locations.find((item) => item.code === firstCode);
+      if (!preferred) continue;
+      const others = locations.filter((item) => item !== preferred).reduce((total, item) => total + item.quantity, 0);
+      const previousQuantity = preferred.quantity;
+      preferred.quantity = stock - others;
+      preferred.preferred = true;
+      preferred.updatedAt = now;
+      if (previousQuantity !== preferred.quantity) store.changes.unshift({ id: `reception-${input.receptionId}-${productId}-reconcile`, productId, code: preferred.code, previousQuantity, quantity: preferred.quantity, reason: "inventory", createdAt: now });
+    }
+    store.processedReceptionIds = [...(store.processedReceptionIds || []), input.receptionId];
+    if (!store.odooMovementSync) store.odooMovementSync = { baselineAt: now, lastSyncedAt: now, processedMoveIds: [] };
+    store.odooMovementSync.processedMoveIds = [...new Set([...store.odooMovementSync.processedMoveIds, ...input.moveIds])];
+    write(store);
+    return { applied: true, locations: store.locations };
+  };
+  const applyOdooMovements = (input: { moves: LocationMovement[]; syncedAt?: string; automatic?: boolean; customerReturns?: boolean }): OdooMovementSyncResult => {
     const store = read(); const state = store.odooMovementSync;
     if (!state) throw new Error("Primero finaliza un inventario para crear la base de ubicaciones");
     const known = new Set(state.processedMoveIds); const warnings: string[] = []; let processed = 0; let applied = 0; let skipped = 0; const now = new Date().toISOString();
-    for (const move of input.moves) {
+    const pendingBefore = new Map((state.pendingMovements || []).map((move) => [move.id, move]));
+    const incoming = new Map<number, LocationMovement>();
+    for (const move of state.pendingMovements || []) incoming.set(move.id, move);
+    for (const move of input.moves) incoming.set(move.id, move);
+    const pending: PendingLocationMovement[] = [];
+    for (const move of incoming.values()) {
       if (!Number.isInteger(move.id) || known.has(move.id)) { skipped += 1; continue; }
-      known.add(move.id); processed += 1;
       const quantity = Number(move.quantity);
       const locations = store.locations.filter((item) => item.productId === Number(move.productId));
-      const preferred = locations.find((item) => item.preferred);
-      if (!Number.isFinite(quantity) || quantity <= 0 || !preferred) {
-        warnings.push(`Movimiento ${move.id}: producto sin ubicación preferente o cantidad inválida.`); continue;
+      const preferred = locations.find((item) => item.preferred && (move.direction !== "in" || store.locationCatalog.some((entry) => entry.code === item.code && entry.kind === "physical" && entry.active)));
+      const evidence: OdooMovementEvidence = { odooMoveId: move.id, pickingReference: move.pickingReference, originReference: move.originReference, returnedMoveId: move.returnedMoveId };
+      // Odoo's aggregate stock remains authoritative when a product has no
+      // Dashboard location. Consume completed outbound IDs without inventing
+      // a physical balance or replaying the delivery if a location is added later.
+      if (move.direction === "out" && locations.length === 0 && Number.isFinite(quantity) && quantity > 0) {
+        known.add(move.id); processed += 1; continue;
       }
-      if (move.direction === "in") {
-        preferred.quantity += quantity; preferred.updatedAt = now;
-        store.changes.unshift({ id: `odoo-${move.id}`, productId: preferred.productId, code: preferred.code, previousQuantity: preferred.quantity - quantity, quantity: preferred.quantity, reason: "odoo_movement", createdAt: now }); applied += 1;
+      if (!Number.isFinite(quantity) || quantity <= 0 || !preferred) {
+        const reason = !Number.isFinite(quantity) || quantity <= 0 ? "invalid_quantity" : "missing_preferred";
+        pending.push({ ...evidence, id: move.id, productId: Number(move.productId), quantity: Number.isFinite(quantity) ? quantity : 0, direction: move.direction, firstSeenAt: pendingBefore.get(move.id)?.firstSeenAt || now, reason });
+        warnings.push(`Movimiento ${move.id}: ${reason === "missing_preferred" ? "producto sin ubicación preferente" : "cantidad inválida"}; stock no ajustado.`);
         continue;
       }
-      let pending = quantity;
-      const sources = [preferred, ...locations.filter((item) => item.code !== preferred.code).sort((a, b) => a.code.localeCompare(b.code))];
-      for (const source of sources) {
-        if (!pending) break;
-        const used = Math.min(source.quantity, pending); if (!used) continue;
-        const before = source.quantity; source.quantity -= used; source.updatedAt = now; pending -= used;
-        store.changes.unshift({ id: `odoo-${move.id}-${source.code}`, productId: source.productId, code: source.code, previousQuantity: before, quantity: source.quantity, reason: "odoo_movement", createdAt: now });
+      known.add(move.id); processed += 1;
+      if (move.direction === "in") {
+        preferred.quantity += quantity; preferred.updatedAt = now;
+        store.changes.unshift({ ...evidence, id: `odoo-${move.id}`, productId: preferred.productId, code: preferred.code, previousQuantity: preferred.quantity - quantity, quantity: preferred.quantity, reason: "odoo_movement", createdAt: now }); applied += 1;
+        continue;
       }
-      if (pending > 0) warnings.push(`Movimiento ${move.id}: faltan ${pending} uds. por ubicar; revisa el reparto físico.`);
+      // A delivered unit always leaves the preferred Dashboard location. Its
+      // quantity is a replenishment balance and may be negative until an
+      // explicit transfer from a non-preferred location settles it.
+      const before = preferred.quantity;
+      preferred.quantity -= quantity;
+      preferred.updatedAt = now;
+      store.changes.unshift({ ...evidence, id: `odoo-${move.id}-${preferred.code}`, productId: preferred.productId, code: preferred.code, previousQuantity: before, quantity: preferred.quantity, reason: "odoo_movement", createdAt: now });
       applied += 1;
     }
-    state.processedMoveIds = [...known].slice(-50000); state.lastSyncedAt = input.syncedAt || now; write(store);
+    state.processedMoveIds = [...known];
+    state.pendingMovements = pending;
+    const pendingIds = new Set(pending.map((move) => move.id));
+    state.dismissedMovementAlertIds = (state.dismissedMovementAlertIds || []).filter((id) => pendingIds.has(id));
+    if (input.customerReturns) state.customerReturnsLastSyncedAt = input.syncedAt || now;
+    else if (input.automatic) state.automaticLastSyncedAt = input.syncedAt || now;
+    else state.lastSyncedAt = input.syncedAt || now;
+    write(store);
     return { processed, applied, skipped, warnings, baselineAt: state.baselineAt, lastSyncedAt: state.lastSyncedAt };
+  };
+  const pendingMovementAlerts = () => {
+    const state = read().odooMovementSync;
+    if (!state) return [] as PendingLocationMovement[];
+    const dismissed = new Set(state.dismissedMovementAlertIds || []);
+    return (state.pendingMovements || []).filter((move) => !dismissed.has(move.id));
+  };
+  const dismissPendingMovementAlerts = (moveIds: unknown) => {
+    if (!Array.isArray(moveIds) || moveIds.length === 0 || moveIds.some((id) => !Number.isSafeInteger(id) || Number(id) <= 0)) {
+      throw new Error("Indica uno o más ID de movimiento válidos");
+    }
+    const ids = [...new Set(moveIds as number[])];
+    const store = read();
+    const state = store.odooMovementSync;
+    if (!state) throw new Error("No hay movimientos pendientes de ubicación");
+    const pendingById = new Map((state.pendingMovements || []).map((move) => [move.id, move]));
+    const candidates = ids.map((id) => pendingById.get(id));
+    if (candidates.some((move) => !move || move.reason !== "missing_preferred")) {
+      throw new Error("Solo se pueden ocultar avisos de movimientos pendientes por falta de ubicación preferente");
+    }
+    const dismissed = new Set(state.dismissedMovementAlertIds || []);
+    ids.forEach((id) => dismissed.add(id));
+    state.dismissedMovementAlertIds = [...dismissed].slice(-50000);
+    write(store);
+    return { dismissed: ids, pending: (state.pendingMovements || []).length, alerts: pendingMovementAlerts().length };
+  };
+  const startCustomerReturnMovements = (startedAt = new Date().toISOString()) => {
+    const store = read(); const state = store.odooMovementSync;
+    if (!state) throw new Error("Primero finaliza un inventario para crear la base de ubicaciones");
+    if (!state.customerReturnsStartedAt) {
+      // Do not replay unaudited returns before this feature's cutover.
+      const cutover = new Date(Math.max(new Date(startedAt).getTime(), new Date(state.baselineAt).getTime())).toISOString();
+      state.customerReturnsStartedAt = cutover;
+      state.customerReturnsLastSyncedAt = cutover;
+      write(store);
+    }
+    return state.customerReturnsStartedAt;
+  };
+  const startAutomaticOdooMovements = (startedAt = new Date().toISOString()) => {
+    const store = read();
+    const state = store.odooMovementSync;
+    if (!state) throw new Error("Primero finaliza un inventario para crear la base de ubicaciones");
+    if (!state.automaticStartedAt) {
+      // Historical gaps need an audited, separate reconciliation. A fresh
+      // cutover prevents old manual adjustments being replayed as deliveries.
+      state.automaticStartedAt = startedAt;
+      state.automaticLastSyncedAt = startedAt;
+      state.lastSyncedAt = startedAt;
+      write(store);
+    }
+    return state.automaticStartedAt;
   };
   return {
     forProduct,
@@ -271,11 +467,18 @@ export function createProductLocations(options: { dataDir?: string } = {}) {
       try { requireActive(read(), code, kind); return true; } catch { return false; }
     },
     save,
+    validateSave,
     remove,
     transfer,
     inventoryTotalsAfterReplace,
     replaceFromInventory,
+    validateReceptionAllocations,
+    applyValidatedReception,
     applyOdooMovements,
+    pendingMovementAlerts,
+    dismissPendingMovementAlerts,
+    startAutomaticOdooMovements,
+    startCustomerReturnMovements,
     summary: () => read(),
   };
 }

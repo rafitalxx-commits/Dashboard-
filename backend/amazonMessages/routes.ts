@@ -14,6 +14,7 @@ import {
 } from "./gmailClient.ts";
 import type { GmailFinalDraftSendSource } from "./gmailClient.ts";
 import type { AmazonOutboundMode } from "./schema.ts";
+import { ensureAmazonMessagesAgentDraftWorker } from "./agentDraftWorker.ts";
 
 type MiddlewareServer = {
   middlewares: {
@@ -53,7 +54,29 @@ export function registerAmazonMessagesRoutes(
     id: "amazon-gmail-auto-sync",
     name: "Amazon Gmail Auto Sync",
     role: "ADMIN",
+  }, {
+    enabled: process.env.AMAZON_MESSAGES_GMAIL_SYNC_ENABLED !== "false",
   });
+  ensureAmazonMessagesAgentDraftWorker(
+    repository,
+    {
+      id: "juanito-agent-draft-worker",
+      name: "Juanito Agent Draft Worker",
+      role: "AGENTE_IA",
+      permissions: [
+        "amazonMessages:read",
+        "amazonMessages:manage",
+        "amazonMessages:aiDraft",
+      ],
+    },
+    {
+      enabled:
+        process.env.AMAZON_MESSAGES_AGENT_DRAFT_WORKER_ENABLED === "true",
+      intervalMs: Number(
+        process.env.AMAZON_MESSAGES_AGENT_DRAFT_WORKER_INTERVAL_MS ?? 15_000,
+      ),
+    },
+  );
 
   server.middlewares.use("/api/amazon-messages", async (request, response) => {
     const actor = actorFromDashboardUser(
@@ -344,6 +367,36 @@ export function registerAmazonMessagesRoutes(
         }
       }
 
+      if (
+        parts[0] === "conversations" &&
+        parts[1] &&
+        parts[2] === "messages" &&
+        parts[3] &&
+        parts[4] === "translation"
+      ) {
+        if (request.method === "GET") {
+          sendJson(
+            response,
+            200,
+            repository.getMessageTranslation(actor, parts[1], parts[3]) ?? null,
+          );
+          return;
+        }
+        if (request.method === "POST") {
+          sendJson(
+            response,
+            200,
+            await repository.translateMessageToSpanish(
+              actor,
+              parts[1],
+              parts[3],
+              await readJsonBody(request),
+            ),
+          );
+          return;
+        }
+      }
+
       if (parts[0] === "conversations" && parts[1] && parts[2] === "workflow") {
         if (request.method === "POST") {
           sendJson(
@@ -357,6 +410,13 @@ export function registerAmazonMessagesRoutes(
           );
           return;
         }
+      }
+
+      if (request.method === "POST" && parts[0] === "historical-cutover") {
+        const body = await readJsonBody<{ reason?: string; externalSend?: boolean }>(request);
+        if (body.externalSend === true) throw new Error("Envio externo deshabilitado para cierre de histórico");
+        sendJson(response, 200, repository.resolveHistoricalBacklog(actor, body));
+        return;
       }
 
       if (parts[0] === "conversations" && parts[1] && parts[2] === "assign") {
@@ -488,6 +548,36 @@ export function registerAmazonMessagesRoutes(
             trigger: "manual",
             labelName: body.label,
             maxMessages: body.max ? Math.min(body.max, 20) : 20,
+          }),
+        );
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        parts[0] === "gmail" &&
+        parts[1] === "repair-encoding"
+      ) {
+        const body = await readJsonBody<{
+          label?: string;
+          max?: number;
+          confirmReadonlyRepair?: boolean;
+          externalSend?: boolean;
+        }>(request);
+        if (body.externalSend === true) {
+          throw new Error("La reparacion de codificacion nunca permite envio externo");
+        }
+        if (body.confirmReadonlyRepair !== true) {
+          throw new Error("Confirmacion de reparacion readonly requerida");
+        }
+        sendJson(
+          response,
+          200,
+          await syncAmazonMessagesFromGmail(repository, actor, {
+            trigger: "manual",
+            labelName: body.label,
+            maxMessages: Math.min(Math.max(body.max ?? 500, 1), 500),
+            repairEncodingOnly: true,
           }),
         );
         return;

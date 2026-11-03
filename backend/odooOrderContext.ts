@@ -22,6 +22,7 @@ export type SendcloudStatus = {
   reference: string;
   status: string;
   rawStatus?: string;
+  shipmentCode?: string;
   trackingNumber?: string;
   trackingUrl?: string;
   carrier?: string;

@@ -1,7 +1,9 @@
+import { ConfirmIncidentShipment } from './components/ConfirmIncidentShipment';
 import { Fragment, useEffect, useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import {
   BarChart3,
+  AlertTriangle,
   Boxes,
   CheckCircle2,
   CalendarDays,
@@ -39,13 +41,16 @@ import { money, orders as demoOrders, statusTone } from "./data/demoData";
 import { AmazonMessagesView } from "./modules/amazonMessages";
 import { ExpeditionsView } from "./modules/expeditions/ExpeditionsView";
 import { WarehouseWorkersSettings } from "./modules/expeditions/WarehouseWorkersSettings";
-import { WarehouseStatisticsView } from "./modules/warehouseStats/WarehouseStatisticsView";
 import { ProductsCatalogView } from "./modules/products/ProductsCatalogView";
 import { ProductLabelsView } from "./modules/products/ProductLabelsView";
 import { ProductLocationsView } from "./modules/products/ProductLocationsView";
 import { InventoryView } from "./modules/products/InventoryView";
 import { InventoryReceptionsView } from "./modules/receptions/InventoryReceptionsView";
 import { PendingPurchasesView } from "./modules/receptions/ReceptionsView";
+import { HomePage } from "./modules/home/HomePage";
+import { SupplierInvoicesView } from "./modules/supplierInvoices/SupplierInvoicesView";
+import { IncidentsView } from "./modules/incidents/IncidentsView";
+import { IncidentsHome } from "./modules/incidents/IncidentsHome";
 import { odooClient } from "./services/odooClient";
 import type {
   InvoiceAnalytics,
@@ -55,8 +60,10 @@ import type {
   DashboardRow,
   DashboardSummary,
   Order,
+  SalesPurchaseAlert,
   OrdersSyncStats,
   OrdersV2Performance,
+  OperationalHomeMetric,
 } from "./services/odooTypes";
 
 const navItems = [
@@ -95,12 +102,6 @@ const navItems = [
     permission: "expeditions",
   },
   {
-    label: "Estadísticas",
-    icon: BarChart3,
-    view: "warehouseStatistics",
-    permission: "dashboard",
-  },
-  {
     label: "Facturas cliente",
     icon: ReceiptText,
     view: "customerInvoices",
@@ -111,6 +112,7 @@ const navItems = [
     icon: FileText,
     view: "supplierInvoices",
     permission: "supplierBilling",
+    navGroup: "purchases",
   },
   {
     label: "Compras",
@@ -123,6 +125,13 @@ const navItems = [
     icon: ClipboardList,
     view: "pendingPurchases",
     permission: "purchases",
+    navGroup: "purchases",
+  },
+  {
+    label: "Analítica compras",
+    icon: BarChart3,
+    view: "purchaseAnalytics",
+    permission: "supplierBilling",
     navGroup: "purchases",
   },
   {
@@ -195,11 +204,16 @@ const navItems = [
     navGroup: "products",
   },
   {
+    label: "Incidencias",
+    icon: AlertTriangle,
+    view: "incidents",
+    permission: "products",
+  },
+  {
     label: "Amazon Messages",
     icon: MessagesSquare,
     view: "amazonMessages",
-    permission: "orders",
-    productionNav: false,
+    permission: "amazonMessages",
   },
   {
     label: "Configuracion",
@@ -216,9 +230,9 @@ const viewRoutes: Record<ActiveView, string> = {
   orders: "pedidos",
   ordersV2: "pedidos-v2",
   expeditions: "expediciones",
-  warehouseStatistics: "estadisticas",
   customerInvoices: "facturacion",
   supplierInvoices: "facturas-proveedor",
+  purchaseAnalytics: "compras/analitica",
   purchases: "compras",
   pendingPurchases: "compras-pendientes",
   products: "productos",
@@ -231,12 +245,16 @@ const viewRoutes: Record<ActiveView, string> = {
   productsInventoryFinal: "productos/inventario/finalizados",
   productsInventoryHistory: "productos/inventario/historial",
   receptions: "productos/recepciones",
+  incidents: "incidencias",
   amazonMessages: "amazon-messages",
   settings: "configuracion",
 };
 const routeViews = Object.fromEntries(
   Object.entries(viewRoutes).map(([view, route]) => [route, view]),
 ) as Record<string, ActiveView>;
+// Keep old statistics links working, but route them through Expeditions access control.
+routeViews.estadisticas = "expeditions";
+routeViews["expediciones/estadisticas"] = "expeditions";
 
 type DashboardUserRole = "viewer" | "printer" | "admin";
 type DashboardPermission =
@@ -250,6 +268,7 @@ type DashboardPermission =
   | "products"
   | "settings"
   | "odooWrite"
+  | "amazonMessages"
   | "amazonMessagesSendFinal";
 type DashboardUser = {
   id: string;
@@ -347,17 +366,13 @@ const odooDeliveryOptions = [
 ];
 const rangePresets = [
   { label: "1 dia", value: "1d" },
-  { label: "Ayer", value: "yesterday" },
+  { label: "4 dias", value: "4d" },
   { label: "7 dias", value: "7d" },
-  { label: "30 dias", value: "30d" },
-  { label: "1 mes", value: "1m" },
-  { label: "Este mes", value: "thisMonth" },
-  { label: "Mes anterior", value: "previousMonth" },
-  { label: "1 ano", value: "1y" },
   { label: "Rango", value: "custom" },
 ] as const;
 type RangePreset = (typeof rangePresets)[number]["value"];
 type ControlChannel = "Todos" | "Amazon FBM" | "Amazon DBA" | "Website" | "Sales";
+const orderChannelFilterOptions = ["Amazon FBM", "Website", "Sales"] as const;
 type DashboardOrderFilter = {
   channel?: ControlChannel;
   delivery?: string;
@@ -394,6 +409,7 @@ const permissionLabels: Record<DashboardPermission, string> = {
   products: "Productos / stock",
   settings: "Configuracion",
   odooWrite: "Acciones Odoo",
+  amazonMessages: "Amazon Messages: acceso y borradores",
   amazonMessagesSendFinal: "Amazon Messages: envio final",
 };
 const editablePermissions: DashboardPermission[] = [
@@ -407,6 +423,7 @@ const editablePermissions: DashboardPermission[] = [
   "products",
   "settings",
   "odooWrite",
+  "amazonMessages",
   "amazonMessagesSendFinal",
 ];
 
@@ -462,7 +479,7 @@ function App() {
   }>({ key: "date", direction: "desc" });
   const [odooActionMessage, setOdooActionMessage] = useState("");
   const [odooActionLoading, setOdooActionLoading] = useState(false);
-  const [rangePreset, setRangePreset] = useState<RangePreset>("1d");
+  const [rangePreset, setRangePreset] = useState<RangePreset>("4d");
   const [customFrom, setCustomFrom] = useState(todayIso());
   const [customTo, setCustomTo] = useState(todayIso());
   const [page, setPage] = useState(1);
@@ -475,11 +492,16 @@ function App() {
   const [activeView, setActiveView] = useState<ActiveView>(() =>
     getViewFromHash(),
   );
+  const [homeDestination, setHomeDestination] = useState<{ metric: OperationalHomeMetric; ids: string[] } | null>(null);
   const isV2View = activeView === "dashboardV2" || activeView === "ordersV2";
   const isDashboardView =
     activeView === "dashboard" || activeView === "dashboardV2";
   const isOrdersView = activeView === "orders" || activeView === "ordersV2";
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  const [incidentOrderToOpen, setIncidentOrderToOpen] = useState<string | null>(null);
+  const [salesPurchaseAlerts, setSalesPurchaseAlerts] = useState<SalesPurchaseAlert[]>([]);
+  const [salesPurchaseAlertsLoading, setSalesPurchaseAlertsLoading] = useState(false);
+  const [selectedPurchaseAlertId, setSelectedPurchaseAlertId] = useState<string | null>(null);
   const [orderDetailsById, setOrderDetailsById] = useState<
     Record<string, Order>
   >({});
@@ -537,6 +559,16 @@ function App() {
     [customFrom, customTo, rangePreset],
   );
   const serverSearch = query.trim();
+  // Delivery, print and Odoo status are resolved in the browser.  Loading
+  // every server block first prevents a filter from silently omitting matches
+  // that happen to be on later blocks.
+  const needsCompleteOrderDataset =
+    (homeDestination?.metric === "unprinted" || homeDestination?.metric === "unsent") ||
+    Boolean(serverSearch) ||
+    selectedChannels.length > 0 ||
+    delivery !== "Todos" ||
+    printed !== "Todos" ||
+    odooDelivery !== "Todos";
 
   const navigateToView = (view: ActiveView) => {
     setActiveView(view);
@@ -598,7 +630,7 @@ function App() {
 
     let mounted = true;
 
-    if (isDashboardView) {
+    if (activeView === "dashboardV2") {
       setDashboard(null);
       setDataMode("loading");
       setConnectionMessage(isV2View ? "Leyendo cache V2" : "Conectando con Odoo");
@@ -644,31 +676,36 @@ function App() {
       };
     }
 
-    setOrders([]);
+    // Preserve the prior dataset while the selected filter gathers every block.
+    // This keeps both channel controls and visible orders stable during loading.
     setDataMode("loading");
     setConnectionMessage(isV2View ? "Leyendo cache V2" : "Conectando con Odoo");
     setSyncSummary(`${isV2View ? "Pedidos V2" : "Pedidos"}: ${dateRange.from} a ${dateRange.to}`);
     setSelectedOrderId(null);
 
-    const offset = (serverPage - 1) * pageSize;
+    const batchSize = 500;
+    const offset = needsCompleteOrderDataset ? 0 : (serverPage - 1) * pageSize;
+    const limit = needsCompleteOrderDataset ? batchSize : pageSize;
+    const loadOrderBlock = (blockOffset: number) => isV2View
+      ? odooClient.getOrdersV2({ ...dateRange, limit, offset: blockOffset, search: serverSearch })
+      : odooClient.getOrders({ ...dateRange, limit, offset: blockOffset, search: serverSearch });
 
-    const ordersRequest = isV2View ? odooClient.getOrdersV2({
-      ...dateRange,
-      limit: pageSize,
-      offset,
-      search: serverSearch,
-    }) : odooClient.getOrders({
-      ...dateRange,
-      limit: pageSize,
-      offset,
-      search: serverSearch,
-    });
-    ordersRequest.then((result) => {
+    void loadOrderBlock(offset).then(async (result) => {
       if (!mounted) return;
 
       if (result.mode === "live") {
         const total = result.total ?? result.orders.length;
-        setOrders(result.orders);
+        const loaded = new Map(result.orders.map((order) => [order.id, order]));
+        if (needsCompleteOrderDataset) {
+          for (let blockOffset = result.orders.length; blockOffset < total; blockOffset += batchSize) {
+            const next = await loadOrderBlock(blockOffset);
+            if (!mounted || next.mode !== "live" || next.orders.length === 0) break;
+            next.orders.forEach((order) => loaded.set(order.id, order));
+          }
+        }
+        if (!mounted) return;
+        const loadedOrders = Array.from(loaded.values());
+        setOrders(loadedOrders);
         setServerTotal(total);
         setDataMode("live");
         if (result.cache?.sync) {
@@ -679,11 +716,13 @@ function App() {
         }
         setConnectionMessage(
           result.source === "dashboard-cache"
-            ? `${isV2View ? "Cache V2" : "Cache Dashboard"} · ${result.orders.length} de ${total} pedidos`
-            : `Odoo real · ${result.orders.length} de ${total} pedidos`,
+            ? `${isV2View ? "Cache V2" : "Cache Dashboard"} · ${loadedOrders.length} de ${total} pedidos`
+            : `Odoo real · ${loadedOrders.length} de ${total} pedidos`,
         );
         setSyncSummary(
-          result.cache?.updatedAt
+          needsCompleteOrderDataset
+            ? `Filtro: ${loadedOrders.length} pedidos cargados de todos los bloques`
+            : result.cache?.updatedAt
             ? `Cache ${formatSyncTime(result.cache.updatedAt)} · bloque ${serverPage}`
             : `Rango ${dateRange.from} a ${dateRange.to} · bloque ${serverPage} · ultimos: ${result.orders
                 .slice(0, 3)
@@ -704,11 +743,13 @@ function App() {
       mounted = false;
     };
   }, [
+    activeView,
     authMode,
     dateRange,
     isDashboardView,
     isOrdersView,
     isV2View,
+    needsCompleteOrderDataset,
     orderRefreshKey,
     pageSize,
     serverPage,
@@ -716,7 +757,27 @@ function App() {
   ]);
 
   useEffect(() => {
-    if (authMode !== "logged-in" || !isDashboardView) return;
+    if (!incidentOrderToOpen || activeView !== "orders" || dataMode !== "live") return;
+    const target = orders.find(order => order.odooRef === incidentOrderToOpen || order.id === incidentOrderToOpen);
+    if (target) { setSelectedOrderId(target.id); setIncidentOrderToOpen(null); }
+  }, [incidentOrderToOpen, activeView, dataMode, orders]);
+
+  useEffect(() => {
+    if (authMode !== "logged-in" || !isOrdersView) return;
+    let mounted = true;
+    setSalesPurchaseAlertsLoading(true);
+    odooClient.getSalesPurchaseAlerts().then((payload) => {
+      if (mounted) setSalesPurchaseAlerts(payload.alerts);
+    }).catch(() => {
+      if (mounted) setSalesPurchaseAlerts([]);
+    }).finally(() => {
+      if (mounted) setSalesPurchaseAlertsLoading(false);
+    });
+    return () => { mounted = false; };
+  }, [authMode, isOrdersView, orderRefreshKey]);
+
+  useEffect(() => {
+    if (authMode !== "logged-in" || activeView !== "dashboardV2") return;
 
     let mounted = true;
     const range = lastDaysRange(4);
@@ -762,16 +823,16 @@ function App() {
       mounted = false;
       setControlOrdersLoading(false);
     };
-  }, [authMode, isDashboardView, isV2View, orderRefreshKey]);
+  }, [activeView, authMode, isV2View, orderRefreshKey]);
 
   useEffect(() => {
     if (
       authMode !== "logged-in" ||
-      (activeView !== "customerInvoices" && activeView !== "dashboard")
+      activeView !== "customerInvoices"
     ) return;
 
     let mounted = true;
-    const delay = activeView === "dashboard" ? 900 : 0;
+    const delay = 0;
     if (activeView === "customerInvoices") {
       setDataMode("loading");
       setConnectionMessage("Conectando con Odoo");
@@ -784,8 +845,8 @@ function App() {
 
       odooClient.getCustomerInvoices({
         ...dateRange,
-        limit: activeView === "dashboard" ? 20 : invoicePageSize,
-        offset: activeView === "dashboard" ? 0 : invoiceOffset,
+        limit: invoicePageSize,
+        offset: invoiceOffset,
         sortKey: invoiceSort.key,
         sortDir: invoiceSort.direction,
       }).then((result) => {
@@ -830,6 +891,7 @@ function App() {
 
   const openOrdersFromHome = (input: {
     channel?: ControlChannel;
+    channels?: string[];
     delivery?: string;
     printed?: string;
     odooDelivery?: string;
@@ -840,7 +902,7 @@ function App() {
       setCustomFrom(input.range.from);
       setCustomTo(input.range.to);
     }
-    setSelectedChannels(channelToFilterValues(input.channel ?? "Todos"));
+    setSelectedChannels(input.channels ?? channelToFilterValues(input.channel ?? "Todos"));
     setDelivery(input.delivery ?? "Todos");
     setPrinted(input.printed ?? "Todos");
     setOdooDelivery(input.odooDelivery ?? "Todos");
@@ -849,6 +911,19 @@ function App() {
     setPage(1);
     setSelectedPrintOrderIds([]);
     navigateToView(isV2View ? "ordersV2" : "orders");
+  };
+
+  const openOperationalHomeMetric = (metric: OperationalHomeMetric, ids: string[], range: { from: string; to: string }) => {
+    setHomeDestination({ metric, ids });
+    if (metric === "unprinted") {
+      openOrdersFromHome({ channels: ["Amazon FBM", "Website"], delivery: "No entregados", printed: "Sin imprimir", range });
+      return;
+    }
+    if (metric === "unsent") {
+      openOrdersFromHome({ channels: ["Amazon FBM", "Website"], range });
+      return;
+    }
+    navigateToView(metric === "receptions" ? "receptions" : metric === "noStock" ? "products" : "pendingPurchases");
   };
 
   useEffect(() => {
@@ -863,29 +938,14 @@ function App() {
     }
   }, [activeView, authUser]);
 
-  const channels = useMemo(
-    () => {
-      const fulfillmentOptions = [
-        orders.some((order) => order.fulfillmentBy === "FBA")
-          ? "Amazon FBA"
-          : "",
-        orders.some((order) => order.fulfillmentBy === "FBM")
-          ? "Amazon FBM"
-          : "",
-      ].filter(Boolean);
-
-      return [
-        ...fulfillmentOptions,
-        ...Array.from(new Set(orders.map((order) => order.channel))),
-      ];
-    },
-    [orders],
-  );
+  // Channel buttons must not disappear while a complete filtered dataset loads.
+  const channels = orderChannelFilterOptions;
 
   const filteredOrders = useMemo(() => {
     const text = query.trim().toLowerCase();
 
     return orders.filter((order) => {
+      if (homeDestination && (homeDestination.metric === "unprinted" || homeDestination.metric === "unsent") && !homeDestination.ids.includes(order.id)) return false;
       const delivered = isDelivered(getEffectiveDeliveryStatus(order));
       const matchesSearch =
         !text ||
@@ -933,7 +993,7 @@ function App() {
         matchesOdooDelivery
       );
     });
-  }, [delivery, odooDelivery, orders, printed, query, selectedChannels]);
+  }, [delivery, homeDestination, odooDelivery, orders, printed, query, selectedChannels]);
 
   const sortedOrders = useMemo(
     () => sortOrders(filteredOrders, orderSort.key, orderSort.direction),
@@ -941,10 +1001,12 @@ function App() {
   );
   const pageCount = Math.max(1, Math.ceil(sortedOrders.length / pageSize));
   const currentPage = Math.min(page, pageCount);
-  const visibleOrders = sortedOrders.slice(
-    (currentPage - 1) * pageSize,
-    currentPage * pageSize,
-  );
+  const visibleOrders = needsCompleteOrderDataset
+    ? sortedOrders
+    : sortedOrders.slice(
+        (currentPage - 1) * pageSize,
+        currentPage * pageSize,
+      );
   const selectedPrintOrders = sortedOrders
     .filter((order) => selectedPrintOrderIds.includes(order.id))
     .map((order) => printContextById[order.id] ?? orderDetailsById[order.id] ?? order);
@@ -960,9 +1022,6 @@ function App() {
   const canMoveBack = serverPage > 1;
   const canMoveForward = serverPage * pageSize < serverTotal;
 
-  const deliveredCount = filteredOrders.filter((order) =>
-    isDelivered(getEffectiveDeliveryStatus(order)),
-  ).length;
   const printedCount = filteredOrders.filter((order) => order.deliveryPrinted).length;
   const unprintedConfirmed = filteredOrders.filter(
     (order) =>
@@ -970,18 +1029,32 @@ function App() {
       !isDelivered(getEffectiveDeliveryStatus(order)) &&
       order.status !== "Bloqueado",
   ).length;
+  const purchaseAlertsBySaleId = useMemo(() => {
+    const result = new Map<string, SalesPurchaseAlert[]>();
+    salesPurchaseAlerts.forEach((alert) => alert.saleOrderIds.forEach((saleId) => {
+      result.set(saleId, [...(result.get(saleId) ?? []), alert]);
+    }));
+    return result;
+  }, [salesPurchaseAlerts]);
+  const pendingSalesPurchaseAlerts = useMemo(
+    () => salesPurchaseAlerts.filter((alert) => ["draft", "sent"].includes(alert.state)),
+    [salesPurchaseAlerts],
+  );
 
   const updateFilter = (setter: (value: string) => void, value: string) => {
     setter(value);
+    setServerPage(1);
     setPage(1);
     setSelectedPrintOrderIds([]);
   };
   const clearFilters = () => {
+    setHomeDestination(null);
     setQuery("");
     setSelectedChannels([]);
     setDelivery("Todos");
     setPrinted("Todos");
     setOdooDelivery("Todos");
+    setServerPage(1);
     setPage(1);
     setSelectedPrintOrderIds([]);
   };
@@ -991,6 +1064,7 @@ function App() {
         ? current.filter((value) => value !== option)
         : [...current, option],
     );
+    setServerPage(1);
     setPage(1);
     setSelectedPrintOrderIds([]);
   };
@@ -1222,9 +1296,9 @@ function App() {
     activeView === "receptions" ||
     activeView.startsWith("productsInventory");
   const isPurchasesView =
-    activeView === "purchases" || activeView === "pendingPurchases";
+    activeView === "purchases" || activeView === "pendingPurchases" || activeView === "supplierInvoices" || activeView === "purchaseAnalytics";
   const showOrderRange =
-    isDashboardView || isOrdersView || activeView === "customerInvoices";
+    activeView === "dashboardV2" || isOrdersView || activeView === "customerInvoices";
   const refreshOrders = async () => {
     if (!showOrderRange || ordersSyncLoading) return;
     setOrdersSyncLoading(true);
@@ -1452,7 +1526,7 @@ function App() {
     <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">OD</div>
+          <div className="brand-mark"><img src="/te-panel-rayo-192.png" alt="Todoeléctrico" style={{width:"100%",height:"100%",objectFit:"contain"}} /></div>
           <div className="brand-copy">
             <strong>Odoo v18</strong>
             <span>Dashboard interno</span>
@@ -1613,10 +1687,16 @@ function App() {
         <header className="topbar">
           <div>
             <p className="eyebrow">
-              {activeView === "receptions"
-                ? "Inventario · Odoo real"
+              {activeView === "incidents"
+                ? "Atención al cliente · Operaciones"
+                : activeView === "receptions"
+                ? (import.meta.env.BASE_URL.startsWith("/incidents-lab/") ? "Inventario · Odoo DEMO" : "Inventario · Odoo real")
                 : activeView === "pendingPurchases"
                   ? "Compras · Odoo real"
+                  : activeView === "supplierInvoices"
+                    ? "Compras · Odoo real · borradores bajo confirmación"
+                  : activeView === "purchaseAnalytics"
+                    ? "Compras · Odoo real · solo lectura"
                   : `Pedidos de venta · ${
                       isV2View
                         ? "Laboratorio V2"
@@ -1636,10 +1716,10 @@ function App() {
                   ? "Pedidos V2"
                 : activeView === "expeditions"
                   ? "Expediciones"
-                : activeView === "warehouseStatistics"
-                  ? "Estadísticas"
                 : activeView === "amazonMessages"
                     ? "Amazon Messages"
+                  : activeView === "incidents"
+                    ? "Incidencias"
                   : activeView === "settings"
                     ? "Configuracion"
                     : navItems.find((item) => item.view === activeView)?.label}
@@ -1658,11 +1738,21 @@ function App() {
                 {ordersSyncLoading ? "Sincronizando" : "Actualizar"}
               </button>
             )}
-            <div className={`connection-pill ${activeView === "receptions" || activeView === "pendingPurchases" ? "live" : dataMode}`}>
+            <div className={`connection-pill ${activeView === "receptions" || activeView === "pendingPurchases" || activeView === "supplierInvoices" || activeView === "purchaseAnalytics" ? "live" : dataMode}`}>
               <span />
-              {activeView === "receptions" || activeView === "pendingPurchases"
-                ? "Odoo real · solo lectura"
-                : connectionMessage}
+              {activeView === "incidents"
+                ? (import.meta.env.BASE_URL.startsWith("/incidents-lab/") ? "Incidencias · Odoo TEST" : "Incidencias · Operaciones")
+                : activeView === "receptions" && import.meta.env.BASE_URL.startsWith("/incidents-lab/")
+                ? "LAB · Recepciones DEMO"
+                : activeView === "receptions" || activeView === "pendingPurchases"
+                ? authUser.permissions.includes("odooWrite")
+                  ? "Odoo real · acciones habilitadas"
+                  : "Odoo real · solo lectura"
+                : activeView === "supplierInvoices"
+                  ? "Odoo real · borrador solo con confirmación"
+                : activeView === "purchaseAnalytics"
+                  ? "Odoo real · solo lectura"
+                  : connectionMessage}
             </div>
             <div className="session-pill">
               <User size={16} />
@@ -1682,7 +1772,7 @@ function App() {
         {showOrderRange && (
           <>
             <section className="range-bar">
-              <div className="segmented-control" aria-label="Rango de fechas">
+              <div className="segmented-control range-chips" aria-label="Rango de fechas">
                 {rangePresets.map((preset) => (
                   <button
                     className={rangePreset === preset.value ? "active" : ""}
@@ -1742,7 +1832,9 @@ function App() {
           </>
         )}
 
-        {isDashboardView ? (
+        {activeView === "dashboard" ? (
+          <><HomePage onOpen={openOperationalHomeMetric} /><IncidentsHome /></>
+        ) : activeView === "dashboardV2" ? (
           <>
             {isV2View && (
               <V2PerformancePanel
@@ -1831,6 +1923,10 @@ function App() {
             range={dateRange}
             sort={invoiceSort}
           />
+        ) : activeView === "supplierInvoices" ? (
+          <SupplierInvoicesView />
+        ) : activeView === "purchaseAnalytics" ? (
+          <SupplierInvoicesView analyticsOnly />
         ) : activeView === "settings" ? (
           <SettingsView
             currentUser={authUser}
@@ -1847,6 +1943,20 @@ function App() {
             onSaveUsers={saveDashboardUsers}
             users={dashboardUsers}
           />
+        ) : activeView === "incidents" ? (
+          <IncidentsView currentUser={authUser?.name || authUser?.username || "Usuario"} onOpenOrder={async (reference) => {
+            try {
+              const value = await odooClient.getOrderDetail(reference);
+              if (value.mode !== "live" || !value.order) throw new Error("No se pudo abrir el pedido real");
+              const order = value.order;
+              setRangePreset("custom"); setCustomFrom(order.date.slice(0,10)); setCustomTo(todayIso()); setHomeDestination(null); setSelectedChannels([]); setDelivery("Todos"); setPrinted("Todos"); setOdooDelivery("Todos");
+              setQuery(reference); setServerPage(1); setPage(1);
+              setOrders((items) => [order, ...items.filter(item => item.id !== order.id)]);
+              setOrderDetailsById((items) => ({...items,[order.id]:order}));
+              navigateToView("orders");
+              setIncidentOrderToOpen(reference);
+            } catch (error) { throw new Error(error instanceof Error ? error.message : "No se pudo abrir el pedido"); }
+          }} />
         ) : activeView === "amazonMessages" ? (
           <AmazonMessagesView
             currentUser={authUser}
@@ -1856,11 +1966,10 @@ function App() {
           <ExpeditionsView
             onRefreshOrders={() => setOrderRefreshKey((value) => value + 1)}
           />
-        ) : activeView === "warehouseStatistics" ? (
-          <WarehouseStatisticsView />
         ) : activeView === "products" ? (
           <ProductsCatalogView
             key="catalog"
+            initialIds={homeDestination?.metric === "noStock" ? homeDestination.ids : undefined}
             onSendToInventory={() => navigateToView("productsInventoryNew")}
           />
         ) : activeView === "productsScanner" ? (
@@ -1945,11 +2054,12 @@ function App() {
             }
           />
         ) : activeView === "pendingPurchases" ? (
-          <PendingPurchasesView />
+          <PendingPurchasesView initialIds={homeDestination?.metric === "underOrder" || homeDestination?.metric === "pendingPurchases" ? homeDestination.ids : undefined} />
         ) : activeView === "receptions" ? (
-          <InventoryReceptionsView />
+          <InventoryReceptionsView initialIds={homeDestination?.metric === "receptions" ? homeDestination.ids : undefined} />
         ) : isOrdersView ? (
           <>
+            {homeDestination && (homeDestination.metric === "unprinted" || homeDestination.metric === "unsent") && <div className="home-destination-filter">Filtro de Inicio · {homeDestination.metric === "unprinted" ? "FBM + Website · sin imprimir" : "FBM + Website · entrega Odoo pendiente"} · {homeDestination.ids.length} pedidos <button onClick={() => setHomeDestination(null)} type="button">Quitar filtro</button></div>}
             {isV2View && (
               <V2PerformancePanel
                 performance={ordersV2Performance}
@@ -1965,22 +2075,21 @@ function App() {
                     : filteredOrders.length.toString()
                 }
                 detail={`${orders.length} pedidos ${dataMode === "live" ? "Odoo" : "demo"}`}
+                tone="blue"
               />
               <Kpi
-                title="Entregados"
-                value={deliveredCount.toString()}
-                detail="visibles entregados"
-              />
-              <Kpi
-                  title="Print alb."
+                title="Print alb."
                 value={printedCount.toString()}
                 detail="visibles impresos"
+                tone="violet"
               />
               <Kpi
                 title="Sin imprimir"
                 value={unprintedConfirmed.toString()}
                 detail="visibles pendientes"
+                tone="amber"
               />
+              <Kpi title="Compras por realizar" value={salesPurchaseAlertsLoading ? "..." : pendingSalesPurchaseAlerts.length.toString()} detail="presupuestos vinculados a ventas" onClick={() => setSelectedPurchaseAlertId("list")} tone="rose" />
             </section>
 
             <section className="panel orders-panel">
@@ -2133,14 +2242,14 @@ function App() {
                   incidents={deliveryIncidents}
                   loading={deliveryIncidentsLoading}
                   onRefresh={refreshDeliveryIncidents}
+                  onConfirmed={(incident) => setDeliveryIncidents(rows => rows.map(row => row.id === incident.id ? incident : row))}
                 />
               {false && odooDelivery === "Incidencia entrega Odoo" && (
                 <DeliveryIncidentsPanel
                   incidents={deliveryIncidents}
                   loading={deliveryIncidentsLoading}
                   onRefresh={refreshDeliveryIncidents}
-                  onResolve={resolveDeliveryIncident}
-                  onRetry={retryDeliveryIncidents}
+                  onConfirmed={(incident) => setDeliveryIncidents(rows => rows.map(row => row.id === incident.id ? incident : row))}
                 />
               )}
 
@@ -2216,13 +2325,14 @@ function App() {
                         onSort={toggleOrderSort}
                         sortKey="total"
                       />
+                      <th>Compra</th>
                       <th>Detalle</th>
                     </tr>
                   </thead>
                   <tbody>
                     {dataMode === "loading" && (
                       <tr>
-                        <td className="empty-state" colSpan={12}>
+                        <td className="empty-state" colSpan={13}>
                           Cargando pedidos reales desde Odoo...
                         </td>
                       </tr>
@@ -2232,6 +2342,7 @@ function App() {
                       const deliveryStatus = getEffectiveDeliveryStatus(order);
                       const delivered = isDelivered(deliveryStatus);
                       const isSelected = selectedOrderId === order.id;
+                      const linkedPurchases = purchaseAlertsBySaleId.get(order.odooRef) ?? [];
 
                       return (
                         <Fragment key={order.id}>
@@ -2290,6 +2401,7 @@ function App() {
                             <td>
                               <strong>{money(order.total)}</strong>
                             </td>
+                            <td>{linkedPurchases.length > 0 && (() => { const hasPendingPurchase = linkedPurchases.some((item) => ["draft", "sent"].includes(item.state)); const purchaseRefs = linkedPurchases.map((item) => item.purchaseRef).join(", "); return hasPendingPurchase ? <button aria-label={`Abrir compra pendiente de ${order.id}`} className="icon-button purchase-alert-icon" onClick={() => setSelectedPurchaseAlertId(linkedPurchases.find((item) => ["draft", "sent"].includes(item.state))?.purchaseId ?? "list")} title={`Compra pendiente: ${purchaseRefs}`} type="button"><ShoppingCart size={16} />{linkedPurchases.length > 1 && <b>{linkedPurchases.length}</b>}</button> : <span aria-label={`Compra confirmada con proveedor para ${order.id}`} className="purchase-alert-icon is-confirmed" title={`Compra confirmada: ${purchaseRefs}`}><ShoppingCart size={16} />{linkedPurchases.length > 1 && <b>{linkedPurchases.length}</b>}</span>; })()}</td>
                             <td>
                               <button
                                 aria-expanded={isSelected}
@@ -2307,7 +2419,7 @@ function App() {
                           </tr>
                           {isSelected && (
                             <tr className="order-detail-row">
-                              <td colSpan={11}>
+                              <td colSpan={13}>
                                 <OrderDetailPanel
                                   loading={detailedOrder.items.length === 0}
                                   order={detailedOrder}
@@ -2320,7 +2432,7 @@ function App() {
                     })}
                     {dataMode !== "loading" && visibleOrders.length === 0 && (
                       <tr>
-                        <td className="empty-state" colSpan={11}>
+                        <td className="empty-state" colSpan={13}>
                           No hay pedidos visibles con los filtros actuales.
                           <button onClick={clearFilters} type="button">
                             Limpiar filtros
@@ -2348,11 +2460,12 @@ function App() {
 
               <footer className="pagination">
                 <span>
-                  Mostrando {serverFrom}-{serverTo} de {serverTotal} pedidos
-                  Odoo
+                  {needsCompleteOrderDataset
+                    ? `Filtro aplicado: ${sortedOrders.length} pedidos de todos los bloques`
+                    : `Mostrando ${serverFrom}-${serverTo} de ${serverTotal} pedidos Odoo`}
                 </span>
                 <div>
-                  <label className="page-size-select">
+                  {!needsCompleteOrderDataset && <label className="page-size-select">
                     Pedidos
                     <select
                       onChange={(event) => {
@@ -2369,8 +2482,8 @@ function App() {
                         </option>
                       ))}
                     </select>
-                  </label>
-                  <button
+                  </label>}
+                  {!needsCompleteOrderDataset && <button
                     disabled={!canMoveBack}
                     onClick={() => {
                       setServerPage((value) => Math.max(1, value - 1));
@@ -2379,9 +2492,9 @@ function App() {
                     type="button"
                   >
                     <ChevronLeft size={17} />
-                  </button>
-                  <strong>Bloque {serverPage}</strong>
-                  <button
+                  </button>}
+                  {!needsCompleteOrderDataset && <strong>Bloque {serverPage}</strong>}
+                  {!needsCompleteOrderDataset && <button
                     disabled={!canMoveForward}
                     onClick={() => {
                       setServerPage((value) => value + 1);
@@ -2390,10 +2503,11 @@ function App() {
                     type="button"
                   >
                     <ChevronRight size={17} />
-                  </button>
+                  </button>}
                 </div>
               </footer>
             </section>
+            {selectedPurchaseAlertId && <SalesPurchaseDrawer alerts={pendingSalesPurchaseAlerts} onClose={() => setSelectedPurchaseAlertId(null)} onOpenPurchase={(purchaseId) => setSelectedPurchaseAlertId(purchaseId)} purchaseId={selectedPurchaseAlertId === "list" ? null : selectedPurchaseAlertId} />}
           </>
         ) : (
           <RestrictedModuleView
@@ -3149,7 +3263,9 @@ function DeliveryIncidentsPanel({
   incidents,
   loading,
   onRefresh,
+  onConfirmed,
 }: {
+  onConfirmed: (incident: DeliveryIncident) => void;
   incidents: DeliveryIncident[];
   loading: boolean;
   onRefresh: () => void | Promise<void>;
@@ -3157,6 +3273,8 @@ function DeliveryIncidentsPanel({
   const activeIncidents = incidents.filter((incident) => !incident.resolvedAt);
   const visibleIncidents = activeIncidents.slice(0, 100);
   const [expanded, setExpanded] = useState(false);
+  const [confirming, setConfirming] = useState<DeliveryIncident | null>(null);
+  const [savedMessage, setSavedMessage] = useState('');
 
   // El panel debe llamar la atención cuando aparezca una incidencia, pero no
   // reservar espacio en Pedidos cuando no haya nada que revisar.
@@ -3171,6 +3289,13 @@ function DeliveryIncidentsPanel({
       : `${activeIncidents.length} pendiente(s) de revisar`;
 
   return (
+    <>
+    {savedMessage && <p role="status" className="odoo-action-message">{savedMessage}</p>}
+    {confirming && <ConfirmIncidentShipment key={confirming.id} incident={confirming}
+      onClose={() => setConfirming(null)} onSaved={incident => {
+        onConfirmed(incident); setConfirming(null);
+        setSavedMessage(`${incident.orderName || '#' + incident.orderId}: enviado confirmado manualmente. Incidencia resuelta.`);
+      }}/>}
     <section className={`incident-panel${activeIncidents.length === 0 ? " incident-panel-empty" : ""}`}>
       <div className="incident-panel-header">
         <div>
@@ -3232,6 +3357,9 @@ function DeliveryIncidentsPanel({
                 <td>{incident.reason}</td>
                 <td>
                   <div className="incident-row-actions">
+                    <button type="button" disabled={loading || !incident.tracking?.trim()}
+                      title={incident.tracking?.trim() ? 'Confirmar envío sin modificar Odoo' : 'Se necesita un seguimiento para confirmar el envío'}
+                      onClick={() => setConfirming(incident)}>Resolver · enviado confirmado</button>
                     <a
                       href={`/api/odoo/orders/open-order?orderId=${incident.orderId}`}
                       rel="noreferrer"
@@ -3272,6 +3400,7 @@ function DeliveryIncidentsPanel({
         </>
       )}
     </section>
+    </>
   );
 }
 
@@ -4246,7 +4375,10 @@ function DashboardView({
       !isDelivered(status) &&
       (status.includes("sin etiqueta") ||
         status.includes("cread") ||
-        status.includes("pago aceptado"))
+        status.includes("pago aceptado") ||
+        // An Odoo sale can be waiting for stock before a carrier label exists.
+        // It is still part of the Dashboard's created-but-not-sent workflow.
+        status.includes("pendiente stock"))
     );
   }).length;
   const topProducts =
@@ -5131,18 +5263,28 @@ function Kpi({
   title,
   value,
   detail,
+  onClick,
+  tone,
 }: {
   title: string;
   value: string;
   detail: string;
+  onClick?: () => void;
+  tone?: "blue" | "violet" | "amber" | "rose";
 }) {
+  const content = <><span>{title}</span><strong>{value}</strong><small>{detail}</small></>;
+  const className = `kpi${tone ? ` kpi-${tone}` : ""}`;
+  if (onClick) return <button className={`${className} kpi-button`} onClick={onClick} type="button">{content}</button>;
   return (
-    <article className="kpi">
-      <span>{title}</span>
-      <strong>{value}</strong>
-      <small>{detail}</small>
+    <article className={className}>
+      {content}
     </article>
   );
+}
+
+function SalesPurchaseDrawer({ alerts, onClose, onOpenPurchase, purchaseId }: { alerts: SalesPurchaseAlert[]; onClose: () => void; onOpenPurchase: (purchaseId: string) => void; purchaseId: string | null }) {
+  useEffect(() => { const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); }; window.addEventListener("keydown", onKeyDown); return () => window.removeEventListener("keydown", onKeyDown); }, [onClose]);
+  return <div className="sales-purchase-drawer-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><aside aria-label="Compras pendientes de realizar" className="sales-purchase-drawer">{purchaseId ? <PendingPurchasesView onClose={onClose} orderId={purchaseId} /> : <><header className="sales-purchase-drawer-header"><div><small>Ventas · compras vinculadas</small><h2>Compras por realizar</h2><p>Carrito rojo: compra pendiente. Carrito verde: compra confirmada con proveedor.</p></div><button aria-label="Cerrar" onClick={onClose} type="button">×</button></header><div className="sales-purchase-alert-list">{alerts.length === 0 ? <p>No hay compras pendientes vinculadas.</p> : alerts.map((alert) => <button key={alert.purchaseId} onClick={() => onOpenPurchase(alert.purchaseId)} type="button"><span><strong>{alert.purchaseRef}</strong><small>{alert.supplier} · {alert.state === "sent" ? "Enviado" : "Borrador"}</small></span><span>{alert.saleOrderRefs.join(" · ")}</span></button>)}</div></>}</aside></div>;
 }
 
 function Status({ value }: { value: string }) {
@@ -5519,10 +5661,29 @@ function qrImageUrl(value: string) {
 }
 
 function matchesChannelOption(order: Order, option: string) {
-  if (option === "Amazon FBA") return order.fulfillmentBy === "FBA";
-  if (option === "Amazon FBM") return order.fulfillmentBy === "FBM";
+  const channel = normalizeChannelLabel(order.channel);
+  const fulfillment = (order.fulfillmentBy ?? "").trim().toUpperCase();
+  if (option === "Amazon FBA") return fulfillment === "FBA";
+  if (option === "Amazon FBM") {
+    return fulfillment === "FBM" || (channel.includes("amazon") && channel.includes("fbm"));
+  }
   if (option === "Amazon DBA") return matchesControlChannel(order, "Amazon DBA");
-  return order.channel === option;
+  if (option === "Website") return channel === "website" || channel === "web";
+  if (option === "Sales") return channel === "sales" || channel === "sale" || channel === "ventas" || channel === "venta";
+  return channel === normalizeChannelLabel(option);
+}
+
+function normalizeChannelLabel(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, " ");
+}
+
+function isAmazonTodoelectricoChannel(value: string) {
+  return normalizeChannelLabel(value) === "amazon todoelectrico";
 }
 
 function permissionsForRole(role: DashboardUserRole): DashboardPermission[] {
@@ -5614,22 +5775,8 @@ function getDateRange(
 
   const today = new Date();
   const from = new Date(today);
-  if (preset === "yesterday") {
-    from.setDate(today.getDate() - 1);
-    return normalizeRange(toIsoDate(from), toIsoDate(from));
-  }
+  if (preset === "4d") from.setDate(today.getDate() - 3);
   if (preset === "7d") from.setDate(today.getDate() - 6);
-  if (preset === "30d") from.setDate(today.getDate() - 29);
-  if (preset === "1m") from.setMonth(today.getMonth() - 1);
-  if (preset === "thisMonth") {
-    from.setDate(1);
-  }
-  if (preset === "previousMonth") {
-    from.setMonth(today.getMonth() - 1, 1);
-    const to = new Date(today.getFullYear(), today.getMonth(), 0);
-    return normalizeRange(toIsoDate(from), toIsoDate(to));
-  }
-  if (preset === "1y") from.setFullYear(today.getFullYear() - 1);
 
   return normalizeRange(toIsoDate(from), toIsoDate(today));
 }

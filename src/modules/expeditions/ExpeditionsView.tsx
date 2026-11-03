@@ -1,7 +1,12 @@
+import { ReplenishmentAlerts } from "./ReplenishmentAlerts";
+import type {reshipmentPreparation} from '../../../backend/incidents/reshipment';
+import {downloadReshipmentDocumentByReference} from '../incidents/ReshipmentDocument';
+import {downloadDemoRexLabel} from './demoRexLabel';
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   CheckCircle2,
   CircleAlert,
+  BarChart3,
   PackageCheck,
   Printer,
   ScanLine,
@@ -13,6 +18,8 @@ import "./settingsDemo.css";
 import { odooClient } from "../../services/odooClient";
 import type { Order } from "../../services/odooTypes";
 import { ShippingRulesManager } from "./ShippingRulesManager";
+import { WarehouseStatisticsView } from "../warehouseStats/WarehouseStatisticsView";
+import { getGlsService } from "../../../backend/gls/services";
 import { downloadWorkerQr as downloadWorkerQrFile } from "./workerQr";
 import {
   isCompleteExpeditionOrderReference,
@@ -20,13 +27,14 @@ import {
   normalizeExpeditionOrderReference,
 } from "../../../backend/expeditionOrderReference";
 
+type RexDispatch = {labelCreationEnabled?:boolean;reference:string;orderReference:string;pickingName:string;pickingId:number;state:string;destination:{name:string;address:string;postalCode:string;city:string;country:string;phone?:string;email?:string};lines:Array<{sku:string;quantity:number}>;notice:string};
 type Mode = "automatic" | "manual";
 type Parcel = { id: number; weight: string; length: string; width: string; height: string };
 type Shipment = { code: string; tracking: string; carrier: string; service: string; printedAt: string };
 type GeneiQuote = { id_agencia: string | number; nombre_agencia: string; importe: number; importe_sin_iva?: number; iva?: number; servicio_horas?: string };
 type DestinationDraft = { name: string; address: string; postalCode: string; town: string; country: string; phone: string; email: string };
 type LabelDelivery = "download" | "inline-print" | "popup";
-type LabelCarrier = "genei" | "mrw" | "correos-express" | "dhl";
+type LabelCarrier = "genei" | "mrw" | "correos-express" | "dhl" | "gls";
 type LabelPrinterTarget = { id: string; label: string; printerName?: string };
 type OperationProgress = { title: string; detail: string };
 type QzTrayApi = {
@@ -179,6 +187,10 @@ function normalizeReference(value?: string) {
 
 function normalizeScanReference(value?: string) {
   return normalizeExpeditionOrderReference(value);
+}
+
+function isIncidentReshipmentOrder(order?: Order | null) {
+  return /^REX-/i.test(String(order?.externalRef || ""));
 }
 
 function isSameOrderReference(reference: string, order: Order) {
@@ -594,6 +606,7 @@ function getCarrierFromLabelRecord(label?: GeneratedShippingLabelRecord | null):
     label?.shipmentCode,
   ].join(" ").toLowerCase();
   if (carrierText.includes("dhl")) return "dhl";
+  if (carrierText.includes("gls")) return "gls";
   if (carrierText.includes("correos-express") || carrierText.includes("correos express") || carrierText.includes("cex-")) return "correos-express";
   if (carrierText.includes("mrw") || /\b0{2,}\d{8,}\b/.test(carrierText)) return "mrw";
   return "genei";
@@ -666,6 +679,7 @@ function getGeneiCarrierStatus(shipment?: Record<string, unknown> | null) {
 function getCarrierFromText(value?: string | null): LabelCarrier | "" {
   const carrierText = String(value || "").toLowerCase();
   if (carrierText.includes("dhl")) return "dhl";
+  if (carrierText.includes("gls")) return "gls";
   if (carrierText.includes("correos-express") || carrierText.includes("correos express") || carrierText.includes("cex")) return "correos-express";
   if (carrierText.includes("mrw")) return "mrw";
   if (carrierText.includes("genei") || carrierText.includes("global express")) return "genei";
@@ -678,6 +692,7 @@ function getOrderExternalRef(order: Order) {
 
 function getDhlLabelReference(order: Order) {
   const external = (order.externalRef || "").trim();
+  if (/^REX-/i.test(external)) return external;
   if (/^\d{3}-\d{7}-\d{7}$/.test(external)) return external;
   if (isPrestashopOrder(order) && external) return external;
   return order.id || order.odooRef;
@@ -735,6 +750,10 @@ async function fetchGeneiShipmentDetailsWithTracking(shipmentCode: string, attem
 }
 
 function getOrderLabelReferences(order: Order, labelReference?: string) {
+  const rexReference = [labelReference, order.externalRef]
+    .map(normalizeScanReference)
+    .find((reference) => /^REX-/i.test(reference));
+  if (rexReference) return [rexReference];
   return Array.from(
     new Set([labelReference, order.externalRef, order.id, order.odooRef].map(normalizeScanReference).filter(Boolean)),
   );
@@ -766,11 +785,11 @@ async function recordGeneratedShippingLabel(
       orderRefs: getOrderLabelReferences(order, labelReference),
       shipmentCode,
       createdAt,
-      source: "expeditions-print",
-      externalOrderRef: getOrderExternalRef(order),
+      externalOrderRef: isIncidentReshipmentOrder(order) ? undefined : getOrderExternalRef(order),
       odooOrderRef: order.odooRef || order.id,
       client: order.client,
       ...details,
+      source: isIncidentReshipmentOrder(order) ? "incident-reshipment-label-created" : (details?.source || "expeditions-print"),
     }),
   });
   const payload = await response.json().catch(() => ({})) as {
@@ -804,6 +823,22 @@ async function removeGeneratedShippingLabel(shipmentCode: string, order?: Order)
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { message?: string };
     throw new Error(payload.message || "No se pudo liberar la etiqueta local");
+  }
+}
+
+async function validateRexDeliveryAfterLabel(order: Order, shipmentCode: string) {
+  if (!isIncidentReshipmentOrder(order) || !order.externalRef) return "";
+  try {
+    const response = await apiFetch(`/api/incidents/reshipments/${encodeURIComponent(order.externalRef)}/label-created`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shipmentCode }),
+    });
+    const payload = await response.json().catch(() => ({})) as { status?: string; pickingId?: number; message?: string };
+    if (!response.ok || payload.status !== "done") {
+      return `Etiqueta ${shipmentCode} creada y registrada; Odoo aún no confirma la salida REX${payload.message ? `: ${payload.message}` : ". Revisión pendiente; no marques el pedido como enviado."}`;
+    }
+    return `Etiqueta ${shipmentCode} creada; picking REX #${payload.pickingId} validado en Odoo.`;
+  } catch (error) {
+    return `Etiqueta ${shipmentCode} creada y registrada; no se pudo confirmar Odoo (${error instanceof Error ? error.message : "error de conexión"}). No marques el pedido como enviado.`;
   }
 }
 
@@ -874,6 +909,8 @@ function shippingServiceLabel(serviceId?: string) {
     "cex-internacional-standard": "Correos Express Internacional Estandar",
     "cex-internacional-express": "Correos Express Internacional Express",
     "dhl-connect-b2c": "DHL Connect B2C",
+    "96": "GLS Nacional · BusinessParcel · 96/18",
+    "74": "GLS Internacional · EuroBusinessParcel · 74/3",
   };
   return labels[serviceId || ""] || serviceId || "Servicio sin seleccionar";
 }
@@ -899,7 +936,7 @@ function normalizeCountriesInput(value: string) {
 }
 
 function apiPath(path: string) {
-  const match = window.location.pathname.match(/^\/(expeditions-(?:lab|redesign-lab))/);
+  const match = window.location.pathname.match(/^\/(incidents-lab|expeditions-(?:lab|redesign-lab))/);
   return match ? `/${match[1]}${path}` : path;
 }
 
@@ -908,7 +945,7 @@ function apiFetch(path: string, init?: RequestInit) {
 }
 
 function isLabExpeditionsEnvironment() {
-  return /^\/expeditions-(?:lab|redesign-lab)/.test(window.location.pathname);
+  return /^\/(?:incidents-lab|expeditions-(?:lab|redesign-lab))/.test(window.location.pathname);
 }
 
 type ExpeditionsViewProps = {
@@ -916,9 +953,23 @@ type ExpeditionsViewProps = {
 };
 
 export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
-  const [section, setSection] = useState<"operativa" | "history" | "rules" | "station" | "integrations" | "workers">("operativa");
+  const [section, setSection] = useState<"operativa" | "history" | "rules" | "stats" | "workers">(() => {
+    const route = window.location.hash.replace(/^#\/?/, "").split("?")[0];
+    return route === "estadisticas" || route === "expediciones/estadisticas" ? "stats" : "operativa";
+  });
+  useEffect(() => {
+    const syncSectionFromRoute = () => {
+      const route = window.location.hash.replace(/^#\/?/, "").split("?")[0];
+      if (route === "estadisticas" || route === "expediciones/estadisticas") setSection("stats");
+      else if (route === "expediciones") setSection("operativa");
+    };
+    window.addEventListener("hashchange", syncSectionFromRoute);
+    return () => window.removeEventListener("hashchange", syncSectionFromRoute);
+  }, []);
   const [mode, setMode] = useState<Mode>("automatic");
   const [scan, setScan] = useState("");
+  const [rexPreparation,setRexPreparation] = useState<ReturnType<typeof reshipmentPreparation>>(null);
+  const [rexDispatch,setRexDispatch] = useState<RexDispatch|null>(null);
   const [orderFound, setOrderFound] = useState(false);
   const [order, setOrder] = useState<Order | null>(null);
   const [quotes, setQuotes] = useState<GeneiQuote[]>([]);
@@ -932,6 +983,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
   const [existingShipmentCode, setExistingShipmentCode] = useState<string | null>(null);
   const [existingShipmentCarrier, setExistingShipmentCarrier] = useState<LabelCarrier>("genei");
   const [existingShipmentCreatedAt, setExistingShipmentCreatedAt] = useState("");
+  const [glsShipmentState, setGlsShipmentState] = useState<"active" | "cancelled" | "unknown" | "unregistered">("active");
   const [reissueReason, setReissueReason] = useState("");
   const [reissueContext, setReissueContext] = useState<{ shipmentCode: string; reason: string } | null>(null);
   const [mrwReissueAvailable, setMrwReissueAvailable] = useState(false);
@@ -970,6 +1022,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
   const scannerResetRef = useRef<number | null>(null);
   const scanInputRef = useRef<HTMLInputElement | null>(null);
   const operationLockRef = useRef(false);
+  const demoRexLock=useRef(false);
 
   useEffect(() => {
     const query = window.location.hash.split("?")[1] || "";
@@ -1059,7 +1112,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
 
   const recordWarehouseActivity = async (targetOrder: Order, carrier: string, tracking: string, result: "label-created" | "simulated-label" = "label-created") => {
     if (!activeWarehouseWorker) return;
-    const response = await apiFetch("/api/warehouse-workers/activity", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workerId: activeWarehouseWorker.id, workerCode: activeWarehouseWorker.code, workerName: activeWarehouseWorker.name, orderRef: targetOrder.odooRef || targetOrder.id, carrier, tracking, result }) });
+    const response = await apiFetch("/api/warehouse-workers/activity", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workerId: activeWarehouseWorker.id, workerCode: activeWarehouseWorker.code, workerName: activeWarehouseWorker.name, orderRef: isIncidentReshipmentOrder(targetOrder) ? targetOrder.externalRef : targetOrder.odooRef || targetOrder.id, carrier, tracking, result }) });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({})) as { message?: string };
       throw new Error(payload.message || "No se pudo registrar el operario de la etiqueta");
@@ -1069,10 +1122,27 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
     if (!activeWarehouseWorker) return;
     await apiFetch("/api/warehouse-workers/activity", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workerId: activeWarehouseWorker.id, workerCode: activeWarehouseWorker.code, workerName: activeWarehouseWorker.name, orderRef: targetOrder.odooRef || targetOrder.id, rawReference, resolvedOrderRef: targetOrder.id, result }) });
   };
+  const completeDemoRex = async (reference:string) => {
+    if(demoRexLock.current)return;
+    if(!simulateLabel||!isLabExpeditionsEnvironment())return;
+    if(rexDispatch?.state!=='done'&&!activeWarehouseWorker){setNotice('Escanea el QR del operario antes de generar la etiqueta de prueba.');return;}
+    if(workerExpiryRef.current){window.clearTimeout(workerExpiryRef.current);workerExpiryRef.current=null;}
+    demoRexLock.current=true;setLoading(true);setOperationProgress({title:'Etiqueta simulada DEMO',detail:'Sin comunicación con transportista; validación de esta salida en DEMO'});
+    let confirmed=false;
+    try{
+      const response=await apiFetch(`/api/incidents/reshipments/${encodeURIComponent(reference)}/demo-label-created`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({operatorCode:activeWarehouseWorker?.code||''}),signal:AbortSignal.timeout(90000)});
+      const payload=await response.json();if(!response.ok||payload.status!=='done'||!payload.label?.simulated)throw Error(payload.message||'La salida DEMO no quedó confirmada');
+      confirmed=true;setRexDispatch(current=>current&&current.reference===reference?{...current,state:'done',labelCreationEnabled:false,notice:'Salida validada únicamente en DEMO con etiqueta simulada. Sin envío ni entrega reales.'}:current);clearWarehouseWorker();
+      await downloadDemoRexLabel(payload.label);
+      setNotice(`PRUEBA DEMO completada: ${payload.label.shipmentCode}. Salida validada; PDF de prueba descargado. Sin contratar transporte real.`);
+    }catch(error){setNotice(`${confirmed?'Salida DEMO confirmada; descarga pendiente. Puedes reimprimir la misma etiqueta.':'Resultado pendiente: conserva esta referencia y consulta el estado antes de reintentar; no se generará otra etiqueta.'} ${error instanceof Error?error.message:''}`);}
+    finally{demoRexLock.current=false;setLoading(false);setOperationProgress(null);}
+  };
   const simulateLabShipment = async (targetOrder: Order, carrier: string) => {
     if (!simulateLabel || !isLabExpeditionsEnvironment() || !activeWarehouseWorker) return false;
+    if(isIncidentReshipmentOrder(targetOrder)&&targetOrder.externalRef){await completeDemoRex(targetOrder.externalRef);return true;}
     try {
-      const orderRef = targetOrder.odooRef || targetOrder.id;
+      const orderRef = isIncidentReshipmentOrder(targetOrder) ? targetOrder.externalRef! : targetOrder.odooRef || targetOrder.id;
       const existingResponse = await apiFetch(`/api/warehouse-workers/activity/order/${encodeURIComponent(orderRef)}`);
       const existingPayload = await existingResponse.json().catch(() => ({})) as { activity?: { workerName?: string; workerCode?: string; tracking?: string } | null };
       if (existingResponse.ok && existingPayload.activity) {
@@ -1257,6 +1327,26 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
     }
     operationLockRef.current = true;
     try {
+    // Identifying a worker must not discard an already selected REX.
+    if(/^OP\d+$/i.test(reference)&&rexDispatch&&rexDispatch.state!=='done'){
+      await identifyWarehouseWorker(reference);
+      if(workerExpiryRef.current){window.clearTimeout(workerExpiryRef.current);workerExpiryRef.current=null;}
+      return;
+    }
+    setRexDispatch(null);setRexPreparation(null);
+    if(/^REX-/i.test(reference)) {
+      setLoading(true);setOrderFound(false);setOrder(null);
+      try {
+        const response=await apiFetch(`/api/incidents/reshipments/resolve?reference=${encodeURIComponent(reference)}`);
+        const payload=await response.json();
+        if(!response.ok)throw Error(payload.message||'No se pudo resolver el picking REX');
+        if(payload.preparation){setRexPreparation(payload.preparation);setNotice(payload.preparation.notice);}
+        else if(payload.dispatch){setRexDispatch(payload.dispatch);setNotice(payload.dispatch.notice);if(workerExpiryRef.current){window.clearTimeout(workerExpiryRef.current);workerExpiryRef.current=null;}}
+        else throw Error('Respuesta REX incompleta; no se habilita la expedición');
+      } catch(error) {setNotice(error instanceof Error?error.message:'Error de consulta REX');}
+      finally {setLoading(false);setScan('');focusScanInput();}
+      return;
+    }
     const isWorkerQr = /^OP\d+$/i.test(reference);
     if (isWorkerQr && !orderFound) {
       await identifyWarehouseWorker(reference);
@@ -1300,7 +1390,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
     let foundForManualFallback: Order | null = null;
     let draftForManualFallback: DestinationDraft | null = null;
     setOperationProgress({ title: "Buscando pedido", detail: reference });
-    setLoading(true); setOrderFound(false); setOrder(null); setQuotes([]); setShipment(null); setTestShipmentCode(null); setExistingShipmentCode(null); setExistingShipmentCarrier("genei"); setExistingShipmentCreatedAt(""); setMrwReissueAvailable(false); setEligibleManualRuleIds(null); setAmazonShipment(null); setPrestashopTracking(null); setPreparedReference(""); setLabelReference(""); setDestinationDraft(emptyDestination); setDestinationOverride(null); setTransportRule(null); setManualRuleId("");
+    setLoading(true); setOrderFound(false); setOrder(null); setQuotes([]); setShipment(null); setTestShipmentCode(null); setExistingShipmentCode(null); setExistingShipmentCarrier("genei"); setExistingShipmentCreatedAt(""); setGlsShipmentState("active"); setMrwReissueAvailable(false); setEligibleManualRuleIds(null); setAmazonShipment(null); setPrestashopTracking(null); setPreparedReference(""); setLabelReference(""); setDestinationDraft(emptyDestination); setDestinationOverride(null); setTransportRule(null); setManualRuleId("");
     try {
       const result = reference.toUpperCase() === testOrder.odooRef ? null : await odooClient.getOrderDetail(reference);
       const found = result?.order ?? (reference.toUpperCase() === testOrder.odooRef ? testOrder : null);
@@ -1346,6 +1436,9 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       if (recordedLabel?.shipmentCode) {
         const recordedCreatedAt = formatExistingLabelDate(recordedLabel.createdAt);
         setOrder(found); setQuotes([]); setSelectedQuote(0); setOrderFound(true); setPreparedReference(reference); setLabelReference(found.externalRef || found.id || found.odooRef); setScan(""); setExistingShipmentCode(recordedLabel.shipmentCode); setExistingShipmentCarrier(getCarrierFromLabelRecord(recordedLabel)); setExistingShipmentCreatedAt(recordedCreatedAt);
+        const recordedCarrier = getCarrierFromLabelRecord(recordedLabel);
+        setGlsShipmentState("active");
+        if (recordedCarrier === "gls") void refreshGlsShipmentStatus(recordedLabel.shipmentCode);
         void loadGeneratedShippingLabels({ ...defaultHistoryFilters, odooRef: found.odooRef || found.id, limit: "100" });
         showExistingLabelWarning(recordedLabel.shipmentCode, recordedCreatedAt);
         setNotice(`Etiqueta de envio ${recordedLabel.shipmentCode} ya registrada${recordedCreatedAt ? ` el ${recordedCreatedAt}` : ""}. Reimpresion bloqueada en automatico; usa Imprimir etiqueta si hace falta.`);
@@ -1361,13 +1454,13 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
         setNotice("Modo manual: el pedido no tiene transportista por regla. Revisa destino/datos y ajusta la regla de envio antes de generar etiqueta.");
         return;
       }
-      if (["mrw", "correos-express", "dhl"].includes(resolvedRule.carrier)) {
-        const directCarrierLabel = resolvedRule.carrier === "mrw" ? "MRW" : resolvedRule.carrier === "correos-express" ? "Correos Express" : "DHL";
+      if (["mrw", "correos-express", "dhl", "gls"].includes(resolvedRule.carrier)) {
+        const directCarrierLabel = resolvedRule.carrier === "mrw" ? "MRW" : resolvedRule.carrier === "correos-express" ? "Correos Express" : resolvedRule.carrier === "gls" ? "GLS" : "DHL";
         setOrder(found); setQuotes([]); setSelectedQuote(0); setOrderFound(true); setPreparedReference(reference); setLabelReference(found.externalRef || found.id || found.odooRef); setScan("");
         if (mode === "automatic") {
           setNotice(`Regla "${resolvedRule.appliedRule?.name || "por defecto"}". Generando etiqueta ${directCarrierLabel} con servicio ${resolvedRule.service || "sin servicio"} sin segundo escaneo.`);
           setOperationProgress({ title: `Generando etiqueta ${directCarrierLabel}`, detail: "Enviando datos al transportista" });
-          await (resolvedRule.carrier === "mrw" ? createMrwShipment : resolvedRule.carrier === "correos-express" ? createCorreosExpressShipment : createDhlShipment)({
+          await (resolvedRule.carrier === "mrw" ? createMrwShipment : resolvedRule.carrier === "correos-express" ? createCorreosExpressShipment : resolvedRule.carrier === "gls" ? createGlsShipment : createDhlShipment)({
             delivery: "inline-print",
             print: true,
             skipConfirm: true,
@@ -1472,6 +1565,68 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
     }
   };
 
+  const prepareRexForLabel = async () => {
+    if (!rexDispatch || loading) return;
+    if (!requireWarehouseWorker()) {
+      setNotice("Identifica primero al operario para preparar la etiqueta de reexpedición.");
+      return;
+    }
+    setLoading(true);
+    setOperationProgress({ title: "Preparando reexpedición", detail: `Picking ${rexDispatch.pickingName}` });
+    try {
+      const response = await apiFetch(`/api/genei/labels/external/${encodeURIComponent(rexDispatch.reference)}`);
+      const known = await readJsonResponse<{ label?: GeneratedShippingLabelRecord; message?: string }>(response);
+      if (!response.ok) throw new Error(known.message || "No se pudo consultar el historial de etiquetas; no se iniciará otra expedición.");
+      if (known.label?.shipmentCode) {
+        throw new Error(`La referencia ${rexDispatch.reference} ya tiene etiqueta ${known.label.shipmentCode}. Revisa el historial antes de continuar.`);
+      }
+      const result = await odooClient.getOrderDetail(rexDispatch.orderReference);
+      const original = result?.order;
+      if (!original || !matchesExpeditionOrder(rexDispatch.orderReference, original)) {
+        throw new Error("No se pudo verificar el pedido de origen del picking REX");
+      }
+      const rexItems = rexDispatch.lines.map((line) => {
+        const normalizedSku = line.sku.trim().toUpperCase();
+        const originalLine = original.items.find((item) => item.sku.trim().toUpperCase() === normalizedSku);
+        const component = original.items.flatMap((item) => item.components || []).find((item) => item.sku.trim().toUpperCase() === normalizedSku);
+        if (!Number.isFinite(line.quantity) || line.quantity <= 0) {
+          throw new Error(`La línea ${line.sku} del picking no tiene una cantidad válida`);
+        }
+        // A manufactured/kit order line may explode to stockable components in its REX picking.
+        // These components need not be standalone sale.order.lines; the audited picking is canonical.
+        return originalLine
+          ? { ...originalLine, quantity: line.quantity }
+          : { sku: line.sku, name: component?.name || line.sku, quantity: line.quantity, price: 0, stock: 0 };
+      });
+      const targetOrder: Order = { ...original, externalRef: rexDispatch.reference, items: rexItems, deliveryPrinted: true };
+      const destination: DestinationDraft = {
+        name: rexDispatch.destination.name || "",
+        address: rexDispatch.destination.address || "",
+        postalCode: rexDispatch.destination.postalCode || "",
+        town: rexDispatch.destination.city || "",
+        country: rexDispatch.destination.country || "",
+        phone: rexDispatch.destination.phone || "",
+        email: rexDispatch.destination.email || "",
+      };
+      setOrder(targetOrder);
+      setOrderFound(true);
+      setPreparedReference(rexDispatch.reference);
+      setLabelReference(rexDispatch.reference);
+      setDestinationDraft(destination);
+      setDestinationOverride(null);
+      setQuotes([]);
+      setSelectedQuote(0);
+      setMode("manual");
+      setScan("");
+      setNotice(`Picking REX ${rexDispatch.pickingName} verificado. Revisa destinatario y bultos y pulsa «Guardar y actualizar datos corregidos» para cotizar. No se ha creado ningún envío.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "No se pudo preparar la reexpedición");
+    } finally {
+      setLoading(false);
+      setOperationProgress(null);
+    }
+  };
+
   useEffect(() => {
     const handleScannerInput = (event: KeyboardEvent) => {
       if (section !== "operativa" || loading || isEditableTarget(event.target)) return;
@@ -1513,7 +1668,8 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
     setLoading(true);
     setOperationProgress({ title: "Revisando datos corregidos", detail: order.odooRef || order.id });
     try {
-      const overrideResponse = await apiFetch(`/api/expedition-destination-overrides/${encodeURIComponent(order.odooRef || order.id)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ destination: destinationDraft }) });
+      const overrideReference = isIncidentReshipmentOrder(order) ? order.externalRef! : (order.odooRef || order.id);
+      const overrideResponse = await apiFetch(`/api/expedition-destination-overrides/${encodeURIComponent(overrideReference)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ destination: destinationDraft }) });
       const overridePayload = await readJsonResponse<{ override?: DestinationOverride; message?: string }>(overrideResponse);
       if (!overrideResponse.ok || !overridePayload.override) throw new Error(overridePayload.message || "No se pudo guardar la dirección temporal de Expediciones");
       setDestinationOverride(overridePayload.override);
@@ -1521,14 +1677,14 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       setTransportRule(resolvedRule);
       setManualRuleId(resolvedRule.appliedRule?.id || "");
       if (!resolvedRule.carrier) throw new Error("La regla aplicada no tiene transportista configurado");
-      if (["mrw", "correos-express", "dhl"].includes(resolvedRule.carrier)) {
+      if (["mrw", "correos-express", "dhl", "gls"].includes(resolvedRule.carrier)) {
         setQuotes([]);
         setSelectedQuote(0);
         const directCarrierLabel = resolvedRule.carrier === "mrw"
           ? "MRW"
           : resolvedRule.carrier === "correos-express"
             ? "Correos Express"
-            : "DHL";
+            : resolvedRule.carrier === "gls" ? "GLS" : "DHL";
         const dhlIssues = resolvedRule.carrier === "dhl" ? getDhlDestinationLimitIssues(destinationDraft) : [];
         setNotice(dhlIssues.length ? `Dirección temporal guardada en Expediciones. DHL bloqueado: ${dhlIssues.join(", ")}.` : `Dirección temporal guardada en Expediciones. ${directCarrierLabel} listo con servicio ${shippingServiceLabel(resolvedRule.service)}. Ya puedes generar la etiqueta.`);
         return;
@@ -1685,6 +1841,65 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
     window.open(pdfBase64ToObjectUrl(base64), "_blank", "noopener");
   };
 
+  const openGlsLabel = async (
+    shipmentNumber: string,
+    options: { print?: boolean; delivery?: LabelDelivery } = {},
+  ) => {
+    const url = `/api/gls/shipments/${encodeURIComponent(shipmentNumber)}/label`;
+    if (options.delivery === "download") {
+      await downloadPdfFromBackend(url, `gls-${shipmentNumber}.pdf`);
+      return;
+    }
+    const response = await apiFetch(url);
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({})) as { message?: string };
+      throw new Error(payload.message || "GLS no ha devuelto la etiqueta");
+    }
+    const base64 = arrayBufferToBase64(await response.arrayBuffer());
+    if (options.print) {
+      const printerLabel = await printLabelPdf(base64, shipmentNumber);
+      setNotice(`Etiqueta GLS ${shipmentNumber} enviada a ${printerLabel}.`);
+      return;
+    }
+    window.open(pdfBase64ToObjectUrl(base64), "_blank", "noopener");
+  };
+
+  const refreshGlsShipmentStatus = async (shipmentNumber: string) => {
+    try {
+      const response = await apiFetch(`/api/gls/shipments/${encodeURIComponent(shipmentNumber)}`);
+      if (response.status === 404) { setGlsShipmentState("unregistered"); return; }
+      if (!response.ok) { setGlsShipmentState("unknown"); return; }
+      const payload = await readJsonResponse<{ shipment?: { status?: string } }>(response);
+      setGlsShipmentState(payload.shipment?.status === "cancelled" ? "cancelled" : payload.shipment?.status === "unknown" || payload.shipment?.status === "cancel_pending" ? "unknown" : "active");
+    } catch { setGlsShipmentState("unknown"); /* La consulta de estado no debe bloquear la carga del pedido. */ }
+  };
+
+  const cancelGlsShipment = async () => {
+    if (loading || !existingShipmentCode || glsShipmentState !== "active") return;
+    if (!window.confirm(`Vas a solicitar a GLS la anulación del envío ${existingShipmentCode}. El pedido no se cancelará. ¿Confirmas?`)) return;
+    setNotice(`Solicitud de anulación GLS enviada para ${existingShipmentCode}…`);
+    setOperationProgress({ title: "Anulando envío GLS", detail: `Esperando confirmación de GLS para ${existingShipmentCode}` });
+    setLoading(true);
+    try {
+      const response = await apiFetch(`/api/gls/shipments/${encodeURIComponent(existingShipmentCode)}/cancel`, { method: "POST" });
+      const payload = await readJsonResponse<{ shipment?: { status?: string }; message?: string }>(response);
+      if (!response.ok || payload.shipment?.status !== "cancelled") {
+        if (payload.shipment?.status === "unknown" || payload.shipment?.status === "cancel_pending") setGlsShipmentState("unknown");
+        throw new Error(payload.message || "GLS no confirmó la anulación");
+      }
+      setGlsShipmentState("cancelled");
+      setNotice(`GLS confirmó la anulación de ${existingShipmentCode}. El pedido y el albarán no se han cancelado.`);
+    } catch (error) {
+      // A lost response may hide a successful cancellation: require a status
+      // check before enabling another attempt.
+      await refreshGlsShipmentStatus(existingShipmentCode);
+      setNotice(error instanceof Error ? error.message : "No se pudo confirmar la anulación GLS; comprueba el estado antes de reintentar.");
+    } finally {
+      setLoading(false);
+      setOperationProgress(null);
+    }
+  };
+
   const createMrwShipment = async (options: {
     destinationOverride?: DestinationDraft;
     labelReferenceOverride?: string;
@@ -1708,6 +1923,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
     if (!options.skipConfirm && !window.confirm(`Vas a generar una etiqueta MRW con servicio ${service}. ¿Confirmas?`)) return;
     setOperationProgress({ title: "Generando etiqueta MRW", detail: "Creando envio real en MRW" });
     setLoading(true);
+    let rexDeliveryNotice = "";
     try {
       const response = await apiFetch("/api/mrw/shipments/real", {
         method: "POST",
@@ -1747,25 +1963,25 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
         new Date().toISOString(),
         { source: "mrw-label-created", tracking: shipmentNumber, shipper: "MRW", carrierStatus: service, operator: activeWarehouseWorker?.name, reissuedFrom: reissueContext?.shipmentCode, reissueReason: reissueContext?.reason },
       );
+      if (!reissueContext) rexDeliveryNotice = await validateRexDeliveryAfterLabel(targetOrder, shipmentNumber);
       void loadGeneratedShippingLabels();
       setReissueContext(null);
       setReissueReason("");
       await recordWarehouseActivity(targetOrder, "MRW", shipmentNumber);
-      void preparePrestashopTracking(targetOrder, shipmentNumber, "MRW", service);
-      await queueAmazonTracking(shipmentNumber, targetOrder, {
+      if (!isIncidentReshipmentOrder(targetOrder)) {
+        void preparePrestashopTracking(targetOrder, shipmentNumber, "MRW", service);
+        await queueAmazonTracking(shipmentNumber, targetOrder, {
+          carrier: "MRW", carrierStatus: service, shipmentDate: new Date().toISOString(), tracking: shipmentNumber,
+        });
+      }
+      await openMrwLabel(shipmentNumber, { delivery: options.delivery ?? "download", print: options.print });
+      if (!isIncidentReshipmentOrder(targetOrder)) void runPostLabelWorkflow(shipmentNumber, targetOrder, {
         carrier: "MRW", carrierStatus: service, shipmentDate: new Date().toISOString(), tracking: shipmentNumber,
       });
-      await openMrwLabel(shipmentNumber, { delivery: options.delivery ?? "download", print: options.print });
-      void runPostLabelWorkflow(shipmentNumber, targetOrder, {
-        carrier: "MRW",
-        carrierStatus: service,
-        shipmentDate: new Date().toISOString(),
-        tracking: shipmentNumber,
-      });
-      resetShipmentFlow(`Etiqueta MRW ${shipmentNumber} creada. Escanea el QR del siguiente operario.`);
+      resetShipmentFlow(rexDeliveryNotice || `Etiqueta MRW ${shipmentNumber} creada. Escanea el QR del siguiente operario.`);
     } catch (error) {
       setMode("manual");
-      setNotice(error instanceof Error ? `Modo manual: MRW no ha generado la etiqueta. ${error.message}` : "Modo manual: no se pudo generar la etiqueta MRW");
+      setNotice(rexDeliveryNotice ? `${rexDeliveryNotice} PDF/impresión pendiente: ${error instanceof Error?error.message:"revisar descarga"}` : error instanceof Error ? `Modo manual: MRW no ha generado la etiqueta. ${error.message}` : "Modo manual: no se pudo generar la etiqueta MRW");
     } finally {
       setLoading(false);
       setOperationProgress(null);
@@ -1795,6 +2011,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
     if (!options.skipConfirm && !window.confirm(`Vas a generar una etiqueta Correos Express con servicio ${shippingServiceLabel(service)}. ¿Confirmas?`)) return;
     setOperationProgress({ title: "Generando etiqueta Correos Express", detail: "Creando envio en el transportista" });
     setLoading(true);
+    let rexDeliveryNotice = "";
     try {
       const response = await apiFetch("/api/correos-express/shipments/real", {
         method: "POST",
@@ -1834,14 +2051,17 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
         new Date().toISOString(),
         { source: "correos-express-label-created", tracking: shipmentNumber, shipper: "Correos Express", carrierStatus: service, operator: activeWarehouseWorker?.name, reissuedFrom: reissueContext?.shipmentCode, reissueReason: reissueContext?.reason },
       );
+      if (!reissueContext) rexDeliveryNotice = await validateRexDeliveryAfterLabel(targetOrder, shipmentNumber);
       void loadGeneratedShippingLabels();
       setReissueContext(null);
       setReissueReason("");
       await recordWarehouseActivity(targetOrder, "Correos Express", shipmentNumber);
-      void preparePrestashopTracking(targetOrder, shipmentNumber, "Correos Express", service);
-      await queueAmazonTracking(shipmentNumber, targetOrder, {
-        carrier: "Correos Express", carrierStatus: service, shipmentDate: new Date().toISOString(), tracking: shipmentNumber,
-      });
+      if (!isIncidentReshipmentOrder(targetOrder)) {
+        void preparePrestashopTracking(targetOrder, shipmentNumber, "Correos Express", service);
+        await queueAmazonTracking(shipmentNumber, targetOrder, {
+          carrier: "Correos Express", carrierStatus: service, shipmentDate: new Date().toISOString(), tracking: shipmentNumber,
+        });
+      }
       if (payload.shipment?.labelBase64 && options.delivery !== "download") {
         if (options.print) {
           const printerLabel = await printLabelPdf(payload.shipment.labelBase64, shipmentNumber);
@@ -1851,16 +2071,13 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       } else {
         await openCorreosExpressLabel(shipmentNumber, { delivery: options.delivery ?? "download", print: options.print });
       }
-      void runPostLabelWorkflow(shipmentNumber, targetOrder, {
-        carrier: "Correos Express",
-        carrierStatus: service,
-        shipmentDate: new Date().toISOString(),
-        tracking: shipmentNumber,
+      if (!isIncidentReshipmentOrder(targetOrder)) void runPostLabelWorkflow(shipmentNumber, targetOrder, {
+        carrier: "Correos Express", carrierStatus: service, shipmentDate: new Date().toISOString(), tracking: shipmentNumber,
       });
-      resetShipmentFlow(`Etiqueta Correos Express ${shipmentNumber} creada. Escanea el QR del siguiente operario.`);
+      resetShipmentFlow(rexDeliveryNotice || `Etiqueta Correos Express ${shipmentNumber} creada. Escanea el QR del siguiente operario.`);
     } catch (error) {
       setMode("manual");
-      setNotice(error instanceof Error ? `Modo manual: Correos Express no ha generado la etiqueta. ${error.message}` : "Modo manual: no se pudo generar la etiqueta Correos Express");
+      setNotice(rexDeliveryNotice ? `${rexDeliveryNotice} PDF/impresión pendiente: ${error instanceof Error?error.message:"revisar descarga"}` : error instanceof Error ? `Modo manual: Correos Express no ha generado la etiqueta. ${error.message}` : "Modo manual: no se pudo generar la etiqueta Correos Express");
     } finally {
       setLoading(false);
       setOperationProgress(null);
@@ -1894,6 +2111,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
     if (!options.skipConfirm && !window.confirm(`Vas a generar una etiqueta DHL Connect B2C para ${reference}. ¿Confirmas?`)) return;
     setOperationProgress({ title: "Generando etiqueta DHL", detail: "Creando envío B2C en DHL" });
     setLoading(true);
+    let rexDeliveryNotice = "";
     try {
       const response = await apiFetch("/api/dhl/shipments/real", {
         method: "POST",
@@ -1912,19 +2130,97 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       setExistingShipmentCarrier("dhl");
       setExistingShipmentCreatedAt(formatExistingLabelDate(payload.shipment?.createdAt || new Date().toISOString()));
       await recordGeneratedShippingLabel(targetOrder, shipmentNumber, reference, new Date().toISOString(), { source: "dhl-label-created", tracking: shipmentNumber, shipper: "DHL", carrierStatus: "DHL Connect B2C", operator: activeWarehouseWorker?.name, reissuedFrom: reissueContext?.shipmentCode, reissueReason: reissueContext?.reason });
+      if (!reissueContext) rexDeliveryNotice = await validateRexDeliveryAfterLabel(targetOrder, shipmentNumber);
       void loadGeneratedShippingLabels();
       setReissueContext(null);
       setReissueReason("");
       await recordWarehouseActivity(targetOrder, "DHL", shipmentNumber);
-      void preparePrestashopTracking(targetOrder, shipmentNumber, "DHL", "dhl-connect-b2c");
-      await queueAmazonTracking(shipmentNumber, targetOrder, { carrier: "DHL", carrierStatus: "DHL Connect B2C", shipmentDate: new Date().toISOString(), tracking: shipmentNumber });
+      if (!isIncidentReshipmentOrder(targetOrder)) {
+        void preparePrestashopTracking(targetOrder, shipmentNumber, "DHL", "dhl-connect-b2c");
+        await queueAmazonTracking(shipmentNumber, targetOrder, { carrier: "DHL", carrierStatus: "DHL Connect B2C", shipmentDate: new Date().toISOString(), tracking: shipmentNumber });
+      }
       await openDhlLabel(shipmentNumber, { delivery: options.delivery ?? "download", print: options.print });
-      void runPostLabelWorkflow(shipmentNumber, targetOrder, { carrier: "DHL", carrierStatus: "DHL Connect B2C", shipmentDate: new Date().toISOString(), tracking: shipmentNumber });
-      resetShipmentFlow(`Etiqueta DHL ${shipmentNumber} creada. Escanea el QR del siguiente operario.`);
+      if (!isIncidentReshipmentOrder(targetOrder)) void runPostLabelWorkflow(shipmentNumber, targetOrder, { carrier: "DHL", carrierStatus: "DHL Connect B2C", shipmentDate: new Date().toISOString(), tracking: shipmentNumber });
+      resetShipmentFlow(rexDeliveryNotice || `Etiqueta DHL ${shipmentNumber} creada. Escanea el QR del siguiente operario.`);
     } catch (error) {
       setMode("manual");
-      setNotice(error instanceof Error ? `DHL no ha generado la etiqueta. ${error.message}` : "DHL no ha generado la etiqueta");
+      setNotice(rexDeliveryNotice ? `${rexDeliveryNotice} PDF/impresión pendiente: ${error instanceof Error?error.message:"revisar descarga"}` : error instanceof Error ? `DHL no ha generado la etiqueta. ${error.message}` : "DHL no ha generado la etiqueta");
     } finally { setLoading(false); setOperationProgress(null); }
+  };
+
+  const createGlsShipment = async (options: {
+    destinationOverride?: DestinationDraft;
+    labelReferenceOverride?: string;
+    orderOverride?: Order;
+    print?: boolean;
+    resetAfterSuccess?: boolean;
+    serviceOverride?: string;
+    skipConfirm?: boolean;
+    delivery?: LabelDelivery;
+  } = {}) => {
+    const targetOrder = options.orderOverride ?? order;
+    const targetDestination = options.destinationOverride ?? destinationDraft;
+    if (loading || !targetOrder || !requireWarehouseWorker()) return;
+    const missingFields = getMissingDestinationFields(targetDestination);
+    if (missingFields.length) {
+      setNotice(`Faltan datos de destino para GLS: ${missingFields.join(", ")}.`);
+      return;
+    }
+    const service = options.serviceOverride || transportRule?.service || "";
+    const glsService = getGlsService(service);
+    if (!glsService) {
+      setNotice("Selecciona un servicio GLS disponible en la regla de transporte antes de crear la etiqueta.");
+      return;
+    }
+    if (await simulateLabShipment(targetOrder, "GLS")) return;
+    const reference = options.labelReferenceOverride || getDhlLabelReference(targetOrder);
+    if (!options.skipConfirm && !window.confirm(`Vas a crear un envío y una etiqueta ${glsService.label} para ${reference}. Se ejecutará el flujo habitual de seguimiento y entrega. Anular en GLS después no revierte Odoo ni los seguimientos enviados. ¿Confirmas?`)) return;
+    setOperationProgress({ title: "Generando etiqueta GLS", detail: "Creando envío y recuperando etiqueta PDF" });
+    setLoading(true);
+    try {
+      const response = await apiFetch("/api/gls/shipments/real", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reference,
+          service,
+          destination: { name: targetDestination.name, address: targetDestination.address, postalCode: targetDestination.postalCode, town: targetDestination.town, countryCode: targetDestination.country, phone: targetDestination.phone, email: targetDestination.email },
+          packages: parcels.map((parcel) => ({ weight: Number(parcel.weight.replace(",", ".")) })),
+          format: "PDF",
+        }),
+      });
+      const payload = await readJsonResponse<{ shipment?: { status?: string; tracking?: string; reference?: string; createdAt?: string }; message?: string }>(response);
+      const shipmentNumber = payload.shipment?.tracking || "";
+      if (!response.ok && shipmentNumber && payload.shipment?.status === "created") {
+        setExistingShipmentCode(shipmentNumber);
+        setExistingShipmentCarrier("gls");
+        setGlsShipmentState("active");
+        setExistingShipmentCreatedAt(formatExistingLabelDate(payload.shipment?.createdAt || new Date().toISOString()));
+        throw new Error(`El envío ${shipmentNumber} ya está creado. Usa Descargar etiqueta para recuperarla; no vuelvas a generarlo. ${payload.message || ""}`);
+      }
+      if (!response.ok || !shipmentNumber) throw new Error(payload.message || "GLS no ha confirmado el envío y la etiqueta");
+      setExistingShipmentCode(shipmentNumber);
+      setExistingShipmentCarrier("gls");
+      setGlsShipmentState("active");
+      setExistingShipmentCreatedAt(formatExistingLabelDate(payload.shipment?.createdAt || new Date().toISOString()));
+      const createdAt = new Date().toISOString();
+      await recordGeneratedShippingLabel(targetOrder, shipmentNumber, reference, createdAt, { source: "gls-label-created", tracking: shipmentNumber, shipper: "GLS", carrierStatus: `GLS · servicio ${service}`, operator: activeWarehouseWorker?.name, reissuedFrom: reissueContext?.shipmentCode, reissueReason: reissueContext?.reason });
+      void loadGeneratedShippingLabels();
+      setReissueContext(null);
+      setReissueReason("");
+      await recordWarehouseActivity(targetOrder, "GLS", shipmentNumber);
+      void preparePrestashopTracking(targetOrder, shipmentNumber, "GLS", service);
+      await queueAmazonTracking(shipmentNumber, targetOrder, { carrier: "GLS", carrierStatus: `GLS · servicio ${service}`, shipmentDate: createdAt, tracking: shipmentNumber });
+      await openGlsLabel(shipmentNumber, { delivery: options.delivery ?? "download", print: options.print });
+      void runPostLabelWorkflow(shipmentNumber, targetOrder, { carrier: "GLS", carrierStatus: `GLS · servicio ${service}`, shipmentDate: createdAt, tracking: shipmentNumber });
+      resetShipmentFlow(`Etiqueta GLS ${shipmentNumber} creada. Escanea el QR del siguiente operario.`);
+    } catch (error) {
+      setMode("manual");
+      setNotice(error instanceof Error ? error.message : "GLS no ha confirmado la etiqueta");
+    } finally {
+      setLoading(false);
+      setOperationProgress(null);
+    }
   };
 
   const createAndPayManualShipment = async (options: {
@@ -1953,6 +2249,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
     let labelWindow = options.labelWindow;
     setOperationProgress({ title: "Generando etiqueta Genei", detail: targetQuote.nombre_agencia });
     setLoading(true);
+    let rexDeliveryNotice = "";
     try {
       const shipmentResponse = await apiFetch("/api/genei/shipments/real", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agencyId: Number(targetQuote.id_agencia), externalShippingCode: getShipmentExternalReference(options.labelReferenceOverride, targetOrder), orderReference: targetOrder.odooRef, packagesArray: parcels.map((parcel) => ({ weight: Number(parcel.weight.replace(",", ".")), height: Number(parcel.height), width: Number(parcel.width), length: Number(parcel.length) })), destination: { postalCode: targetDestination.postalCode, town: targetDestination.town, name: targetDestination.name, address: targetDestination.address, isoCountry: targetDestination.country, phone: targetDestination.phone, email: targetDestination.email } }) });
       const shipmentText = await shipmentResponse.text();
@@ -2002,11 +2299,6 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       setExistingShipmentCarrier("genei");
       setExistingShipmentCreatedAt(generatedAtLabel);
       setNotice(`Etiqueta ${createdCode} generada y pagada. Preparando ${options.delivery === "download" ? "descarga" : "impresion"}.`);
-      await openLabel(createdCode, {
-        labelWindow,
-        print: options.print,
-        delivery: options.delivery ?? "download",
-      });
       await recordGeneratedShippingLabel(targetOrder, createdCode, getShipmentExternalReference(options.labelReferenceOverride, targetOrder), generatedAtIso, {
         source: "genei-label-created",
         tracking: getGeneiTrackingNumber(shipmentPayload.shipment),
@@ -2014,28 +2306,37 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
         shipper: getGeneiCarrierName(shipmentPayload.shipment),
         carrierStatus: getGeneiCarrierStatus(shipmentPayload.shipment),
       });
+      if (!reissueContext) rexDeliveryNotice = await validateRexDeliveryAfterLabel(targetOrder, createdCode);
+      await openLabel(createdCode, {
+        labelWindow,
+        print: options.print,
+        delivery: options.delivery ?? "download",
+      });
+
       await recordWarehouseActivity(targetOrder, getGeneiCarrierName(shipmentPayload.shipment) || "Genei", createdCode);
-      void preparePrestashopTracking(targetOrder, createdCode, "Genei", String(targetQuote.nombre_agencia || targetQuote.id_agencia || ""));
       void loadGeneratedShippingLabels();
-      await queueAmazonTracking(createdCode, targetOrder, {
-        carrier: getGeneiCarrierName(shipmentPayload.shipment) || "Genei",
-        carrierStatus: getGeneiCarrierStatus(shipmentPayload.shipment),
-        shipmentDate: getGeneiShipmentCreatedAtRaw(shipmentPayload.shipment) || generatedAtIso,
-        tracking: getGeneiTrackingNumber(shipmentPayload.shipment),
-        trackingUrl: getGeneiTrackingUrl(shipmentPayload.shipment),
-      });
-      void runPostLabelWorkflow(createdCode, targetOrder, {
-        carrier: getGeneiCarrierName(shipmentPayload.shipment) || "Genei",
-        carrierStatus: getGeneiCarrierStatus(shipmentPayload.shipment),
-        shipmentDate: getGeneiShipmentCreatedAtRaw(shipmentPayload.shipment) || generatedAtIso,
-        tracking: getGeneiTrackingNumber(shipmentPayload.shipment),
-        trackingUrl: getGeneiTrackingUrl(shipmentPayload.shipment),
-      });
-      resetShipmentFlow("Etiqueta creada. Escanea el QR del siguiente operario.");
+      if (!isIncidentReshipmentOrder(targetOrder)) {
+        void preparePrestashopTracking(targetOrder, createdCode, "Genei", String(targetQuote.nombre_agencia || targetQuote.id_agencia || ""));
+        await queueAmazonTracking(createdCode, targetOrder, {
+          carrier: getGeneiCarrierName(shipmentPayload.shipment) || "Genei",
+          carrierStatus: getGeneiCarrierStatus(shipmentPayload.shipment),
+          shipmentDate: getGeneiShipmentCreatedAtRaw(shipmentPayload.shipment) || generatedAtIso,
+          tracking: getGeneiTrackingNumber(shipmentPayload.shipment),
+          trackingUrl: getGeneiTrackingUrl(shipmentPayload.shipment),
+        });
+        void runPostLabelWorkflow(createdCode, targetOrder, {
+          carrier: getGeneiCarrierName(shipmentPayload.shipment) || "Genei",
+          carrierStatus: getGeneiCarrierStatus(shipmentPayload.shipment),
+          shipmentDate: getGeneiShipmentCreatedAtRaw(shipmentPayload.shipment) || generatedAtIso,
+          tracking: getGeneiTrackingNumber(shipmentPayload.shipment),
+          trackingUrl: getGeneiTrackingUrl(shipmentPayload.shipment),
+        });
+      }
+      resetShipmentFlow(rexDeliveryNotice || "Etiqueta creada. Escanea el QR del siguiente operario.");
     } catch (error) {
       labelWindow?.close();
       setMode("manual");
-      setNotice(error instanceof Error ? `Modo manual: Genei no ha generado la etiqueta. ${error.message}` : "Modo manual: no se pudo generar la etiqueta");
+      setNotice(rexDeliveryNotice ? `${rexDeliveryNotice} PDF/impresión pendiente: ${error instanceof Error?error.message:"revisar descarga"}` : error instanceof Error ? `Modo manual: Genei no ha generado la etiqueta. ${error.message}` : "Modo manual: no se pudo generar la etiqueta");
     }
     finally { setLoading(false); setOperationProgress(null); focusScanInput(); }
   };
@@ -2048,7 +2349,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
 
   const resetShipmentFlow = (nextNotice = "Listo para escanear un nuevo pedido.") => {
     clearWarehouseWorker();
-    setOrderFound(false); setOrder(null); setQuotes([]); setShipment(null); setTestShipmentCode(null); setExistingShipmentCode(null); setExistingShipmentCarrier("genei"); setExistingShipmentCreatedAt(""); setMrwReissueAvailable(false); setEligibleManualRuleIds(null); setAmazonShipment(null); setPrestashopTracking(null); setPreparedReference(""); setLabelReference(""); setDestinationDraft(emptyDestination); setDestinationOverride(null); setTransportRule(null); setManualRuleId(""); setScan(""); setParcels([automaticParcel]); setSelectedQuote(0); setMode("automatic"); setNotice(nextNotice); focusScanInput();
+    setRexDispatch(null); setOrderFound(false); setOrder(null); setQuotes([]); setShipment(null); setTestShipmentCode(null); setExistingShipmentCode(null); setExistingShipmentCarrier("genei"); setExistingShipmentCreatedAt(""); setGlsShipmentState("active"); setMrwReissueAvailable(false); setEligibleManualRuleIds(null); setAmazonShipment(null); setPrestashopTracking(null); setPreparedReference(""); setLabelReference(""); setDestinationDraft(emptyDestination); setDestinationOverride(null); setTransportRule(null); setManualRuleId(""); setScan(""); setParcels([automaticParcel]); setSelectedQuote(0); setMode("automatic"); setNotice(nextNotice); focusScanInput();
   };
 
   const editInManual = () => {
@@ -2248,7 +2549,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
       const details = await detailsResponse.json() as { shipment?: Record<string, unknown>; message?: string };
       const shipmentId = details.shipment && (details.shipment.id_envio || details.shipment.id || details.shipment.shipmentId);
       if (!detailsResponse.ok || !shipmentId) throw new Error(details.message || "No se ha podido identificar el envío en Genei para desvincularlo");
-      const response = await apiFetch(`/api/genei/shipments/${encodeURIComponent(String(shipmentId))}/external/${encodeURIComponent(order.odooRef)}`, { method: "DELETE" });
+      const response = await apiFetch(`/api/genei/shipments/${encodeURIComponent(String(shipmentId))}/external/${encodeURIComponent(getShipmentExternalReference(undefined, order))}`, { method: "DELETE" });
       const payload = await readJsonResponse<{ message?: string }>(response);
       if (!response.ok) throw new Error(payload.message || "Genei no ha podido desvincular el pedido");
       await removeGeneratedShippingLabel(existingShipmentCode, order);
@@ -2262,6 +2563,13 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
   };
 
   const markAsShipped = async () => {
+    if (order && isIncidentReshipmentOrder(order)) {
+      if (!existingShipmentCode) return;
+      setLoading(true);
+      try { setNotice(await validateRexDeliveryAfterLabel(order,existingShipmentCode));onRefreshOrders?.(); }
+      finally { setLoading(false); }
+      return;
+    }
     if (!order || !existingShipmentCode || !window.confirm(`¿Dar por enviado el pedido ${order.odooRef}? Odoo validará la entrega y enviará el tracking mediante el conector del canal.`)) return;
     await validateLabelDeliveryInOdoo(existingShipmentCode);
   };
@@ -2385,6 +2693,10 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
   };
 
   const sendAmazonTrackingFromHistory = async (label: GeneratedShippingLabelRecord) => {
+    if (label.source === "incident-reshipment-label-created") {
+      setNotice("Esta etiqueta REX pertenece a una reexpedición; el tracking del pedido original no se envía desde este historial.");
+      return;
+    }
     const amazonOrderId = label.externalOrderRef || label.orderRefs.find((reference) => /^\d{3}-\d{7}-\d{7}$/.test(reference)) || "";
     const tracking = label.tracking || label.shipmentCode;
     const carrier = label.shipper || (getCarrierFromLabelRecord(label) === "mrw" ? "MRW" : getCarrierFromLabelRecord(label) === "correos-express" ? "Correos Express" : "Genei");
@@ -2621,6 +2933,12 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
   ) => {
     const targetOrder = orderOverride ?? order;
     if (!targetOrder) return;
+    if (isIncidentReshipmentOrder(targetOrder)) {
+      if (!options.background) setLoading(true);
+      try { setNotice(await validateRexDeliveryAfterLabel(targetOrder,shipmentCode));onRefreshOrders?.(); }
+      finally { if (!options.background) setLoading(false); }
+      return;
+    }
     if (!options.background) setLoading(true);
     try {
       const result = await odooClient.validateOdooDeliveries([targetOrder.odooRef], {
@@ -2659,11 +2977,13 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
     if (existingShipmentCarrier === "mrw") return openMrwLabel(existingShipmentCode, { delivery, print });
     if (existingShipmentCarrier === "correos-express") return openCorreosExpressLabel(existingShipmentCode, { delivery, print });
     if (existingShipmentCarrier === "dhl") return openDhlLabel(existingShipmentCode, { delivery, print });
+    if (existingShipmentCarrier === "gls") return openGlsLabel(existingShipmentCode, { delivery, print });
     return openExistingLabel(delivery, print);
   };
   const cancelCurrentShipment = () => {
     if (existingShipmentCarrier === "mrw") return cancelMrwShipment();
     if (existingShipmentCarrier === "dhl") return cancelDhlShipment();
+    if (existingShipmentCarrier === "gls") return cancelGlsShipment();
     return cancelGeneiShipment();
   };
 
@@ -2685,11 +3005,11 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
         <button className={section === "operativa" ? "active" : ""} onClick={() => setSection("operativa")} type="button"><ScanLine size={16} /> Operativa</button>
         <button className={section === "history" ? "active" : ""} onClick={() => setSection("history")} type="button"><PackageCheck size={16} /> Historial</button>
         <button className={section === "rules" ? "active" : ""} onClick={() => setSection("rules")} type="button"><Settings2 size={16} /> Reglas de envio</button>
-        <button className={section === "station" ? "active" : ""} onClick={() => setSection("station")} type="button"><Printer size={16} /> Puesto e impresion</button>
-        <button className={section === "integrations" ? "active" : ""} onClick={() => setSection("integrations")} type="button"><Truck size={16} /> Integraciones</button>
+        <button className={section === "stats" ? "active" : ""} onClick={() => setSection("stats")} type="button"><BarChart3 size={16} /> Estadísticas</button>
       </nav>
 
       {section === "operativa" ? <>
+      <ReplenishmentAlerts />
       <section className="expeditions-toolbar">
         <div className="mode-toggle" aria-label="Modo de expedicion">
           <button className={mode === "automatic" ? "active" : ""} onClick={() => { setMode("automatic"); setParcels([automaticParcel]); setSelectedQuote(0); }} type="button">Automatico</button>
@@ -2719,8 +3039,10 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
         <input autoFocus disabled={loading} onChange={(event) => setScan(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void findOrder(); }} placeholder={activeWarehouseWorker ? "Referencia Odoo o Amazon" : "QR de operario (OP001)"} ref={scanInputRef} value={scan} />
         <button className="primary-action" disabled={loading} onClick={() => void findOrder()} type="button">{loading ? "Preparando..." : activeWarehouseWorker ? "Buscar pedido" : "Identificar"}</button>
       </section>
-      <p className={`expeditions-notice ${orderFound ? "success" : ""}`}>{orderFound ? <CheckCircle2 size={17} /> : <CircleAlert size={17} />}{notice}</p>
+      <p className={`expeditions-notice ${orderFound ? "success" : ""}`} role="status" aria-live="polite">{orderFound ? <CheckCircle2 size={17} /> : <CircleAlert size={17} />}{notice}</p>
 
+      {rexPreparation&&<section className="expeditions-card" aria-live="polite"><h3>Reexpedición {rexPreparation.reference}</h3><p>Pedido {rexPreparation.orderReference} · {rexPreparation.state==='waiting_dependencies'?'REX bloqueado · no generar etiqueta ni enviar':'salida Odoo pendiente'}</p><p>{rexPreparation.notice}</p><p>El PDF de preparación no acredita un albarán Odoo. No se puede generar una etiqueta hasta verificar la salida.</p><a className="secondary-action" href={`#/incidencias?incident=${encodeURIComponent(rexPreparation.incidentId)}`}>Abrir incidencia para preparar o conciliar REX</a><button className="secondary-action" type="button" disabled={loading} onClick={()=>void findOrder(rexPreparation.reference)}>{loading?'Consultando REX…':'Volver a comprobar REX'}</button></section>}
+      {rexDispatch&&<section className="expeditions-card" aria-live="polite"><h3>Reexpedición {rexDispatch.reference}</h3><p>Pedido {rexDispatch.orderReference} · picking {rexDispatch.pickingName} (#{rexDispatch.pickingId}) · {rexDispatch.state==='done'?'Salida validada en Odoo · no acredita entrega al cliente':rexDispatch.labelCreationEnabled?'Reservada · etiqueta pendiente':'Albarán creado · reserva incompleta · no expedir'}</p>{rexDispatch.lines.map((line,n)=><p key={n}>{line.sku} × {line.quantity}</p>)}<p>Destino: {rexDispatch.destination.name} · {rexDispatch.destination.address} · {rexDispatch.destination.postalCode} {rexDispatch.destination.city} · {rexDispatch.destination.country}</p><p>{rexDispatch.notice}</p><button className="secondary-action" disabled={loading} type="button" onClick={()=>{if(demoRexLock.current)return;demoRexLock.current=true;setLoading(true);void downloadReshipmentDocumentByReference(rexDispatch.reference).then(()=>setNotice('Albarán REX con destino e imágenes descargado.')).catch(e=>setNotice(e.message)).finally(()=>{demoRexLock.current=false;setLoading(false);});}}>Imprimir albarán REX</button>{isLabExpeditionsEnvironment()&&simulateLabel?<button className="primary-action" disabled={loading||rexDispatch.state!=='done'&&!rexDispatch.labelCreationEnabled} onClick={()=>void completeDemoRex(rexDispatch.reference)} type="button">{loading?'Validando salida DEMO…':rexDispatch.state==='done'?'Reimprimir etiqueta de prueba DEMO':'Generar etiqueta de prueba DEMO'}</button>:<button className="primary-action" disabled={loading||!rexDispatch.labelCreationEnabled} onClick={() => void prepareRexForLabel()} type="button">Preparar etiqueta de esta reexpedición</button>}</section>}
       {!orderFound ? (
         <section className="expeditions-empty"><PackageCheck size={38} /><h3>{activeWarehouseWorker ? "Esperando el pedido" : "Esperando el QR de operario"}</h3><p>{activeWarehouseWorker ? "Escanea la referencia Odoo o Amazon." : "Escanea tu QR antes de preparar una etiqueta nueva."}</p></section>
       ) : (
@@ -2728,7 +3050,7 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
           <section className="expeditions-card order-card">
             <div className="card-heading"><div><span>Número de pedido Odoo</span><h3>{order?.id || order?.odooRef}</h3></div><span className="status-chip">{order?.channel}</span></div>
             <dl className="order-summary"><div><dt>Destinatario de envío</dt><dd title={destinationDraft.name || order?.shippingRecipient || order?.client}>{destinationDraft.name || order?.shippingRecipient || order?.client}</dd></div><div><dt>Dirección de envío</dt><dd title={destinationDraft.address || order?.shippingAddress || "Falta direccion/calle"}>{destinationDraft.address || order?.shippingAddress || "Falta direccion/calle"}</dd></div></dl>
-            {destinationOverride ? <p className="expeditions-notice"><CircleAlert size={16} /> Dirección temporal de Expediciones activa. Odoo no se modifica. <button className="secondary-action" disabled={loading} onClick={() => void restoreOdooDestination()} type="button">Restaurar Odoo</button></p> : null}
+            {destinationOverride ? <p className="expeditions-notice"><CircleAlert size={16} /> Dirección temporal de Expediciones activa. Odoo no se modifica. {!isIncidentReshipmentOrder(order) ? <button className="secondary-action" disabled={loading} onClick={() => void restoreOdooDestination()} type="button">Restaurar Odoo</button> : null}</p> : null}
             <details className="destination-editor" open={mode === "manual" || getMissingDestinationFields(destinationDraft).length > 0}>
               <summary>Editar dirección y contacto</summary>
               <div className="destination-fields">
@@ -2750,9 +3072,9 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
             {mode === "manual" ? <button className="refresh-corrected-action" disabled={loading} onClick={() => void refreshManualPreparation()} type="button">Guardar y actualizar datos corregidos</button> : null}
           </section>
 
-          {["mrw", "correos-express", "dhl"].includes(transportRule?.carrier || "") ? (
+          {["mrw", "correos-express", "dhl", "gls"].includes(transportRule?.carrier || "") ? (
           <section className="expeditions-card quote-card">
-            <div className="shipment-rule-card"><span className="shipment-rule-icon"><Truck size={21} /></span><div><span>Regla de envío</span><h3>{transportRule.appliedRule?.name || "Regla pendiente"}</h3><p>{transportRule.carrier === "mrw" ? "MRW" : transportRule.carrier === "correos-express" ? "Correos Express" : "DHL"} · {shippingServiceLabel(transportRule.service)}</p></div></div>
+            <div className="shipment-rule-card"><span className="shipment-rule-icon"><Truck size={21} /></span><div><span>Regla de envío</span><h3>{transportRule.appliedRule?.name || "Regla pendiente"}</h3><p>{transportRule.carrier === "mrw" ? "MRW" : transportRule.carrier === "correos-express" ? "Correos Express" : transportRule.carrier === "gls" ? "GLS" : "DHL"} · {shippingServiceLabel(transportRule.service)}</p></div></div>
             {labelHistoryBlock}
             {mode === "manual" ? <label className="manual-rule-select">{reissueContext ? "Elegir transportista para la reemisión" : "Cambiar regla manualmente"}<select disabled={loading} onChange={(event) => { const nextRuleId = event.target.value; setManualRuleId(nextRuleId); void refreshManualPreparation(nextRuleId); }} value={manualRuleId}>{manualRules.filter((rule) => !eligibleManualRuleIds || eligibleManualRuleIds.includes(rule.id)).map((rule) => <option key={rule.id} value={rule.id}>{rule.name} · {rule.carrier}</option>)}</select><small>{reissueContext ? "Solo se muestran reglas aptas para este envío. La elección se aplicará únicamente a la nueva etiqueta." : "La regla elegida se aplicará solo a esta etiqueta."}</small></label> : null}
           </section>
@@ -2793,14 +3115,16 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
                 <div className="shipment-success">
                   <CheckCircle2 size={25} />
                   <div>
-                    <strong>Etiqueta {existingShipmentCarrier === "mrw" ? "MRW" : existingShipmentCarrier === "correos-express" ? "Correos Express" : existingShipmentCarrier === "dhl" ? "DHL" : "Genei"} · {existingShipmentCode}</strong>
+                    <strong>Etiqueta {existingShipmentCarrier === "mrw" ? "MRW" : existingShipmentCarrier === "correos-express" ? "Correos Express" : existingShipmentCarrier === "dhl" ? "DHL" : existingShipmentCarrier === "gls" ? "GLS" : "Genei"} · {existingShipmentCode}</strong>
                     <span>{existingShipmentCreatedAt ? `Generada el ${existingShipmentCreatedAt}. ` : ""}Recuperacion directa desde el transportista: no se guarda ningun PDF en el equipo.</span>
                     <div className="settings-demo-actions">
-                      <button className="action-primary" disabled={loading} onClick={() => void openCurrentLabel("inline-print", true)} type="button">Imprimir etiqueta</button>
-                      <button className="secondary-action" disabled={loading} onClick={() => void openCurrentLabel("download")} type="button">Descargar etiqueta</button>
-                      <button className="secondary-action" disabled={loading} onClick={() => void openCurrentLabel("popup", false)} type="button">Abrir PDF</button>
+                      {existingShipmentCarrier === "gls" && glsShipmentState === "cancelled" ? <span className="cancel-unavailable" role="status">GLS confirmó la anulación; esta etiqueta ya no se puede imprimir desde aquí.</span> : <>
+                        <button className="action-primary" disabled={loading} onClick={() => void openCurrentLabel("inline-print", true)} type="button">Imprimir etiqueta</button>
+                        <button className="secondary-action" disabled={loading} onClick={() => void openCurrentLabel("download")} type="button">Descargar etiqueta</button>
+                        <button className="secondary-action" disabled={loading} onClick={() => void openCurrentLabel("popup", false)} type="button">Abrir PDF</button>
+                      </>}
                       {isPrestashopOrder(order) ? <button className="secondary-action" disabled={loading || prestashopLoading} onClick={() => void retryPrestashopTracking()} type="button">Reintentar seguimiento PrestaShop</button> : null}
-                      {existingShipmentCarrier !== "correos-express" ? <button className="danger-action" disabled={loading} onClick={() => void cancelCurrentShipment()} type="button">Cancelar etiqueta</button> : <span className="cancel-unavailable">La cancelación de Correos Express sigue pendiente de su conector.</span>}
+                      {existingShipmentCarrier === "gls" ? glsShipmentState === "cancelled" ? null : glsShipmentState === "unknown" ? <span className="cancel-unavailable" role="status">Resultado GLS pendiente de comprobar. No repitas la anulación hasta verificarlo con el transportista.</span> : glsShipmentState === "unregistered" ? <span className="cancel-unavailable" role="status">Este envío GLS no tiene registro local; la cancelación desde Dashboard no está disponible.</span> : <button className="danger-action" disabled={loading} onClick={() => void cancelCurrentShipment()} type="button">{loading && operationProgress?.title === "Anulando envío GLS" ? "Anulando en GLS…" : "Cancelar etiqueta GLS"}</button> : existingShipmentCarrier !== "correos-express" ? <button className="danger-action" disabled={loading} onClick={() => void cancelCurrentShipment()} type="button">Cancelar etiqueta</button> : <span className="cancel-unavailable">La cancelación de Correos Express sigue pendiente de su conector.</span>}
                       {existingShipmentCarrier === "mrw" && mrwReissueAvailable ? <div className="controlled-reissue"><label>Motivo de reemisión<input disabled={loading} onChange={(event) => setReissueReason(event.target.value)} placeholder="Ej.: cambiar a 2 bultos" value={reissueReason} /></label><button className="secondary-action" disabled={loading || !reissueReason.trim()} onClick={() => void beginControlledMrwReissue()} type="button">Reemitir etiqueta</button></div> : null}
                       {existingShipmentCarrier === "genei" ? <button className="secondary-action" disabled={loading} onClick={() => void unlinkGeneiShipment()} type="button">Desvincular pedido</button> : null}
                     </div>
@@ -2837,15 +3161,17 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
               </div>
             ) : (
               <>
-                <p>{["mrw", "correos-express", "dhl"].includes(transportRule?.carrier || "") ? `La regla ha seleccionado ${transportRule.carrier === "mrw" ? "MRW" : transportRule.carrier === "correos-express" ? "Correos Express" : "DHL"}. Al generar etiqueta se usara el servicio indicado por la regla.` : "Falta el segundo escaneo del mismo pedido. Ese segundo escaneo generara y pagara la etiqueta, abrira la impresion y dejara Amazon/Odoo trabajando en segundo plano."}</p>
-                <button className="action-primary full" disabled={loading} onClick={() => void (transportRule?.carrier === "mrw" ? createMrwShipment({ delivery: "inline-print", print: true }) : transportRule?.carrier === "correos-express" ? createCorreosExpressShipment({ delivery: "inline-print", print: true }) : transportRule?.carrier === "dhl" ? createDhlShipment({ delivery: "inline-print", print: true }) : createAndPayManualShipment({ delivery: "inline-print", print: true }))} type="button">Generar e imprimir etiqueta</button>
-                <button className="secondary-action full" disabled={loading} onClick={() => void (transportRule?.carrier === "mrw" ? createMrwShipment({ delivery: "download" }) : transportRule?.carrier === "correos-express" ? createCorreosExpressShipment({ delivery: "download" }) : transportRule?.carrier === "dhl" ? createDhlShipment({ delivery: "download" }) : createAndPayManualShipment({ delivery: "download" }))} type="button">Generar y descargar etiqueta</button>
+                <p>{["mrw", "correos-express", "dhl", "gls"].includes(transportRule?.carrier || "") ? `La regla ha seleccionado ${transportRule.carrier === "mrw" ? "MRW" : transportRule.carrier === "correos-express" ? "Correos Express" : transportRule.carrier === "gls" ? "GLS" : "DHL"}. Al generar etiqueta se usara el servicio indicado por la regla.` : "Falta el segundo escaneo del mismo pedido. Ese segundo escaneo generara y pagara la etiqueta, abrira la impresion y dejara Amazon/Odoo trabajando en segundo plano."}</p>
+                <button className="action-primary full" disabled={loading} onClick={() => void (transportRule?.carrier === "mrw" ? createMrwShipment({ delivery: "inline-print", print: true }) : transportRule?.carrier === "correos-express" ? createCorreosExpressShipment({ delivery: "inline-print", print: true }) : transportRule?.carrier === "dhl" ? createDhlShipment({ delivery: "inline-print", print: true }) : transportRule?.carrier === "gls" ? createGlsShipment({ delivery: "inline-print", print: true }) : createAndPayManualShipment({ delivery: "inline-print", print: true }))} type="button">Generar e imprimir etiqueta</button>
+                <button className="secondary-action full" disabled={loading} onClick={() => void (transportRule?.carrier === "mrw" ? createMrwShipment({ delivery: "download" }) : transportRule?.carrier === "correos-express" ? createCorreosExpressShipment({ delivery: "download" }) : transportRule?.carrier === "dhl" ? createDhlShipment({ delivery: "download" }) : transportRule?.carrier === "gls" ? createGlsShipment({ delivery: "download" }) : createAndPayManualShipment({ delivery: "download" }))} type="button">Generar y descargar etiqueta</button>
                 <button className="secondary-action full" disabled={loading} onClick={resetShipmentFlow} type="button">Cancelar y nuevo escaneo</button>
               </>
             )}
           </section>
         </div>
-      )}</> : section === "workers" ? (
+      )}</> : section === "stats" ? (
+        <WarehouseStatisticsView />
+      ) : section === "workers" ? (
         <section className="expeditions-card" style={{ maxWidth: 880, margin: "28px auto" }}>
           <div className="card-heading"><div><span>Configuración</span><h3>Operarios de almacén</h3></div><span className="status-chip">QR obligatorio</span></div>
           <p className="carrier-help">Crea los operarios que necesites. Cada etiqueta nueva exige escanear un QR activo; una reimpresión no lo solicita.</p>
@@ -2855,7 +3181,6 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
           </div>
         </section>
       ) : <ExpeditionsSettingsDemo
-        connectors={expeditionsSettings.connectors}
         onCreateRule={createShippingRule}
         onDeleteRule={deleteShippingRule}
         onSaveRule={saveShippingRule}
@@ -2878,7 +3203,6 @@ export function ExpeditionsView({ onRefreshOrders }: ExpeditionsViewProps) {
 
 function ExpeditionsSettingsDemo({
   amazonShipments,
-  connectors,
   generatedLabels,
   historyFilters,
   historyReturned,
@@ -2895,7 +3219,6 @@ function ExpeditionsSettingsDemo({
   section,
 }: {
   amazonShipments: AmazonShipmentRecord[];
-  connectors: ExpeditionsSettings["connectors"];
   generatedLabels: GeneratedShippingLabelRecord[];
   historyFilters: HistoryFilters;
   historyReturned: number;
@@ -2909,12 +3232,10 @@ function ExpeditionsSettingsDemo({
   onUpdateRule: (ruleId: string, patch: Partial<ShippingRule>) => void;
   rules: ShippingRule[];
   saving: boolean;
-  section: "history" | "rules" | "station" | "integrations";
+  section: "history" | "rules";
 }) {
   if (section === "history") return <ExpeditionsHistory labels={generatedLabels} amazonShipments={amazonShipments} filters={historyFilters} returned={historyReturned} total={historyTotal} onRefresh={onRefreshHistory} onUpdateFilters={onUpdateHistoryFilters} />;
-  if (section === "rules") return <ShippingRulesManager />;
-  if (section === "station") return <section className="settings-demo"><div className="settings-demo-head"><div><span>PUESTO DE TRABAJO</span><h3>Preparacion 1</h3><p>Esta configuracion se guardara en cada ordenador, no por usuario.</p></div><span className="station-ok">Conectada</span></div><div className="station-settings"><label>Modo de trabajo<select defaultValue="automatic"><option value="automatic">Automatico</option><option value="manual">Manual</option></select></label><label>Impresora de etiquetas<select defaultValue="Zebra ZD421"><option>Zebra ZD421</option><option>Honeywell PC42t</option></select></label><label>Impresora de albaranes<select defaultValue="Microsoft Print to PDF"><option>Microsoft Print to PDF</option><option>HP Office</option></select></label><label>Perfil de caja por defecto<select defaultValue="Caja estandar S"><option>Caja estandar S · 30 × 20 × 15</option><option>Caja estandar M · 40 × 30 × 20</option></select></label></div><div className="settings-demo-actions"><button className="secondary-action" type="button">Imprimir prueba</button><button className="primary-action" type="button">Guardar configuracion</button></div></section>;
-  return <section className="settings-demo"><div className="settings-demo-head"><div><span>INTEGRACIONES</span><h3>Conectores de envio</h3><p>Las reglas deciden que conector se usa para cada destino.</p></div></div><div className="integration-grid">{connectors.map((connector) => <article key={connector.id}><h4>{connector.label}</h4><p>{connector.id === "genei" ? "Agregador activo: permite elegir servicios de agencias integradas en Genei." : "Conector heredado pendiente de retirar del flujo nuevo."}</p><span className="integration-state">{connector.ready ? "Disponible" : "Preparado"}</span></article>)}<article><h4>MRW directo</h4><p>Conector SOAP SAGEC preparado para MRW 19, MRW 14, EtiquetaEnvio y CancelarEnvio.</p><span className="integration-state">Lab</span></article><article><h4>Correos Express / DHL</h4><p>Disponibles en el catalogo de reglas como transportistas futuros; generacion directa pendiente de credenciales/API.</p><span className="integration-state">Preparado</span></article><article><h4>Amazon SP-API</h4><p>Confirmacion real de tracking controlada por dry-run y allowlist.</p><span className="integration-state">Controlado</span></article></div><div className="settings-demo-note"><CircleAlert size={17} /> La activacion real de nuevos conectores se hara en lab y con aprobacion explicita antes de produccion.</div></section>;
+  return <ShippingRulesManager />;
 }
 
 function ExpeditionsHistory({

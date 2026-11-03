@@ -1,0 +1,30 @@
+import assert from 'node:assert/strict';
+import {buildIncident,applyAction} from '../backend/incidents/workflow.ts';
+import {getIncidentClosureChecklist} from '../backend/incidents/domain.ts';
+import {MemoryRepository} from '../backend/incidents/repository.ts';
+import {IncidentService} from '../backend/incidents/service.ts';
+const context={source:'demo' as const,order:{odooReference:'QA-COST',channel:'Website',customerName:'QA'},products:[{sku:'QA',name:'QA',orderedQuantity:1,affectedQuantity:1}]};
+const make=()=>{const incident=buildIncident({requestId:crypto.randomUUID(),origin:'warehouse',type:'wrong_packaging',solution:'pack_record',scope:'pack_ok',products:[],context},'INC-2026-99987','DEV-2026-99987','Creator');return applyAction(incident,{kind:'process',id:incident.processes[0].id,reference:'Formación de embalaje registrada en prueba'},'QA');};
+const cost=(state='pending',id?:string)=>({kind:'cost',id,description:'Coste de prueba',category:'other',amount:12,state});
+const act=(i:any,a:any)=>applyAction(i,a,'Operario QA');
+let i=act(make(),cost());assert.notEqual(i.status,'Resuelta','Money is not a customer solution');
+i=act(i,{kind:'client',value:'Solucionado'});assert.equal(i.status,'Resuelta');assert.equal(getIncidentClosureChecklist(i).costsClosed,true);assert.equal(getIncidentClosureChecklist(i).canClose,true,'One recorded cost completes the cost requirement');
+const originalClientEvents=i.timeline.filter(e=>e.type==='client_solved').length;
+i=act(i,cost('confirmed'));assert.equal(i.costs.length,2);assert.equal(i.status,'Resuelta');assert.equal(i.timeline.filter(e=>e.type==='client_solved').length,originalClientEvents);
+i=act(i,cost('confirmed',i.costs[0].id));assert.equal(getIncidentClosureChecklist(i).canClose,true);
+i=act(i,{kind:'close'});const closed=structuredClone(i),oldClosedAt=i.closedAt;assert(oldClosedAt);assert.equal(i.status,'Cerrada');
+for(const action of [{kind:'note',text:'No'}, {kind:'client',value:'Pendiente'},{kind:'process',id:'no'}])assert.throws(()=>act(closed,action),/cerrada/);
+assert.throws(()=>act(closed,{...cost(),amount:-1}));assert.deepEqual(i,closed,'Rejected cost must not reopen original');
+i=act(i,cost());assert.equal(i.status,'Resuelta');assert.equal(i.clientStatus,'Solucionado');assert.equal(i.closedAt,undefined);assert.equal(i.costs.length,3);assert.equal(getIncidentClosureChecklist(i).canClose,true);assert(i.timeline.some(e=>e.type==='incident_closed'));
+const reopened=i.timeline.findLast(e=>e.type==='incident_reopened')!;assert.equal(reopened.actor,'Operario QA');assert.equal(reopened.details?.previousClosedAt,oldClosedAt);assert(reopened.occurredAt);
+const extra=i.timeline.findLast(e=>e.type==='cost_added')!;assert.equal(extra.details?.state,'pending');assert.equal(extra.details?.amount,12);
+const confirmedAfterClose=act(closed,cost('confirmed'));assert.equal(confirmedAfterClose.status,'Resuelta');assert.equal(getIncidentClosureChecklist(confirmedAfterClose).canClose,true,'A new confirmed cost still requires explicit review/close');
+const repo=new MemoryRepository();repo.items=[i];const service=new IncidentService(repo);const saved=await service.action(i.id,i.revision,cost('assumed',i.costs.at(-1)!.id),'Gestor persistente');assert.equal(saved.status,'Resuelta');
+const reread=(await new IncidentService(repo).repo.list())[0];assert.equal(reread.costs.length,3);assert.equal(reread.costs.at(-1)!.state,'assumed');await assert.rejects(service.action(i.id,i.revision,cost(),'Obsoleto'),/Otro usuario/);assert.equal((await repo.list())[0].costs.length,3);
+let states=make();for(const value of ['En gestión','Esperando cliente','Pendiente','Solucionado'] as const){const previous=states.clientStatus;states=act(states,{kind:'client',value});const audit=states.timeline.at(-1)!;assert.equal(audit.type,'client_status_changed');assert.equal(audit.actor,'Operario QA');assert.deepEqual(audit.details,{previous,value});assert(audit.occurredAt);}
+const unresolved=buildIncident({requestId:crypto.randomUUID(),origin:'carrier',type:'lost',solution:'lost_resend',context,products:context.products},'INC-2026-99986','DEV-2026-99986','QA');assert.throws(()=>act(act(unresolved,cost('confirmed')),{kind:'client',value:'Solucionado'}),/REX/);
+console.log('PASS resolución/costes: Resuelta independiente de pendientes; ningún coste resuelve al cliente; costes posteriores conservan resolución; un coste registrado no queda pendiente; cerrada admite solo costes con reapertura auditada; historial y revisiones persistentes; todos los estados cliente auditados; guard REX conservado.');
+
+const parallel=(solution:string)=>buildIncident({requestId:crypto.randomUUID(),origin:'warehouse',type:'wrong_product',solution,context,products:context.products,wrongReceivedProduct:{productId:2,sku:'WRONG',name:'Producto equivocado'},wrongReceivedQuantity:1},'INC-2026-99983','DEV-2026-99983','QA');
+let resent=parallel('resend_recover');assert.throws(()=>act(resent,{kind:'client',value:'Solucionado'}),/REX/);resent.processes.find(p=>p.kind==='reshipment')!.state='resolved';resent.odooOperations=[{key:'QA:rex',kind:'reshipment',pickingId:99983,digest:'qa',status:'done',confirmedAt:new Date().toISOString(),shipmentCode:'QA-ONLY',shippedBy:'Operario QA',shippedAt:new Date().toISOString()}];resent=act(resent,{kind:'client',value:'Solucionado'});assert.equal(resent.status,'Resuelta');assert.equal(resent.returns[0].state,'awaiting');assert.equal(getIncidentClosureChecklist(resent).canClose,false);assert.equal(getIncidentClosureChecklist(resent).goodsRegularized,false);
+const wait=parallel('wait_resend');wait.processes.find(p=>p.kind==='reshipment')!.state='resolved';wait.odooOperations=resent.odooOperations;assert.throws(()=>act(wait,{kind:'client',value:'Solucionado'}),/Completa DEV/);console.log('PASS solución paralela: REX expedido permite aceptar cliente Solucionado con DEV interna pendiente; nunca antes del envío, ni si la solución obliga a recibir primero');

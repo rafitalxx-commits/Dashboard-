@@ -102,6 +102,12 @@ totales revisados, modificados y retirados. Las búsquedas del editor de compras
 no dependen de esta caché: obtienen el stock total dentro de la misma consulta
 de producto a Odoo.
 
+Para un producto con lista de materiales de tipo `phantom` (kit), el campo
+«Stock Odoo» usa `product.product.qty_available` calculado por Odoo para
+`ALM/Stock`, no la suma de los `stock.quant` del propio kit. En una sincronización
+incremental también se refrescan esos kits cuando cambia el stock de un
+componente, aunque la fecha de modificación del producto kit no cambie.
+
 ## Punto 1: Recepciones de Inventario en solo lectura
 
 Estado: implementado en `feature/odoo-mobile-receptions`.

@@ -1,6 +1,7 @@
+import {assertIncidentLabelAllowed} from '../incidents/labelGuard.ts';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { createCorreosExpressClient, normalizeCorreosExpressPdfBase64, type CorreosExpressShipmentRequest } from "./client.ts";
+import { createCorreosExpressClient, mergeCorreosExpressLabels, normalizeCorreosExpressPdfBase64, type CorreosExpressShipmentRequest } from "./client.ts";
 
 type Server = { middlewares: { use: (path: string, handler: (request: any, response: any) => void) => void } };
 type Auth = { getSessionUser: (cookie?: string) => { permissions: string[] } | undefined };
@@ -26,10 +27,10 @@ export function registerCorreosExpressRoutes(server: Server, auth: Auth, env: Re
         return sendJson(response, 200, { payload: cex.buildShipmentPayload(await readJsonBody<CorreosExpressShipmentRequest>(request)) });
       }
       if (request.method === "POST" && path === "shipments/test") {
-        return await createShipment(response, cex, repository, await readJsonBody<CorreosExpressShipmentRequest & { force?: boolean }>(request), "test");
+        const input=await readJsonBody<CorreosExpressShipmentRequest & { force?: boolean }>(request);await assertIncidentLabelAllowed(env,input);return await createShipment(response, cex, repository, input, "test");
       }
       if (request.method === "POST" && path === "shipments/real") {
-        return await createShipment(response, cex, repository, await readJsonBody<CorreosExpressShipmentRequest & { force?: boolean }>(request), "real");
+        const input=await readJsonBody<CorreosExpressShipmentRequest & { force?: boolean }>(request);await assertIncidentLabelAllowed(env,input);return await createShipment(response, cex, repository, input, "real");
       }
       const labelMatch = path.match(/^shipments\/([^/]+)\/label\.pdf$/);
       if (request.method === "GET" && labelMatch) return await sendShipmentLabel(response, cex, repository, decodeURIComponent(labelMatch[1]));
@@ -80,7 +81,7 @@ async function sendShipmentLabel(
     return sendPdf(response, shipmentNumber, await cex.getLabelPdf(shipmentNumber));
   } catch (error) {
     const stored = repository.findByShipmentNumber(shipmentNumber);
-    const labelBase64 = stored?.labelBase64 || extractStoredLabelBase64(stored?.raw);
+    const labelBase64 = await extractStoredLabelBase64(stored?.raw) || stored?.labelBase64 || "";
     if (labelBase64) return sendPdf(response, shipmentNumber, normalizeCorreosExpressPdfBase64(labelBase64));
     throw error;
   }
@@ -178,14 +179,11 @@ function redactRaw(value: unknown) {
   return copy;
 }
 
-function extractStoredLabelBase64(raw: unknown) {
+async function extractStoredLabelBase64(raw: unknown) {
   if (!raw || typeof raw !== "object") return "";
   const labels = Array.isArray((raw as Record<string, unknown>).etiqueta)
     ? (raw as Record<string, unknown>).etiqueta as Array<Record<string, unknown>>
     : [];
-  for (const label of labels) {
-    const value = String(label?.etiqueta1 || label?.etiqueta2 || label?.DevuelveEtiquetaPdf || "");
-    if (value) return value;
-  }
-  return "";
+  const pdfs = labels.map((label) => String(label?.etiqueta1 || label?.etiqueta2 || label?.DevuelveEtiquetaPdf || "")).filter(Boolean);
+  return pdfs.length ? mergeCorreosExpressLabels(pdfs) : "";
 }
