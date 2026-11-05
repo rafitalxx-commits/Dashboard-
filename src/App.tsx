@@ -31,10 +31,12 @@ import {
   ShieldCheck,
   ShoppingCart,
   MessagesSquare,
+  Moon,
   Bell,
   Plus,
   Truck,
   User,
+  Sun,
   XCircle,
 } from "lucide-react";
 import { money, orders as demoOrders, statusTone } from "./data/demoData";
@@ -1784,7 +1786,8 @@ function App() {
             <div className="session-pill">
               <User size={16} />
               <span>{authUser.name}</span>
-              <label className="session-theme-control">
+              <label className="session-theme-control" title={theme === "dark" ? "Modo oscuro activo" : "Modo claro activo"}>
+                {theme === "dark" ? <Sun aria-hidden="true" size={15} /> : <Moon aria-hidden="true" size={15} />}
                 <span>Tema</span>
                 <select
                   aria-label="Tema personal"
