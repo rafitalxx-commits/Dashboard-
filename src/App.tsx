@@ -277,10 +277,11 @@ type DashboardUser = {
   role: DashboardUserRole;
   active: boolean;
   permissions: DashboardPermission[];
+  theme?: "light" | "dark";
 };
 type AuthUser = Pick<
   DashboardUser,
-  "id" | "username" | "name" | "role" | "permissions"
+  "id" | "username" | "name" | "role" | "permissions" | "theme"
 >;
 type DashboardTaskCategory =
   | "Dashboard"
@@ -432,6 +433,7 @@ function App() {
     "loading",
   );
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [theme, setTheme] = useState<"light" | "dark">("light");
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
@@ -585,12 +587,19 @@ function App() {
     odooClient.getCurrentUser().then((result) => {
       if (result.authenticated && result.user) {
         setAuthUser(result.user);
+        setTheme(result.user.theme === "dark" && result.user.role === "admin" ? "dark" : "light");
         setAuthMode("logged-in");
       } else {
         setAuthUser(null);
         setAuthMode("logged-out");
       }
     });
+  }, []);
+
+  useEffect(() => {
+    const applyTheme = (event: Event) => { const next = (event as CustomEvent<"light" | "dark">).detail; if (next === "light" || next === "dark") { setTheme(next); setAuthUser((current) => current ? { ...current, theme: next } : current); } };
+    window.addEventListener("dashboard-theme-updated", applyTheme);
+    return () => window.removeEventListener("dashboard-theme-updated", applyTheme);
   }, []);
 
   useEffect(() => {
@@ -1487,12 +1496,14 @@ function App() {
       return;
     }
     setAuthUser(result.user);
+    setTheme(result.user.theme === "dark" && result.user.role === "admin" ? "dark" : "light");
     setAuthMode("logged-in");
     setLoginPassword("");
   };
   const logout = async () => {
     await odooClient.logout();
     setAuthUser(null);
+    setTheme("light");
     setAuthMode("logged-out");
     setOrders([]);
     setDashboard(null);
@@ -1523,7 +1534,7 @@ function App() {
   }
 
   return (
-    <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+    <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`} data-theme={theme}>
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark"><img src="/te-panel-rayo-192.png" alt="Todoeléctrico" style={{width:"100%",height:"100%",objectFit:"contain"}} /></div>
@@ -3569,6 +3580,8 @@ function SettingsView({
 }) {
   const [passwordDrafts, setPasswordDrafts] = useState<Record<string, string>>({});
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [themeSaving, setThemeSaving] = useState(false);
+  const [themeMessage, setThemeMessage] = useState("");
   const selectedUser = users.find((user) => user.id === selectedUserId);
   const updateUser = async (
     userId: string,
@@ -3594,6 +3607,10 @@ function SettingsView({
 
   return (
     <section className="settings-grid">
+      {currentUser.role === "admin" && <article className="panel settings-panel theme-settings-panel">
+        <div className="section-heading"><span>Preferencias personales</span><h2>Apariencia</h2><p>El modo claro se aplica por defecto. Esta preferencia solo cambia tu cuenta.</p></div>
+        <label className="settings-field theme-choice">Modo de visualización<select aria-label="Modo de visualización" disabled={themeSaving} onChange={async (event) => { const next = event.target.value as "light" | "dark"; setThemeSaving(true); setThemeMessage(""); try { await odooClient.updateDashboardUser(currentUser.id, { theme: next }); window.dispatchEvent(new CustomEvent("dashboard-theme-updated", { detail: next })); setThemeMessage("Preferencia guardada."); } catch (error) { setThemeMessage(error instanceof Error ? error.message : "No se pudo guardar la preferencia."); } finally { setThemeSaving(false); } }} value={currentUser.theme === "dark" ? "dark" : "light"}><option value="light">Claro (predeterminado)</option><option value="dark">Oscuro</option></select><small aria-live="polite">{themeSaving ? "Guardando preferencia…" : themeMessage}</small></label>
+      </article>}
       <article className="panel settings-panel">
         <div className="section-heading">
           <span>Usuarios dashboard</span>

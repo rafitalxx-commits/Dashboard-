@@ -42,3 +42,11 @@
 .home-comparison-segmented{flex-wrap:wrap}
 .home-comparison-segmented button:focus-visible{outline:3px solid #8ab4f8;outline-offset:2px}
 @media(max-width:620px){.home-comparison-filters .home-comparison-segmented{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));width:100%;box-sizing:border-box}.home-comparison-filters .home-comparison-segmented button{min-width:0;padding:8px 5px}}
+
+/* Dark theme: the breakdown cards at the bottom of each statistics chart. */
+.app-shell[data-theme="dark"] .home-comparison .home-comparison-mini {
+  background: #1e293b;
+  border-color: #39495e;
+  color: #e5eaf2;
+}
+.app-shell[data-theme="dark"] .home-comparison .home-comparison-mini small { color: #c0ccdc; }

@@ -280,6 +280,7 @@ type StoredDashboardUser = {
   passwordHash: string;
   passwordSalt: string;
   permissions: DashboardPermission[];
+  theme?: "light" | "dark";
 };
 type DashboardSession = {
   id: string;
@@ -1172,8 +1173,13 @@ function odooReadOnlyApi(env: Record<string, string>) {
               active?: boolean;
               role?: DashboardUserRole;
               permissions?: DashboardPermission[];
+              theme?: "light" | "dark";
               password?: string;
             }>(request);
+            if (payload.theme && (user.role !== "admin" || userId !== user.id)) {
+              sendJson(response, 403, { message: "Solo administración puede cambiar su propio tema" });
+              return;
+            }
             if (
               userId === user.id &&
               (payload.active === false ||
@@ -2218,6 +2224,7 @@ function createAuthRepository(env: Record<string, string>) {
     role: user.role,
     active: user.active,
     permissions: user.permissions,
+    theme: user.theme === "dark" ? "dark" : "light",
   });
 
   return {
@@ -2298,6 +2305,7 @@ function createAuthRepository(env: Record<string, string>) {
         passwordHash: passwordData.hash,
         passwordSalt: passwordData.salt,
         permissions: permissionsForRole(role),
+        theme: "light",
       };
       writeStore({ ...store, users: [...store.users, user] });
       return publicUser(user);
@@ -2308,6 +2316,7 @@ function createAuthRepository(env: Record<string, string>) {
         active?: boolean;
         role?: DashboardUserRole;
         permissions?: DashboardPermission[];
+        theme?: "light" | "dark";
         password?: string;
       },
     ) {
@@ -2331,6 +2340,7 @@ function createAuthRepository(env: Record<string, string>) {
           typeof patch.active === "boolean" ? patch.active : user.active,
         role,
         permissions,
+        theme: patch.theme === "dark" ? "dark" : patch.theme === "light" ? "light" : user.theme === "dark" ? "dark" : "light",
         passwordHash: passwordData?.hash ?? user.passwordHash,
         passwordSalt: passwordData?.salt ?? user.passwordSalt,
       };

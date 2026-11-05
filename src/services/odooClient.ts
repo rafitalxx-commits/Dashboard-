@@ -51,10 +51,11 @@ type DashboardUser = {
   role: DashboardUserRole;
   active: boolean;
   permissions: DashboardPermission[];
+  theme?: "light" | "dark";
 };
 type AuthUser = Pick<
   DashboardUser,
-  "id" | "username" | "name" | "role" | "permissions"
+  "id" | "username" | "name" | "role" | "permissions" | "theme"
 >;
 type DashboardTaskCategory =
   | "Dashboard"
@@ -446,7 +447,7 @@ export const odooClient = {
   },
   async updateDashboardUser(
     userId: string,
-    patch: Partial<Pick<DashboardUser, "active" | "role" | "permissions">> & {
+    patch: Partial<Pick<DashboardUser, "active" | "role" | "permissions" | "theme">> & {
       password?: string;
     },
   ) {
