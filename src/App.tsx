@@ -434,6 +434,8 @@ function App() {
   );
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [appearanceSaving, setAppearanceSaving] = useState(false);
+  const [appearanceError, setAppearanceError] = useState("");
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
@@ -587,7 +589,7 @@ function App() {
     odooClient.getCurrentUser().then((result) => {
       if (result.authenticated && result.user) {
         setAuthUser(result.user);
-        setTheme(result.user.theme === "dark" && result.user.role === "admin" ? "dark" : "light");
+        setTheme(result.user.theme === "dark" ? "dark" : "light");
         setAuthMode("logged-in");
       } else {
         setAuthUser(null);
@@ -1496,7 +1498,7 @@ function App() {
       return;
     }
     setAuthUser(result.user);
-    setTheme(result.user.theme === "dark" && result.user.role === "admin" ? "dark" : "light");
+    setTheme(result.user.theme === "dark" ? "dark" : "light");
     setAuthMode("logged-in");
     setLoginPassword("");
   };
@@ -1507,6 +1509,20 @@ function App() {
     setAuthMode("logged-out");
     setOrders([]);
     setDashboard(null);
+  };
+  const saveOwnTheme = async (next: "light" | "dark") => {
+    if (appearanceSaving || !authUser) return;
+    setAppearanceSaving(true);
+    setAppearanceError("");
+    try {
+      const updatedUser = await odooClient.updateOwnTheme(next);
+      setAuthUser(updatedUser);
+      setTheme(updatedUser.theme === "dark" ? "dark" : "light");
+    } catch (error) {
+      setAppearanceError(error instanceof Error ? error.message : "No se pudo guardar la preferencia.");
+    } finally {
+      setAppearanceSaving(false);
+    }
   };
 
   useEffect(() => {
@@ -1768,6 +1784,18 @@ function App() {
             <div className="session-pill">
               <User size={16} />
               <span>{authUser.name}</span>
+              <label className="session-theme-control">
+                <span>Tema</span>
+                <select
+                  aria-label="Tema personal"
+                  disabled={appearanceSaving}
+                  onChange={(event) => void saveOwnTheme(event.target.value as "light" | "dark")}
+                  value={theme}
+                >
+                  <option value="light">Claro</option>
+                  <option value="dark">Oscuro</option>
+                </select>
+              </label>
               <button
                 aria-label="Cerrar sesion"
                 onClick={logout}
@@ -1777,6 +1805,7 @@ function App() {
                 <LogOut size={16} />
               </button>
             </div>
+            {appearanceError && <span aria-live="polite" className="session-theme-error">{appearanceError}</span>}
           </div>
         </header>
 

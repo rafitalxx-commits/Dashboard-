@@ -401,6 +401,22 @@ export const odooClient = {
       return { authenticated: false as const };
     }
   },
+  async updateOwnTheme(theme: "light" | "dark") {
+    const response = await fetch(receptionsApiPath("/api/auth/me"), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ theme }),
+    });
+    const payload = (await readJson(response)) as {
+      authenticated: boolean;
+      user?: AuthUser;
+      message?: string;
+    };
+    if (!response.ok || !payload.authenticated || !payload.user) {
+      throw new Error(payload.message ?? "No se pudo guardar la preferencia de tema");
+    }
+    return payload.user;
+  },
   async login(username: string, password: string) {
     try {
       const response = await fetch("/api/auth/login", {

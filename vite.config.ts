@@ -813,6 +813,24 @@ function odooReadOnlyApi(env: Record<string, string>) {
 
       server.middlewares.use("/api/auth/me", async (request, response) => {
         const user = auth.getSessionUser(request.headers.cookie);
+        if (request.method === "PATCH") {
+          if (!user) {
+            sendJson(response, 401, { authenticated: false, message: "Login requerido" });
+            return;
+          }
+          try {
+            const payload = await readJsonBody<{ theme?: "light" | "dark" }>(request);
+            if (payload.theme !== "light" && payload.theme !== "dark") {
+              sendJson(response, 400, { message: "Tema no valido" });
+              return;
+            }
+            const updatedUser = auth.updateUser(user.id, { theme: payload.theme });
+            sendJson(response, 200, { authenticated: true, user: updatedUser });
+          } catch (error) {
+            sendJson(response, 400, { message: error instanceof Error ? error.message : "No se pudo guardar el tema" });
+          }
+          return;
+        }
         sendJson(response, 200, user ? { authenticated: true, user } : { authenticated: false });
       });
 

@@ -316,6 +316,36 @@ td small,
   font-weight: 700;
 }
 
+.session-theme-control {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  border-left: 1px solid #cbd5e1;
+  padding-left: 8px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.session-theme-control select {
+  min-height: 30px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #fff;
+  color: #334155;
+  padding: 0 6px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.session-theme-error {
+  position: absolute;
+  top: calc(100% + 2px);
+  right: 54px;
+  color: #b91c1c;
+  font-size: 11px;
+}
+
 .session-pill button {
   justify-content: center;
   width: 30px;
@@ -4132,6 +4162,31 @@ body:has(.app-shell[data-theme="dark"]),
   background: #0b1220;
   border-color: #475569;
   color: #e5eaf2;
+}
+.app-shell[data-theme="dark"] .session-theme-control {
+  border-left-color: #475569;
+  color: #b7c5d6;
+}
+.app-shell[data-theme="dark"] .session-theme-control select {
+  border-color: #475569;
+  background: #0b1220;
+  color: #e5eaf2;
+}
+
+@media (max-width: 720px) {
+  .topbar {
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+  .topbar-actions {
+    min-width: 0;
+    max-width: 100%;
+    flex-wrap: wrap;
+  }
+  .session-pill {
+    max-width: 100%;
+    margin-left: auto;
+  }
 }
 .app-shell[data-theme="dark"] .empty-state {
   color: #c0ccdc;
