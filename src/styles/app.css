@@ -3106,6 +3106,9 @@ th {
   }
 }
 
+.session-theme-control > span {
+  display: none;
+}
 @media (max-width: 720px) {
   .app-shell,
   .app-shell.sidebar-collapsed {
@@ -3228,6 +3231,9 @@ th {
 }
 
 /* On phones the sidebar is an off-canvas drawer: it must not reserve 66px and crush the operational area. */
+.session-theme-control > span {
+  display: none;
+}
 @media (max-width: 720px) {
   .app-shell,
   .app-shell.sidebar-collapsed {
@@ -4176,6 +4182,9 @@ body:has(.app-shell[data-theme="dark"]),
   color: #e5eaf2;
 }
 
+.session-theme-control > span {
+  display: none;
+}
 @media (max-width: 720px) {
   .topbar {
     min-width: 0;
@@ -4216,3 +4225,9 @@ body:has(.app-shell[data-theme="dark"]),
   background: #151f30;
   border-color: #506078;
 }
+
+/* Admin day/night toggle in the top bar. */
+.theme-toggle-button { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:40px; padding:0 12px; border:1px solid #cbd5e1; border-radius:10px; background:#fff; color:#1e293b; font:inherit; font-weight:700; cursor:pointer; }
+.theme-toggle-button:disabled { cursor:wait; opacity:.7; }
+.app-shell[data-theme="dark"] .theme-toggle-button { border-color:#506078; background:#253247; color:#e5eaf2; }
+@media(max-width:720px){ .theme-toggle-button { min-height:36px; padding:0 9px; } }

@@ -1755,6 +1755,18 @@ function App() {
             </h1>
           </div>
           <div className="topbar-actions">
+            {authUser?.role === "admin" && <button
+              aria-label={theme === "dark" ? "Activar modo claro" : "Activar modo oscuro"}
+              aria-pressed={theme === "dark"}
+              className="theme-toggle-button"
+              disabled={appearanceSaving}
+              onClick={() => void saveOwnTheme(theme === "dark" ? "light" : "dark")}
+              title={theme === "dark" ? "Cambiar a modo día" : "Cambiar a modo noche"}
+              type="button"
+            >
+              {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
+              <span>{appearanceSaving ? "Guardando…" : theme === "dark" ? "Día" : "Noche"}</span>
+            </button>}
             {showOrderRange && (
               <button
                 className="refresh-orders-button"
@@ -1786,19 +1798,16 @@ function App() {
             <div className="session-pill">
               <User size={16} />
               <span>{authUser.name}</span>
-              <label className="session-theme-control" title={theme === "dark" ? "Modo oscuro activo" : "Modo claro activo"}>
-                {theme === "dark" ? <Sun aria-hidden="true" size={15} /> : <Moon aria-hidden="true" size={15} />}
-                <span>Tema</span>
-                <select
-                  aria-label="Tema personal"
-                  disabled={appearanceSaving}
-                  onChange={(event) => void saveOwnTheme(event.target.value as "light" | "dark")}
-                  value={theme}
-                >
-                  <option value="light">Claro</option>
-                  <option value="dark">Oscuro</option>
-                </select>
-              </label>
+              <button
+                className="session-theme-toggle"
+                aria-label={theme === "dark" ? "Cambiar a modo claro" : "Cambiar a modo oscuro"}
+                title={theme === "dark" ? "Cambiar a modo claro" : "Cambiar a modo oscuro"}
+                disabled={appearanceSaving}
+                onClick={() => void saveOwnTheme(theme === "dark" ? "light" : "dark")}
+                type="button"
+              >
+                {theme === "dark" ? <Moon aria-hidden="true" size={16} /> : <Sun aria-hidden="true" size={16} />}
+              </button>
               <button
                 aria-label="Cerrar sesion"
                 onClick={logout}
