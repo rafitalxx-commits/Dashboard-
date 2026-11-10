@@ -879,6 +879,7 @@ function shippingServiceLabel(serviceId?: string) {
 }
 
 function amazonShippingMethod(carrier: string, carrierStatus?: string) {
+  if (carrier.trim().toUpperCase() === "MRW" && carrierStatus === "mrw-urgent-1900-expedition") return "Urgente 19";
   return String(carrierStatus || "").startsWith("cex-")
     ? shippingServiceLabel(carrierStatus)
     : carrier;
