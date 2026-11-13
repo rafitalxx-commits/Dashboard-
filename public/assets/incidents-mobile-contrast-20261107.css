@@ -1,0 +1,5 @@
+@media (max-width: 900px) {
+  .app-shell[data-theme="dark"] .incidents-app .inc-mobile-card .inc-mini { background: #253247; }
+  .app-shell[data-theme="dark"] .incidents-app .inc-mobile-card .inc-mini .l { color: #b9c7d9; }
+  .app-shell[data-theme="dark"] .incidents-app .inc-mobile-card .inc-mini .v { color: #edf3fa; }
+}

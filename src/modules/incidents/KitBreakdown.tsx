@@ -1,4 +1,4 @@
-import type {IncidentKitSelection,IncidentProduct} from '../../../backend/incidents/types';
+import type {IncidentKitSelection,IncidentProduct} from '../../../frontend-shared/incidents/types';
 export function KitBreakdown({product,quantity=1,selected,onChange}:{product:IncidentProduct;quantity?:number;selected?:IncidentKitSelection[];onChange?:(components:IncidentKitSelection[])=>void}){
  const components=product.kitComponents?.filter(p=>p.productType!=='service');if(!components?.length)return null;
  return <section className="inc-kit-breakdown" aria-label={`Componentes del kit ${product.sku}`}>

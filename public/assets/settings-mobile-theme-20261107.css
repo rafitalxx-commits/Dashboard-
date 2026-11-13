@@ -1,0 +1,3 @@
+@media (max-width: 640px) {
+  .app-shell:has(.main > .settings-grid) .topbar .theme-toggle-button { display: none; }
+}

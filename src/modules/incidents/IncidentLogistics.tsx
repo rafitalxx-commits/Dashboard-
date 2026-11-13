@@ -1,9 +1,9 @@
-import {requiresExtraOutbound,extraOutboundRecorded} from '../../../backend/incidents/excessMerchandise';
-import {unidentifiedReturnProduct} from '../../../backend/incidents/merchandise';
-import {confirmedReshipment,incidentShipments} from '../../../backend/incidents/shipmentConfirmation';
-import {warehouseReceived} from '../../../backend/incidents/receiptConfirmation';
-import {reshipmentReference,reshipmentPrerequisites} from '../../../backend/incidents/reshipment';
-import type {Incident} from '../../../backend/incidents/types';
+import {requiresExtraOutbound,extraOutboundRecorded} from '../../../frontend-shared/incidents/excessMerchandise';
+import {unidentifiedReturnProduct} from '../../../frontend-shared/incidents/merchandise';
+import {confirmedReshipment,incidentShipments} from '../../../frontend-shared/incidents/shipmentConfirmation';
+import {warehouseReceived} from '../../../frontend-shared/incidents/receiptConfirmation';
+import {reshipmentReference,reshipmentPrerequisites} from '../../../frontend-shared/incidents/reshipment';
+import type {Incident} from '../../../frontend-shared/incidents/types';
 import {date} from './components';
 
 /** Only physical tasks and their actual result. No manual stock checklist. */

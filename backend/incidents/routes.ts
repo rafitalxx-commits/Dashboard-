@@ -1,3 +1,4 @@
+import {labelOrderMatches} from './labelOrderIdentity.ts';
 import {IncidentSubmissions} from './submissions.ts';
 import {verifiedIncidentProduct} from './merchandise.ts';
 import {prepareIncidentDocuments} from './documents.ts';
@@ -210,11 +211,11 @@ export function registerIncidentRoutes(server:any,auth:any,env:Record<string,str
     const matches=labels.filter(x=>x?.shipmentCode===shipmentCode&&x?.source==='incident-reshipment-label-created'&&Array.isArray(x.orderRefs)&&x.orderRefs.includes(reference)&&!x.reissuedAt&&!x.reissuedFrom&&!x.reissueReason&&String(x.odooOrderRef||'').trim());
     if(matches.length!==1)throw Error('No existe una etiqueta REX única y registrada para la referencia exacta');
     const related=await repo.list(true);const incident=related.find(i=>i.id===incidentFromReshipment(reference));if(!incident)throw Error('Incidencia REX no encontrada');
-    if(String(matches[0].odooOrderRef||'').trim()!==incident.order.odooReference)throw Error('La etiqueta no está enlazada exactamente al pedido original de la incidencia');
     const ops=(incident.odooOperations||[]).filter(x=>x.kind==='reshipment'&&x.dispatchReference===reference&&['ready_for_expedition','done'].includes(x.status||'')&&Array.isArray(x.lines)&&x.lines.length);
     if(ops.length!==1)throw Error('No hay un único picking REX pendiente y auditado');const op=ops[0];if((op.target||TEST_TARGET)!==target())throw Error('El picking auditado pertenece a otra base Odoo; no se reutiliza TEST en operativo');
     if(op.status!=='done'){const blockers=reshipmentPrerequisites(incident,target());if(blockers.length)throw Error(blockers.join('. '));}
     const orderRows=await deps.odoo.read('sale.order','search_read',[[['name','=',incident.order.odooReference]]],{fields:['id','company_id'],limit:2});if(orderRows.length!==1)throw Error('El pedido original Odoo no es unívoco');
+    if(!labelOrderMatches(matches[0].odooOrderRef,incident.order.odooReference,orderRows[0].id))throw Error('La etiqueta no está enlazada exactamente al pedido original de la incidencia');
     const pickingRows=await deps.odoo.read('stock.picking','read',[[op.pickingId]],{fields:['id','origin','sale_id','company_id','state']});const row=pickingRows[0];
     if(!row||row.origin!==reference||Number(Array.isArray(row.sale_id)?row.sale_id[0]:row.sale_id)!==Number(orderRows[0].id)||Number(Array.isArray(row.company_id)?row.company_id[0]:row.company_id)!==Number(Array.isArray(orderRows[0].company_id)?orderRows[0].company_id[0]:orderRows[0].company_id))throw Error('Picking REX no coincide con pedido/compañía de la incidencia');
     const required=await deps.odoo.stock.propose(incident,related);

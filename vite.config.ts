@@ -1,3 +1,5 @@
+import { registerCommunicationRoutes } from './backend/communications/routes';
+import { confirmIncidentShipment, mergeDeliveryIncident, preserveConcurrentShipmentConfirmations, type ManualShipmentResolution, type ShipmentConfirmation } from './backend/deliveryIncidentResolution';
 import { createExpeditionReplenishment } from "./backend/expeditionReplenishment/service";
 import { registerExpeditionReplenishmentRoutes } from "./backend/expeditionReplenishment/routes";
 import {assertInternalAutomationNote} from './backend/incidents/automationAuthor';
@@ -279,6 +281,7 @@ type StoredDashboardUser = {
   passwordHash: string;
   passwordSalt: string;
   permissions: DashboardPermission[];
+  theme?: "light" | "dark";
 };
 type DashboardSession = {
   id: string;
@@ -388,6 +391,7 @@ type OrdersCacheStore = {
 };
 
 type DeliveryValidationIncident = {
+  manualResolution?: ManualShipmentResolution;
   id: string;
   orderId: number;
   orderName?: string;
@@ -405,6 +409,7 @@ type DeliveryValidationIncident = {
 };
 
 type DeliveryValidationAuditEntry = {
+  manualShipmentResolution?: ManualShipmentResolution;
   id: string;
   createdAt: string;
   orderId?: number;
@@ -473,6 +478,8 @@ const readOnlyModels = new Set([
   "stock.warehouse",
   "stock.picking.type",
   "stock.move",
+  "stock.return.picking.line",
+  "stock.scrap",
   "purchase.order",
   "purchase.order.line",
   "mail.message",
@@ -507,6 +514,7 @@ export default defineConfig(({ mode }) => {
   for (const key of [
     "DASHBOARD_DATA_DIR",
     "DASHBOARD_AUTH_STORE",
+    "COMMUNICATIONS_DATA_DIR",
     "DASHBOARD_DEV_BYPASS_AUTH",
     "INCIDENTS_ODOO_WRITE_ENABLED",
     "INCIDENTS_ODOO_READ_ENABLED",
@@ -548,6 +556,7 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       strictPort: true,
+      fs: { deny: ["**/.env*", "**/.git/**", "**/.communications-lab/**", "**/.dashboard-data/**", "**/*.{crt,pem}", "**/*.sqlite*", "**/*auth.json", "**/*credentials*.json"] },
       allowedHosts: [
         "212.47.76.180",
         "dashboard.todoelectrico.net",
@@ -568,6 +577,7 @@ function odooReadOnlyApi(env: Record<string, string>) {
         next();
       });
       const auth = createAuthRepository(env);
+      registerCommunicationRoutes(server, auth, env);
       const tasks = createTaskRepository(env);
       const calendar = createCalendarRepository(env);
       const productCatalog = createProductCatalog(env);
@@ -809,6 +819,24 @@ function odooReadOnlyApi(env: Record<string, string>) {
 
       server.middlewares.use("/api/auth/me", async (request, response) => {
         const user = auth.getSessionUser(request.headers.cookie);
+        if (request.method === "PATCH") {
+          if (!user) {
+            sendJson(response, 401, { authenticated: false, message: "Login requerido" });
+            return;
+          }
+          try {
+            const payload = await readJsonBody<{ theme?: "light" | "dark" }>(request);
+            if (payload.theme !== "light" && payload.theme !== "dark") {
+              sendJson(response, 400, { message: "Tema no valido" });
+              return;
+            }
+            const updatedUser = auth.updateUser(user.id, { theme: payload.theme });
+            sendJson(response, 200, { authenticated: true, user: updatedUser });
+          } catch (error) {
+            sendJson(response, 400, { message: error instanceof Error ? error.message : "No se pudo guardar el tema" });
+          }
+          return;
+        }
         sendJson(response, 200, user ? { authenticated: true, user } : { authenticated: false });
       });
 
@@ -1169,8 +1197,13 @@ function odooReadOnlyApi(env: Record<string, string>) {
               active?: boolean;
               role?: DashboardUserRole;
               permissions?: DashboardPermission[];
+              theme?: "light" | "dark";
               password?: string;
             }>(request);
+            if (payload.theme && (user.role !== "admin" || userId !== user.id)) {
+              sendJson(response, 403, { message: "Solo administración puede cambiar su propio tema" });
+              return;
+            }
             if (
               userId === user.id &&
               (payload.active === false ||
@@ -2002,6 +2035,31 @@ function odooReadOnlyApi(env: Record<string, string>) {
               return;
             }
 
+            if (url.pathname === "/delivery-incidents/confirm-shipped") {
+              if (request.method !== "POST") {
+                sendJson(response, 405, { message: "Metodo no permitido" });
+                return;
+              }
+              try {
+                const payload = await readJsonBody<ShipmentConfirmation>(request);
+                const store = readOrdersCache(env);
+                const target = store.incidents.find(i => i.id === payload?.incidentId);
+                const order = target && store.orders.find(o => Number(cleanText(o.odooRef).replace(/^#/, "")) === target.orderId);
+                const result = confirmIncidentShipment(store.incidents, payload, user,
+                  order?.sendcloud?.trackingNumber || target?.tracking);
+                if (result.incidents !== store.incidents) writeOrdersCache(env, {...store, incidents: result.incidents,
+                  audit: [...store.audit, {id: randomToken(), createdAt: result.incident.resolvedAt!,
+                    orderId: result.incident.orderId, orderName: result.incident.orderName,
+                    tracking: result.incident.manualResolution!.tracking, mode: "manual", trigger: "manual",
+                    durationMs: 0, result: "skipped", reason: "Enviado confirmado manualmente; sin modificar Odoo.",
+                    manualShipmentResolution: result.incident.manualResolution}].slice(-1000) as DeliveryValidationAuditEntry[]});
+                sendJson(response, 200, {ok: true, incident: result.incident});
+              } catch (error) {
+                sendJson(response, 400, {message: error instanceof Error ? error.message : "No se pudo confirmar el envío"});
+              }
+              return;
+            }
+
             if (url.pathname === "/delivery-incidents/resolve") {
               if (request.method !== "POST") {
                 sendJson(response, 405, { message: "Metodo no permitido" });
@@ -2190,6 +2248,7 @@ function createAuthRepository(env: Record<string, string>) {
     role: user.role,
     active: user.active,
     permissions: user.permissions,
+    theme: user.theme === "dark" ? "dark" : "light",
   });
 
   return {
@@ -2270,6 +2329,7 @@ function createAuthRepository(env: Record<string, string>) {
         passwordHash: passwordData.hash,
         passwordSalt: passwordData.salt,
         permissions: permissionsForRole(role),
+        theme: "light",
       };
       writeStore({ ...store, users: [...store.users, user] });
       return publicUser(user);
@@ -2280,6 +2340,7 @@ function createAuthRepository(env: Record<string, string>) {
         active?: boolean;
         role?: DashboardUserRole;
         permissions?: DashboardPermission[];
+        theme?: "light" | "dark";
         password?: string;
       },
     ) {
@@ -2303,6 +2364,7 @@ function createAuthRepository(env: Record<string, string>) {
           typeof patch.active === "boolean" ? patch.active : user.active,
         role,
         permissions,
+        theme: patch.theme === "dark" ? "dark" : patch.theme === "light" ? "light" : user.theme === "dark" ? "dark" : "light",
         passwordHash: passwordData?.hash ?? user.passwordHash,
         passwordSalt: passwordData?.salt ?? user.passwordSalt,
       };
@@ -5622,6 +5684,7 @@ function readOrdersCache(env: Record<string, string>): OrdersCacheStore {
 }
 
 function writeOrdersCache(env: Record<string, string>, store: OrdersCacheStore) {
+  store = preserveConcurrentShipmentConfirmations(store, readOrdersCache(env));
   const storePath = getOrdersCachePath(env);
   mkdirSync(dirname(storePath), { recursive: true });
   writeFileSync(storePath, `${JSON.stringify(store, null, 2)}\n`, {
@@ -5959,12 +6022,7 @@ function mergeDeliveryIncidents(
   incoming.forEach((incident) => {
     if (!isReportableDeliveryIncidentReason(incident.reason)) return;
     const previous = rows.get(incident.id);
-    rows.set(incident.id, {
-      ...previous,
-      ...incident,
-      resolvedAt: undefined,
-      resolvedBy: undefined,
-    });
+    rows.set(incident.id, mergeDeliveryIncident(previous, incident));
   });
   return Array.from(rows.values()).sort((left, right) =>
     right.lastAttemptAt.localeCompare(left.lastAttemptAt),

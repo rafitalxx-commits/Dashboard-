@@ -1,7 +1,7 @@
 import { downloadReshipmentDocument } from './ReshipmentDocument';
 import { useEffect, useRef, useState } from 'react';
-import type { Incident } from '../../../backend/incidents/types';
-import type { StockProposal, StockOperation } from '../../../backend/incidents/odooStock';
+import type { Incident } from '../../../frontend-shared/incidents/types';
+import type { StockProposal, StockOperation } from '../../../frontend-shared/incidents/odooStock';
 import { api } from './api';
 import { Message,OperationStatus } from './components';
 

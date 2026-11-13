@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import type { Incident } from '../../../backend/incidents/types';
+import type { Incident } from '../../../frontend-shared/incidents/types';
 import { api } from './api';
 import { Message,OperationStatus } from './components';
 

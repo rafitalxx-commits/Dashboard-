@@ -169,3 +169,18 @@ html:has(.inc-wizard-modal[open]) { overflow: hidden; }
 
 /* Pending document sync must not impose a desktop min-content width on mobile. */
 .incidents-app{min-width:0;max-width:100%}
+
+/* Mobile incident list follows the Dashboard's persistent theme toggle. */
+@media (max-width:800px){
+  .app-shell[data-theme="dark"] .incidents-app{--bg:#111827;--card:#1f2937;--panel:#273449;--text:#f3f4f6;--muted:#aab4c3;--line:#3b4758;--accent:#78a9ff;--accent2:#263b59;--shadow:0 8px 26px rgba(0,0,0,.22);color:var(--text);background:var(--bg)}
+  .app-shell[data-theme="dark"] .incidents-app .inc-mobile-card,.app-shell[data-theme="dark"] .incidents-app .card{background:var(--card);border-color:var(--line);color:var(--text)}
+  .app-shell[data-theme="dark"] .incidents-app h1,.app-shell[data-theme="dark"] .incidents-app h2,.app-shell[data-theme="dark"] .incidents-app h3,.app-shell[data-theme="dark"] .incidents-app .inc-mobile-card strong{color:var(--text)}
+  .app-shell[data-theme="dark"] .incidents-app .inc-mobile-card small,.app-shell[data-theme="dark"] .incidents-app .inc-mobile-card .small,.app-shell[data-theme="dark"] .incidents-app .inc-field>span{color:var(--muted)}
+  .app-shell[data-theme="dark"] .incidents-app .btn,.app-shell[data-theme="dark"] .incidents-app .navbtn,.app-shell[data-theme="dark"] .incidents-app .chip,.app-shell[data-theme="dark"] .incidents-app .group-tab,.app-shell[data-theme="dark"] .incidents-app input,.app-shell[data-theme="dark"] .incidents-app select,.app-shell[data-theme="dark"] .incidents-app textarea{background:#273449;border-color:var(--line);color:var(--text)}
+  .app-shell[data-theme="dark"] .incidents-app .inc-pending-action{color:#a9caff;background:#263b59}
+  .app-shell[data-theme="dark"] .incidents-app .inc-pending-waiting,.app-shell[data-theme="dark"] .incidents-app .inc-pending-cost{color:#ffd28a;background:#49391f}
+  .app-shell[data-theme="dark"] .incidents-app .inc-pending-review{color:#d0b8ff;background:#3b2e55}
+  .app-shell[data-theme="dark"] .incidents-app .inc-pending-active{color:#d1d7e0;background:#374151}
+  .app-shell[data-theme="dark"] .incidents-app .inc-pending-done,.app-shell[data-theme="dark"] .incidents-app .inc-situation.is-closed{color:#87e0b1;background:#183d30;border-color:#28634b}
+  .app-shell[data-theme="dark"] .incidents-app .inc-situation.is-open{color:#ffaaa4;background:#492b2a;border-color:#743d3a}
+}

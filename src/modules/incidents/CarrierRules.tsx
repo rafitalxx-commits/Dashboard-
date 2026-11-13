@@ -1,5 +1,5 @@
 import {useEffect,useState,useRef} from 'react';import {Plus,Save,Pencil,Clock3,Truck,CheckCircle2,PauseCircle} from 'lucide-react';
-import {api} from './api';import {Field,Message,Modal,OperationStatus} from './components';import {defaultCarrierRules,type CarrierRule} from '../../../backend/incidents/carrierPolicy';
+import {api} from './api';import {Field,Message,Modal,OperationStatus} from './components';import {defaultCarrierRules,type CarrierRule} from '../../../frontend-shared/incidents/carrierPolicy';
 export function CarrierRules({demo}:{demo:boolean}){
  const [rules,setRules]=useState<CarrierRule[]>(defaultCarrierRules),[canEdit,setCanEdit]=useState(false),[draft,setDraft]=useState<CarrierRule|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[message,setMessage]=useState('');const lock=useRef(false);
  useEffect(()=>{if(demo)return;let active=true;api('/rules').then(v=>{if(active){setRules(v.rules);setCanEdit(v.canEdit);}}).catch(e=>{if(active)setError(e.message);});return()=>{active=false;};},[demo]);

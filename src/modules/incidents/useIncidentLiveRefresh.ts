@@ -1,5 +1,5 @@
 import {useEffect,useRef} from 'react';
-import type {Incident} from '../../../backend/incidents/types';
+import type {Incident} from '../../../frontend-shared/incidents/types';
 import {api} from './api';
 
 /** Read-only refresh independent of the tab/action that started an external job.

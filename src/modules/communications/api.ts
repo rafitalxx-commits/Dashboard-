@@ -1,0 +1,5 @@
+const prefix = import.meta.env.BASE_URL === '/' ? '' : import.meta.env.BASE_URL.replace(/\/$/, '');
+export const commURL = (path: string) => `${prefix}/api/communications${path}`;
+export async function api<T = any>(path: string, method = 'GET', body?: unknown): Promise<T> { const r = await fetch(commURL(path), { method, credentials: 'same-origin', headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }); const value = await r.json(); if (!r.ok)
+    throw Object.assign(new Error(value.message || `Error ${r.status}`), { status: r.status }); return value; }
+export async function upload(file: File, profileFor?: string) { const data = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onerror = () => reject(new Error('No se pudo leer el archivo')); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.readAsDataURL(file); }); return api('/files', 'POST', { name: file.name, data, profileFor }); }

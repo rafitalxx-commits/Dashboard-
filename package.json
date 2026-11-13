@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build": "vite build",
+    "build": "vite build && node scripts/restore-production-styles.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "test:amazon-parser": "node --experimental-strip-types scripts/test-amazon-email-parser.ts",
     "test:odoo-delivery-status": "node --experimental-strip-types scripts/test-odoo-delivery-status.ts",

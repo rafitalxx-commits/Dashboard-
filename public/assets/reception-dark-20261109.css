@@ -1,0 +1,28 @@
+/* One accessible theme switch in the user menu. */
+.app-shell .topbar .theme-toggle-button { display: none; }
+.app-shell .session-theme-toggle { background: #edf3fb; color: #1e3a5f; border: 1px solid #91a8c2; }
+.app-shell[data-theme="dark"] .session-theme-toggle { background: #25364c; color: #f1f5f9; border: 1px solid #788ba5; }
+.app-shell[data-theme="dark"] .session-theme-toggle:hover { background: #354d69; }
+/* Reception drawer surfaces, actions and readable secondary text. */
+.app-shell[data-theme="dark"] .inventory-drawer-summary { background:#1d2b40; color:#e8eef8; border-color:#40516a; }
+.app-shell[data-theme="dark"] .inventory-drawer-summary > span:not(.inventory-receipt-metrics),
+.app-shell[data-theme="dark"] .inventory-drawer-summary strong { color:#e8eef8; }
+.app-shell[data-theme="dark"] .inventory-active-session { background:#173e35; color:#b1f2d0; border-color:#327858; }
+.app-shell[data-theme="dark"] .inventory-active-session :is(strong,small) { color:#d1f8e3; }
+.app-shell[data-theme="dark"] .inventory-active-session .inventory-release-session { background:#244d42; color:#d1f8e3; border-color:#6aa68a; }
+.app-shell[data-theme="dark"] .inventory-add-unexpected { background:#1d3447; color:#e8eef8; border-color:#405a70; }
+.app-shell[data-theme="dark"] .inventory-add-unexpected strong { color:#e8f4ff; }
+.app-shell[data-theme="dark"] .inventory-add-unexpected span { color:#bdd2e2; }
+.app-shell[data-theme="dark"] .inventory-drawer-header-actions button,
+.app-shell[data-theme="dark"] .inventory-plan-toggle { background:#253a52; color:#edf4ff; border:1px solid #7089a8; box-shadow:none; }
+.app-shell[data-theme="dark"] .inventory-drawer-header-actions .inventory-cancel-compact { color:#ffb8b8; }
+.app-shell[data-theme="dark"] .inventory-drawer-header-actions button:hover,
+.app-shell[data-theme="dark"] .inventory-plan-toggle:hover { background:#35516e; border-color:#a4bad1; }
+.app-shell[data-theme="dark"] .inventory-reception-drawer > header { background:#1b293e; color:#edf4ff; border-color:#40516a; }
+.app-shell[data-theme="dark"] .inventory-reception-drawer > header :is(h2,p,small) { color:#d6e4f5; }
+/* Pending purchase alerts remain red, including selected-row and hover states. */
+.app-shell[data-theme="dark"] button.purchase-alert-icon:not(.is-confirmed) { background:linear-gradient(135deg,#ef4444,#b91c1c); color:#fff; border-color:#f87171; box-shadow:0 3px 10px #7f1d1d80; }
+.app-shell[data-theme="dark"] button.purchase-alert-icon:not(.is-confirmed):hover,
+.app-shell[data-theme="dark"] .selected-row button.purchase-alert-icon:not(.is-confirmed) { background:linear-gradient(135deg,#dc2626,#991b1b); color:#fff; border-color:#fca5a5; }
+/* Keep the selected sales order readable in dark mode. */
+.app-shell[data-theme="dark"] .selected-row td { background:#25364c; color:#edf4ff; }

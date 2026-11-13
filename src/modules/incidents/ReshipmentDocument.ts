@@ -1,7 +1,8 @@
-import {incidentReshipmentDocument,reshipmentReference} from '../../../backend/incidents/reshipment';
+import {incidentReshipmentDocument,reshipmentReference} from '../../../frontend-shared/incidents/reshipment';
 import QRCode from 'qrcode';
-import type {Incident} from '../../../backend/incidents/types';
-import type {reshipmentPrintData} from '../../../backend/incidents/reshipment';
+import JsBarcode from 'jsbarcode';
+import type {Incident} from '../../../frontend-shared/incidents/types';
+import type {reshipmentPrintData} from '../../../frontend-shared/incidents/reshipment';
 import {api} from './api';
 type RexSlip=Awaited<ReturnType<typeof reshipmentPrintData>>;
 async function productPhoto(productId:number):Promise<string|undefined>{
@@ -18,11 +19,12 @@ export async function downloadReshipmentDocumentByReference(reference:string,asF
  if(data.test){pdf.setFillColor('#fff4dd');pdf.rect(16,8,178,8,'F');text('PRUEBA LAB / ODOO DEMO - NO EXPEDIR',20,13.5,8);}
  pdf.setFont('helvetica','bold');text('ALBARAN',18,29,23);pdf.setFont('helvetica','normal');
  text(`Pedido: ${data.orderReference}`,111,23,10);text(`Incidencia: ${data.incidentId}`,111,30,10);text(`Reexpedicion: ${data.reference}`,111,37,10);text(`Fecha: ${new Date(data.createdAt).toLocaleDateString('es-ES')}`,18,40,9);
- pdf.setDrawColor('#d8e2eb');pdf.line(18,49,192,49);text('DESTINATARIO DE ENVIO',18,57,8);pdf.setFont('helvetica','bold');text(pdf.splitTextToSize(data.destination.name,125) as any,18,65,12);pdf.setFont('helvetica','normal');
- const address=[data.destination.address,[data.destination.postalCode,data.destination.city].filter(Boolean).join(' '),data.destination.country,data.destination.phone,data.destination.email].filter(Boolean);let y=65+pdf.splitTextToSize(data.destination.name,125).length*6+3;
- for(const value of address){const lines=pdf.splitTextToSize(String(value),125);text(lines as any,18,y,10);y+=lines.length*5;}
+ pdf.setDrawColor('#d8e2eb');pdf.line(18,49,192,49);text('DESTINATARIO DE ENVIO',18,57,8);pdf.setFont('helvetica','bold');text(pdf.splitTextToSize(data.destination.name,82) as any,18,65,12);pdf.setFont('helvetica','normal');
+ const address=[data.destination.address,[data.destination.postalCode,data.destination.city].filter(Boolean).join(' '),data.destination.country,data.destination.phone,data.destination.email].filter(Boolean);let y=65+pdf.splitTextToSize(data.destination.name,82).length*6+3;
+ for(const value of address){const lines=pdf.splitTextToSize(String(value),82);text(lines as any,18,y,10);y+=lines.length*5;}
  if(data.pickingName)text(`Odoo: ${data.pickingName}`,111,44,9);
- const qr=await QRCode.toDataURL(data.reference,{margin:1,width:220,errorCorrectionLevel:'M'});pdf.addImage(qr,'PNG',155,54,35,35);text('Escanear REX',159,94,8);y=Math.max(y+10,107);
+ const qr=await QRCode.toDataURL(data.reference,{margin:1,width:220,errorCorrectionLevel:'M'});pdf.addImage(qr,'PNG',155,54,35,35);text('Escanear REX',159,94,8);
+ const barcode=document.createElement('canvas');JsBarcode(barcode,data.reference,{format:'CODE128',displayValue:true,width:1.5,height:48,margin:6});pdf.addImage(barcode.toDataURL('image/png'),'PNG',106,96,84,22);y=Math.max(y+10,124);
  const header=()=>{pdf.setFillColor('#eef3f8');pdf.rect(18,y,174,9,'F');text('Imagen',21,y+6,9);text('Codigo',50,y+6,9);text('Descripcion',90,y+6,9);text('Cantidad',174,y+6,9);y+=11;};header();
  for(let n=0;n<data.lines.length;n++){
   const line=data.lines[n],description=pdf.splitTextToSize(line.name,77),sku=pdf.splitTextToSize(line.sku,34),height=Math.max(31,description.length*5+9,sku.length*5+9);

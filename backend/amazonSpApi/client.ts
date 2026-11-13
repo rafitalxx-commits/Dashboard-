@@ -128,7 +128,7 @@ export function buildConfirmShipmentRequest(
       packageReferenceId: draft.packageReferenceId,
       carrierCode: normalizeCarrierCode(draft.carrierCode || draft.carrier),
       carrierName: draft.carrier,
-      shippingMethod: draft.shippingMethod || draft.carrier,
+      shippingMethod: normalizeShippingMethod(draft),
       trackingNumber: draft.tracking,
       shipDate: draft.shipmentDate,
       orderItems: draft.orderItems.map((item) => ({
@@ -154,8 +154,18 @@ function normalizeCarrierCode(value: string) {
   if (normalized.includes("GLS")) return "GLS";
   if (normalized.includes("SEUR")) return "SEUR";
   if (normalized.includes("CTT")) return "CTT";
+  if (/CORREOS[\s-]*EXPRESS/.test(normalized)) return "Correos Express";
   if (normalized.includes("CORREOS")) return "Correos";
   return value.trim();
+}
+
+function normalizeShippingMethod(draft: AmazonShipmentConfirmationDraft) {
+  const method = draft.shippingMethod || draft.carrier;
+  if (normalizeCarrierCode(draft.carrierCode || draft.carrier) !== "Correos Express") return method;
+  // Accept pending drafts from older browser sessions without editing stored history.
+  if (["Correos Express PAQ 24", "cex-paq-24", "Paq24"].includes(method)) return "Paq24";
+  if (["Correos Express Baleares Express", "cex-baleares-express", "Bareares Exp"].includes(method)) return "Bareares Exp";
+  return method;
 }
 
 async function getLwaAccessToken(config: AmazonSpApiConfig) {

@@ -754,6 +754,20 @@
 .si-editor-add:hover {
   background: #eef5f8;
 }
+.si-drive-confirm-destination {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  margin: 8px 0 12px;
+  padding: 12px;
+  border: 1px solid #f0c36d;
+  border-radius: 8px;
+  background: #fffaf0;
+  color: #6b3f08;
+}
+.si-drive-confirm-destination p { margin: 0; }
+.si-drive-confirm-destination button { min-height: 40px; }
+.si-drive-confirm-destination small { font-size: 12px; }
 .si-odoo {
   display: inline-flex;
   align-items: center;
@@ -1277,3 +1291,91 @@
 .si-review-dialog button { padding: 9px 12px; cursor: pointer; }
 .si-review-dialog button:disabled { cursor: wait; opacity: .55; }
 @media (max-width: 600px) { .si-review-grid { grid-template-columns: minmax(0, 1fr); } .si-review-dialog { padding: 14px; } .si-review-dialog .si-draft-confirm-actions { flex-direction: column; } }
+
+/* Dark surfaces for the supplier invoice workspace. */
+.app-shell[data-theme="dark"] .si-actions button,
+.app-shell[data-theme="dark"] .si-filter-buttons button,
+.app-shell[data-theme="dark"] .si-pages button,
+.app-shell[data-theme="dark"] .si-msg,
+.app-shell[data-theme="dark"] .si-kpis article,
+.app-shell[data-theme="dark"] .si-kpis article:nth-child(4),
+.app-shell[data-theme="dark"] .si-kpis article:nth-child(5),
+.app-shell[data-theme="dark"] .si-kpis article:nth-child(8),
+.app-shell[data-theme="dark"] .si-filters,
+.app-shell[data-theme="dark"] .si-chart,
+.app-shell[data-theme="dark"] .si-table,
+.app-shell[data-theme="dark"] .si-mobile,
+.app-shell[data-theme="dark"] .si-table-head,
+.app-shell[data-theme="dark"] .si-field input,
+.app-shell[data-theme="dark"] .si-field select,
+.app-shell[data-theme="dark"] .si-search input,
+.app-shell[data-theme="dark"] .si-top i,
+.app-shell[data-theme="dark"] .si-donut:before,
+.app-shell[data-theme="dark"] .si-table th,
+.app-shell[data-theme="dark"] .si-table tbody tr:hover,
+.app-shell[data-theme="dark"] .si-drawer,
+.app-shell[data-theme="dark"] .si-close,
+.app-shell[data-theme="dark"] .si-pdf-frame,
+.app-shell[data-theme="dark"] .si-doc-type-badge,
+.app-shell[data-theme="dark"] .si-doc-type-badge.no-factura,
+.app-shell[data-theme="dark"] .si-product-editor,
+.app-shell[data-theme="dark"] .si-product-suggestions,
+.app-shell[data-theme="dark"] .si-product-suggestions button:hover,
+.app-shell[data-theme="dark"] .si-product-suggestions button:focus,
+.app-shell[data-theme="dark"] .si-editor-line-header,
+.app-shell[data-theme="dark"] .si-editor-line,
+.app-shell[data-theme="dark"] .si-editor-line.si-qty-mismatch,
+.app-shell[data-theme="dark"] .si-draft-confirm,
+.app-shell[data-theme="dark"] .si-fiscal-bulk,
+.app-shell[data-theme="dark"] .si-fiscal-bulk input,
+.app-shell[data-theme="dark"] .si-fiscal-bulk select,
+.app-shell[data-theme="dark"] .si-totals-check.ok,
+.app-shell[data-theme="dark"] .si-totals-check.bad,
+.app-shell[data-theme="dark"] .si-price-ok,
+.app-shell[data-theme="dark"] .si-price-diff,
+.app-shell[data-theme="dark"] .si-chat-stage,
+.app-shell[data-theme="dark"] .si-chat-log,
+.app-shell[data-theme="dark"] .si-chat-user,
+.app-shell[data-theme="dark"] .si-chat-assistant,
+.app-shell[data-theme="dark"] .si-chat-system,
+.app-shell[data-theme="dark"] .si-editor-field select,
+.app-shell[data-theme="dark"] .si-lines-totals input,
+.app-shell[data-theme="dark"] .si-editor-add,
+.app-shell[data-theme="dark"] .si-editor-add:hover,
+.app-shell[data-theme="dark"] .si-drive-confirm-destination,
+.app-shell[data-theme="dark"] .si-mobile button,
+.app-shell[data-theme="dark"] .si-phase2 .si-flow,
+.app-shell[data-theme="dark"] .si-phase2 .si-flow span,
+.app-shell[data-theme="dark"] .si-match-media,
+.app-shell[data-theme="dark"] .si-match-baja,
+.app-shell[data-theme="dark"] .si-match-sin,
+.app-shell[data-theme="dark"] .si-badge.doc-SIN_REVISAR,
+.app-shell[data-theme="dark"] .si-badge.doc-EN_REVISION,
+.app-shell[data-theme="dark"] .si-badge.doc-PENDIENTE_COTEJO,
+.app-shell[data-theme="dark"] .si-badge.doc-PENDIENTE_VALIDAR,
+.app-shell[data-theme="dark"] .si-badge.doc-INCIDENCIA,
+.app-shell[data-theme="dark"] .si-badge.po-SIN_FACTURA,
+.app-shell[data-theme="dark"] .si-badge.po-FACTURACION_PARCIAL,
+.app-shell[data-theme="dark"] .si-badge.po-SIN_RECEPCION,
+.app-shell[data-theme="dark"] .si-badge.po-INCIDENCIA,
+.app-shell[data-theme="dark"] .si-inbox-card,
+.app-shell[data-theme="dark"] .si-agent-proposal,
+.app-shell[data-theme="dark"] .si-doc-actions button,
+.app-shell[data-theme="dark"] .si-doc-actions button:hover:not(:disabled),
+.app-shell[data-theme="dark"] .si-warn,
+.app-shell[data-theme="dark"] .si-edit-fields input,
+.app-shell[data-theme="dark"] .si-edit-fields input:disabled,
+.app-shell[data-theme="dark"] .si-multipo,
+.app-shell[data-theme="dark"] .si-multipo select,
+.app-shell[data-theme="dark"] .si-multipo th,
+.app-shell[data-theme="dark"] .si-multipo-assigned,
+.app-shell[data-theme="dark"] .si-edit-fields select,
+.app-shell[data-theme="dark"] .si-drive-nav,
+.app-shell[data-theme="dark"] .si-drive-crumb button,
+.app-shell[data-theme="dark"] .si-drive-suggest,
+.app-shell[data-theme="dark"] .si-drive-folders,
+.app-shell[data-theme="dark"] .si-drive-folders li button:hover,
+.app-shell[data-theme="dark"] .si-drive-newfolder input,
+.app-shell[data-theme="dark"] .si-drive-newfolder button,
+.app-shell[data-theme="dark"] .si-review-dialog,
+.app-shell[data-theme="dark"] .si-review-pending { background: #1c2a3d; color: #e5eaf2; border-color: #475569; }

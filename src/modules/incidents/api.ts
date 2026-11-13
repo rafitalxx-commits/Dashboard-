@@ -1,7 +1,7 @@
-import type {Submission} from '../../../backend/incidents/submissions';
+import type {Submission} from '../../../frontend-shared/incidents/submissions';
 export type IncidentSubmissionResult={submission:Submission};
-import type { Incident, OrderContext, WizardDraft } from '../../../backend/incidents/types';
-import { applyAction, buildIncident, type Action } from '../../../backend/incidents/workflow';
+import type { Incident, OrderContext, WizardDraft } from '../../../frontend-shared/incidents/types';
+import { applyAction, buildIncident, type Action } from '../../../frontend-shared/incidents/workflow';
 export async function api<T=any>(path:string,body?:unknown,signal?:AbortSignal):Promise<T>{const r=await fetch((import.meta.env.BASE_URL === '/' ? '' : import.meta.env.BASE_URL.replace(/\/$/,''))+'/api/incidents'+path,{signal,method:body===undefined?'GET':'POST',credentials:'same-origin',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});const value=await r.json();if(!r.ok)throw Error(value.message||`Error ${r.status}`);return value;}
 export type IncidentCreationResult={incident:Incident;background?:{state:string;message:string};rexPreparation?:{status:'not_required'|'gate_closed'|'approval_mismatch'|'blocked'|'prepared'|'failed';message:string;reference?:string;pickingId?:number}};
 export type Capabilities={source:string;configured:boolean;writable:boolean;driveWritable:boolean;odooWritable:boolean;odooMode?:'test'|'operational'|'unconfigured';rexWritable?:boolean;documentsWritable?:boolean;documentRecoveryError?:string;message:string};

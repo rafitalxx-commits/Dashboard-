@@ -1,4 +1,4 @@
-import type {Incident} from '../../../backend/incidents/types';
+import type {Incident} from '../../../frontend-shared/incidents/types';
 
 /** A delayed reader must never roll back a mutation already acknowledged by the server.
  * Incidences have no delete action: retain records absent from an older list snapshot. */

@@ -1,6 +1,6 @@
 import { useEffect,useState } from 'react';
-import type { Incident } from '../../../backend/incidents/types';
-import { getIncidentNetLoss } from '../../../backend/incidents/domain';
+import type { Incident } from '../../../frontend-shared/incidents/types';
+import { getIncidentNetLoss } from '../../../frontend-shared/incidents/domain';
 import { api } from './api';
 import { money } from './components';
 import './incidents.css';

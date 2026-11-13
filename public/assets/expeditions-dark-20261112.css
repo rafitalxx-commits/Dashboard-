@@ -1,0 +1,94 @@
+/* Shipping surfaces only. No light-theme, layout or operational changes. */
+.app-shell[data-theme="dark"] .expeditions-view :is(
+  .expeditions-card, .shipping-rule-row, .shipping-rule-editor, .rule-drawer,
+  .rule-menu-popover, .rule-menu-popover button, .rule-select-options
+) {
+  background: var(--surface, #151f30);
+  color: var(--text, #e5eaf2);
+  border-color: var(--line, #39495e);
+}
+.app-shell[data-theme="dark"] .expeditions-view :is(
+  .order-summary > div, .shipping-rule-row.default, .shipping-rule-editor.default,
+  .shipment-rule-card, .rule-applied, .shipment-success, .amazon-shipment-state,
+  .quote.selected, .diagnostic-order, .diagnostic-evaluations
+) {
+  background: var(--surface-muted, #1e293b);
+  color: var(--text, #e5eaf2);
+  border-color: var(--line, #39495e);
+}
+.app-shell[data-theme="dark"] .expeditions-view :is(
+  .expeditions-card h3, .expeditions-card dd, .settings-demo h3,
+  .rule-row-title strong, .rule-row-carrier strong, .rule-drawer h3,
+  .parcel-editor summary strong, .quote strong, .quote b,
+  .shipment-success strong, .amazon-shipment-state strong, .diagnostic-order strong
+) { color: var(--text, #e5eaf2); }
+.app-shell[data-theme="dark"] .expeditions-view :is(
+  .expeditions-card p, .expeditions-card dt, .expeditions-card .card-heading span,
+  .action-card > span, .destination-fields label, .destination-inline-fields label,
+  .destination-editor summary, .parcel-editor summary, .parcel-editor summary span,
+  .parcel-row label, .label-reference-field, .label-reference-field small,
+  .odoo-auto-validate, .manual-rule-select, .manual-rule-select small,
+  .shipping-rule-filters label, .shipping-rule-title label, .shipping-rule-grid label,
+  .shipping-rule-main label, .rule-row-main p, .rule-drawer header span,
+  .rule-drawer-fields label, .rule-field-label, .rule-select-count,
+  .rule-select-options label, .rule-select-options p, .rule-setting-switch,
+  .diagnostic-search, .diagnostic-order span, .diagnostic-evaluations small,
+  .shipment-rule-card p, .shipment-success span, .quote span, .amazon-shipment-state span
+) { color: var(--muted, #b7c5d6); }
+.app-shell[data-theme="dark"] .expeditions-view :is(
+  .destination-fields input, .label-reference-field input, .manual-rule-select select,
+  .parcel-row input, .shipping-rule-filters input, .shipping-rule-filters select,
+  .shipping-rule-title input, .shipping-rule-title select,
+  .shipping-rule-grid input, .shipping-rule-grid select,
+  .shipping-rule-main input, .shipping-rule-main select,
+  .rule-drawer-fields input, .rule-drawer-fields select, .rule-drawer-fields textarea,
+  .rule-select-popover summary, .diagnostic-search input
+) {
+  background: #0b1220;
+  color: var(--text, #e5eaf2);
+  border-color: #506078;
+}
+.app-shell[data-theme="dark"] .expeditions-view :is(
+  .destination-editor, .parcel-summary-actions, .rule-drawer header, .rule-drawer footer,
+  .quote, .rule-select-options
+) { border-color: var(--line, #39495e); }
+.app-shell[data-theme="dark"] .expeditions-view :is(
+  .rule-priority-badge, .rule-row-title span, .rule-row-carrier span,
+  .rule-switch, .rule-setting-switch, .icon-action, .add-parcel-button,
+  .refresh-corrected-action
+) {
+  background: #25364c;
+  color: #dbeafe;
+  border-color: #506078;
+}
+.app-shell[data-theme="dark"] .expeditions-view :is(
+  .shipping-rule-row:hover, .rule-menu-popover button:hover,
+  .rule-select-options label:hover, .icon-action:hover,
+  .refresh-corrected-action:hover, .add-parcel-button:hover
+) { background: #25364c; border-color: #7089a8; }
+.app-shell[data-theme="dark"] .expeditions-view :is(
+  .status-chip, .rule-switch.on, .rule-setting-switch.on, .diagnostic-evaluations .matched b
+) { background: #173e35; color: #b1f2d0; border-color: #327858; }
+.app-shell[data-theme="dark"] .expeditions-view .expeditions-card .card-heading .status-chip {
+  color: #b1f2d0;
+}
+.app-shell[data-theme="dark"] .expeditions-view :is(
+  .shipment-rule-card > div > span, .rule-priority-badge
+) { color: #93c5fd; }
+.app-shell[data-theme="dark"] .expeditions-view .shipment-rule-icon { background: #1d4ed8; color: #fff; }
+.app-shell[data-theme="dark"] .expeditions-view .expeditions-notice.success { color: #86efac; }
+.app-shell[data-theme="dark"] .expeditions-view .destination-fields input.missing {
+  background: #3b2328; color: #fecaca; border-color: #f87171;
+}
+.app-shell[data-theme="dark"] .expeditions-view .diagnostic-evaluations .missed b {
+  background: #3b2328; color: #fca5a5;
+}
+.app-shell[data-theme="dark"] .expeditions-view .cancel-unavailable { color: #fcd34d; }
+.app-shell[data-theme="dark"] .expeditions-view .rule-menu-popover button:disabled { color: #94a3b8; }
+.app-shell[data-theme="dark"] .expeditions-view .shipping-rules-manager :is(
+  .settings-demo-head span, .amazon-history-empty
+) { color: var(--muted, #b7c5d6); }
+.app-shell[data-theme="dark"] .expeditions-view :is(input, textarea)::placeholder {
+  color: #94a3b8;
+  opacity: 1;
+}

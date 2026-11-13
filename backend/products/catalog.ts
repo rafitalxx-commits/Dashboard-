@@ -13,6 +13,8 @@ export type CatalogProduct = {
   reserved: number;
   incoming: number;
   forecast: number;
+  /** Odoo product.product.standard_price, read-only. */
+  cost: number | null;
   mto: boolean;
   isKit: boolean;
   componentCount: number;
@@ -210,6 +212,13 @@ export function createProductCatalog(env: Record<string, string>) {
     if (syncing) return read();
     syncing = true;
     const before = read();
+    // Older catalog snapshots predate the read-only cost field. Refresh the
+    // complete product set once so an incremental sync cannot leave a mixed
+    // catalog where only recently changed products have a cost.
+    const refreshCosts = before.products.some(
+      (product) => !Object.prototype.hasOwnProperty.call(product, "cost"),
+    );
+    const effectiveFull = full || refreshCosts;
     const startedAt = new Date().toISOString();
     save({
       ...before,
@@ -227,12 +236,12 @@ export function createProductCatalog(env: Record<string, string>) {
         if (!stockLocationId)
           throw new Error("No se encontró la ubicación Odoo ALM/Stock");
         const since =
-          !full && (before.sync.lastStartedAt || before.sync.lastFinishedAt)
+          !effectiveFull && (before.sync.lastStartedAt || before.sync.lastFinishedAt)
             ? (before.sync.lastStartedAt || before.sync.lastFinishedAt || "")
                 .replace("T", " ")
                 .slice(0, 19)
             : "";
-        const productDomain: unknown[] = since
+        const productDomain: unknown[] = since && !effectiveFull
           ? [["write_date", ">=", since]]
           : [["active", "=", true]];
         const changedProducts = await kw(
@@ -255,9 +264,10 @@ export function createProductCatalog(env: Record<string, string>) {
               "outgoing_qty",
               "virtual_available",
               "qty_available",
+              "standard_price",
             ],
             context: { location: stockLocationId, active_test: false },
-            limit: full ? 20000 : 5000,
+            limit: effectiveFull ? 20000 : 5000,
             order: "id asc",
           },
         );
@@ -305,7 +315,7 @@ export function createProductCatalog(env: Record<string, string>) {
         });
         // A component quant change does not update the kit's product write_date.
         // Refresh dependent phantom kits during an incremental sync as well.
-        if (!full && changedIds.size) {
+        if (!effectiveFull && changedIds.size) {
           const bomLines = await kw("mrp.bom.line", "search_read", [
             [["product_id", "in", [...changedIds]]],
           ], { fields: ["bom_id"], limit: 20000 });
@@ -330,7 +340,7 @@ export function createProductCatalog(env: Record<string, string>) {
             }
           }
         }
-        const products = full
+        const products = effectiveFull
           ? changedProducts
           : changedIds.size
             ? await kw("product.product", "read", [[...changedIds]], {
@@ -349,6 +359,7 @@ export function createProductCatalog(env: Record<string, string>) {
                   "outgoing_qty",
                   "virtual_available",
                   "qty_available",
+                  "standard_price",
                 ],
                 context: { location: stockLocationId, active_test: false },
               })
@@ -433,7 +444,7 @@ export function createProductCatalog(env: Record<string, string>) {
         const quantRefreshDomain: unknown[] = [
           ["location_id", "child_of", stockLocationId],
         ];
-        if (!full && activeProducts.length) {
+        if (!effectiveFull && activeProducts.length) {
           quantRefreshDomain.push([
             "product_id",
             "in",
@@ -489,6 +500,9 @@ export function createProductCatalog(env: Record<string, string>) {
               reserved: Number(p.outgoing_qty || stock.reserved || 0),
               incoming: Number(p.incoming_qty || 0),
               forecast: Number(p.virtual_available || 0),
+              cost: Number.isFinite(Number(p.standard_price))
+                ? Number(p.standard_price)
+                : null,
               mto: Boolean(
                 (template?.route_ids || []).some((id: number) =>
                   mtoRoutes.has(id),
@@ -512,7 +526,7 @@ export function createProductCatalog(env: Record<string, string>) {
           before.products,
           refreshedProducts,
           activeProductIds,
-          full,
+          effectiveFull,
         );
         const reconciledIds = new Set(
           reconciledProducts.map((product) => product.id),
@@ -530,7 +544,7 @@ export function createProductCatalog(env: Record<string, string>) {
             lastStartedAt: startedAt,
             lastFinishedAt: now,
             message: `ALM/Stock · ${reconciledProducts.length} productos · ${removed} retirados`,
-            full: full || !before.sync.full,
+            full: effectiveFull || !before.sync.full,
             scanned: products.length,
             changed: changedIds.size,
             removed,

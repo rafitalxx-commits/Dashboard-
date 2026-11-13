@@ -1,11 +1,11 @@
-import {hasRecordedIncidentRecovery} from '../../../backend/incidents/operatorWorkflow.ts';
-import {requiresExtraOutbound,extraOutboundRecorded} from '../../../backend/incidents/excessMerchandise.ts';
-import {requiresOmittedStockCorrection} from '../../../backend/incidents/omittedMerchandise.ts';
-import {reshipmentPrerequisites} from '../../../backend/incidents/reshipment.ts';
-import {incidentShipments} from '../../../backend/incidents/shipmentConfirmation.ts';
-import {warehouseReceived} from '../../../backend/incidents/receiptConfirmation.ts';
-import type { Incident, IncidentClosureChecklist } from '../../../backend/incidents/types';
-import { getIncidentClosureChecklist } from '../../../backend/incidents/domain.ts';
+import {hasRecordedIncidentRecovery} from '../../../frontend-shared/incidents/operatorWorkflow.ts';
+import {requiresExtraOutbound,extraOutboundRecorded} from '../../../frontend-shared/incidents/excessMerchandise.ts';
+import {requiresOmittedStockCorrection} from '../../../frontend-shared/incidents/omittedMerchandise.ts';
+import {reshipmentPrerequisites} from '../../../frontend-shared/incidents/reshipment.ts';
+import {incidentShipments} from '../../../frontend-shared/incidents/shipmentConfirmation.ts';
+import {warehouseReceived} from '../../../frontend-shared/incidents/receiptConfirmation.ts';
+import type { Incident, IncidentClosureChecklist } from '../../../frontend-shared/incidents/types';
+import { getIncidentClosureChecklist } from '../../../frontend-shared/incidents/domain.ts';
 
 export type ProgressSection = 'General' | 'Logística' | 'Reclamaciones' | 'Costes' | 'Documentos / fotos';
 export type ProgressKey = Exclude<keyof IncidentClosureChecklist, 'missing' | 'canClose' | 'stockRegularized'>;

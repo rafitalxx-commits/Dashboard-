@@ -1,5 +1,5 @@
 import { ReplenishmentAlerts } from "./ReplenishmentAlerts";
-import type {reshipmentPreparation} from '../../../backend/incidents/reshipment';
+import type {reshipmentPreparation} from '../../../frontend-shared/incidents/reshipment';
 import {downloadReshipmentDocumentByReference} from '../incidents/ReshipmentDocument';
 import {downloadDemoRexLabel} from './demoRexLabel';
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
@@ -916,6 +916,9 @@ function shippingServiceLabel(serviceId?: string) {
 }
 
 function amazonShippingMethod(carrier: string, carrierStatus?: string) {
+  if (carrierStatus === "cex-paq-24") return "Paq24";
+  if (carrierStatus === "cex-baleares-express") return "Bareares Exp";
+  if (carrier.trim().toUpperCase() === "MRW" && carrierStatus === "mrw-urgent-1900-expedition") return "Urgente 19";
   return String(carrierStatus || "").startsWith("cex-")
     ? shippingServiceLabel(carrierStatus)
     : carrier;

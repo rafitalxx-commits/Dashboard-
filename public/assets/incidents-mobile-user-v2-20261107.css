@@ -1,0 +1,5 @@
+@media (max-width: 640px) {
+  .app-shell:has(.main > .incidents-app) .topbar .theme-toggle-button { display: none; }
+  .app-shell[data-theme="dark"]:has(.main > .incidents-app) .topbar .session-pill button { background: #253247; color: #e5eaf2; }
+  .app-shell[data-theme="dark"]:has(.main > .incidents-app) .topbar .session-pill button:hover { background: #334155; }
+}

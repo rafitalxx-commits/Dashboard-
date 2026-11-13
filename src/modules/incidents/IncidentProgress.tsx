@@ -1,7 +1,7 @@
 import type { CSSProperties } from 'react';
 import { Check, Clock3, ChevronRight, ClipboardCheck, FileWarning, Package, Truck, Camera, Coins, MessageSquareText, LockKeyhole, Flag, UserRound, Boxes, ShieldCheck, CircleHelp, type LucideIcon } from 'lucide-react';
-import type { Incident } from '../../../backend/incidents/types';
-import { getIncidentNetLoss } from '../../../backend/incidents/domain';
+import type { Incident } from '../../../frontend-shared/incidents/types';
+import { getIncidentNetLoss } from '../../../frontend-shared/incidents/domain';
 import { date, money } from './components';
 import { getIncidentProgress, type ProgressKey, type ProgressRequirement, type ProgressSection } from './incidentProgress';
 import './incidentProgress.css';

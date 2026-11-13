@@ -1,5 +1,5 @@
 import QRCode from 'qrcode';
-import type {DemoRexLabel} from '../../../backend/incidents/demoLabel';
+import type {DemoRexLabel} from '../../../frontend-shared/incidents/demoLabel';
 /** A test artifact only: never printable as an actual carrier shipment. */
 export async function downloadDemoRexLabel(label:DemoRexLabel){
  if(label.simulated!==true||!label.shipmentCode.startsWith('SIM-'))throw Error('No es una etiqueta de prueba DEMO');

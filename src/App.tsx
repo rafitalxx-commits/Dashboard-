@@ -1,4 +1,7 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { useCommunications } from './modules/communications/useCommunications';
+import { CommunicationsGlobal, CommunicationsView, CommunicationsAdministration, CommunicationsUserSettings } from './modules/communications/Communications';
+import { ConfirmIncidentShipment } from './components/ConfirmIncidentShipment';
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import {
   BarChart3,
@@ -29,6 +32,8 @@ import {
   Settings,
   ShieldCheck,
   ShoppingCart,
+  Moon,
+  Sun,
   MessagesSquare,
   Bell,
   Plus,
@@ -221,7 +226,9 @@ const navItems = [
     permission: "settings",
   },
 ] as const;
-type ActiveView = (typeof navItems)[number]["view"];
+type ActiveView =
+  | "communications"
+ | (typeof navItems)[number]["view"];
 const viewRoutes: Record<ActiveView, string> = {
   dashboard: "home",
   dashboardV2: "home-v2",
@@ -246,6 +253,7 @@ const viewRoutes: Record<ActiveView, string> = {
   receptions: "productos/recepciones",
   incidents: "incidencias",
   amazonMessages: "amazon-messages",
+  communications: "comunicaciones",
   settings: "configuracion",
 };
 const routeViews = Object.fromEntries(
@@ -276,10 +284,11 @@ type DashboardUser = {
   role: DashboardUserRole;
   active: boolean;
   permissions: DashboardPermission[];
+  theme?: "light" | "dark";
 };
 type AuthUser = Pick<
   DashboardUser,
-  "id" | "username" | "name" | "role" | "permissions"
+  "id" | "username" | "name" | "role" | "permissions" | "theme"
 >;
 type DashboardTaskCategory =
   | "Dashboard"
@@ -431,6 +440,10 @@ function App() {
     "loading",
   );
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const communications = useCommunications(authUser);
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [appearanceSaving, setAppearanceSaving] = useState(false);
+  const [appearanceError, setAppearanceError] = useState("");
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
@@ -584,12 +597,19 @@ function App() {
     odooClient.getCurrentUser().then((result) => {
       if (result.authenticated && result.user) {
         setAuthUser(result.user);
+        setTheme(result.user.theme === "dark" ? "dark" : "light");
         setAuthMode("logged-in");
       } else {
         setAuthUser(null);
         setAuthMode("logged-out");
       }
     });
+  }, []);
+
+  useEffect(() => {
+    const applyTheme = (event: Event) => { const next = (event as CustomEvent<"light" | "dark">).detail; if (next === "light" || next === "dark") { setTheme(next); setAuthUser((current) => current ? { ...current, theme: next } : current); } };
+    window.addEventListener("dashboard-theme-updated", applyTheme);
+    return () => window.removeEventListener("dashboard-theme-updated", applyTheme);
   }, []);
 
   useEffect(() => {
@@ -927,6 +947,10 @@ function App() {
 
   useEffect(() => {
     if (!authUser) return;
+    if (activeView === "communications") {
+      if (communications.denied || communications.data && !communications.data.grants.access) navigateToView("dashboard");
+      return;
+    }
     const canSeeActiveView = navItems.some(
       (item) =>
         item.productionNav !== false &&
@@ -935,7 +959,7 @@ function App() {
     if (!canSeeActiveView) {
       navigateToView("dashboard");
     }
-  }, [activeView, authUser]);
+  }, [activeView, authUser, communications.data?.grants.access, communications.denied]);
 
   // Channel buttons must not disappear while a complete filtered dataset loads.
   const channels = orderChannelFilterOptions;
@@ -1271,6 +1295,13 @@ function App() {
           can(item.permission),
       )
     : [];
+  const expeditionsNavIndex = visibleNavItems.findIndex((item) => item.view === "expeditions");
+  const communicationsNavIndex = expeditionsNavIndex >= 0 ? expeditionsNavIndex + 1 : visibleNavItems.length;
+  const sidebarNavItems = [
+    ...visibleNavItems.slice(0, communicationsNavIndex),
+    ...(communications.data?.grants.access ? [{ label: "Comunicaciones", icon: MessagesSquare, view: "communications" as const }] : []),
+    ...visibleNavItems.slice(communicationsNavIndex),
+  ];
   const visibleProductNavItems = authUser
     ? navItems.filter(
         (item) => item.navGroup === "products" && can(item.permission),
@@ -1486,15 +1517,31 @@ function App() {
       return;
     }
     setAuthUser(result.user);
+    setTheme(result.user.theme === "dark" ? "dark" : "light");
     setAuthMode("logged-in");
     setLoginPassword("");
   };
   const logout = async () => {
     await odooClient.logout();
     setAuthUser(null);
+    setTheme("light");
     setAuthMode("logged-out");
     setOrders([]);
     setDashboard(null);
+  };
+  const saveOwnTheme = async (next: "light" | "dark") => {
+    if (appearanceSaving || !authUser) return;
+    setAppearanceSaving(true);
+    setAppearanceError("");
+    try {
+      const updatedUser = await odooClient.updateOwnTheme(next);
+      setAuthUser(updatedUser);
+      setTheme(updatedUser.theme === "dark" ? "dark" : "light");
+    } catch (error) {
+      setAppearanceError(error instanceof Error ? error.message : "No se pudo guardar la preferencia.");
+    } finally {
+      setAppearanceSaving(false);
+    }
   };
 
   useEffect(() => {
@@ -1522,7 +1569,7 @@ function App() {
   }
 
   return (
-    <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+    <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`} data-theme={theme}>
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark"><img src="/te-panel-rayo-192.png" alt="Todoeléctrico" style={{width:"100%",height:"100%",objectFit:"contain"}} /></div>
@@ -1547,7 +1594,7 @@ function App() {
           )}
         </button>
         <nav className="nav-list">
-          {visibleNavItems.map((item) =>
+          {sidebarNavItems.map((item) =>
             item.view === "purchases" ? (
               <div
                 className={`nav-group ${isPurchasesView ? "active" : ""} ${purchasesMenuOpen ? "open" : ""}`}
@@ -1686,7 +1733,7 @@ function App() {
         <header className="topbar">
           <div>
             <p className="eyebrow">
-              {activeView === "incidents"
+              {activeView === "communications" ? "Comunicaciones internas" : activeView === "incidents"
                 ? "Atención al cliente · Operaciones"
                 : activeView === "receptions"
                 ? (import.meta.env.BASE_URL.startsWith("/incidents-lab/") ? "Inventario · Odoo DEMO" : "Inventario · Odoo real")
@@ -1705,7 +1752,7 @@ function App() {
                     }`}
             </p>
             <h1>
-              {activeView === "dashboard"
+              {activeView === "communications" ? "Comunicaciones" : activeView === "dashboard"
                 ? "Inicio"
                 : activeView === "dashboardV2"
                   ? "Inicio V2"
@@ -1725,6 +1772,18 @@ function App() {
             </h1>
           </div>
           <div className="topbar-actions">
+            {authUser?.role === "admin" && <button
+              aria-label={theme === "dark" ? "Activar modo claro" : "Activar modo oscuro"}
+              aria-pressed={theme === "dark"}
+              className="theme-toggle-button"
+              disabled={appearanceSaving}
+              onClick={() => void saveOwnTheme(theme === "dark" ? "light" : "dark")}
+              title={theme === "dark" ? "Cambiar a modo día" : "Cambiar a modo noche"}
+              type="button"
+            >
+              {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
+              <span>{appearanceSaving ? "Guardando…" : theme === "dark" ? "Día" : "Noche"}</span>
+            </button>}
             {showOrderRange && (
               <button
                 className="refresh-orders-button"
@@ -1737,9 +1796,9 @@ function App() {
                 {ordersSyncLoading ? "Sincronizando" : "Actualizar"}
               </button>
             )}
-            <div className={`connection-pill ${activeView === "receptions" || activeView === "pendingPurchases" || activeView === "supplierInvoices" || activeView === "purchaseAnalytics" ? "live" : dataMode}`}>
+            <div className={`connection-pill ${activeView === "communications" ? (communications.online ? "live" : "loading") : activeView === "receptions" || activeView === "pendingPurchases" || activeView === "supplierInvoices" || activeView === "purchaseAnalytics" ? "live" : dataMode}`}>
               <span />
-              {activeView === "incidents"
+              {activeView === "communications" ? (communications.online ? "Comunicaciones · Conectado" : "Comunicaciones · Sin conexión") : activeView === "incidents"
                 ? (import.meta.env.BASE_URL.startsWith("/incidents-lab/") ? "Incidencias · Odoo TEST" : "Incidencias · Operaciones")
                 : activeView === "receptions" && import.meta.env.BASE_URL.startsWith("/incidents-lab/")
                 ? "LAB · Recepciones DEMO"
@@ -1753,9 +1812,20 @@ function App() {
                   ? "Odoo real · solo lectura"
                   : connectionMessage}
             </div>
+            <CommunicationsGlobal model={communications} onOpen={() => navigateToView("communications")} />
             <div className="session-pill">
               <User size={16} />
               <span>{authUser.name}</span>
+              <button
+                className="session-theme-toggle"
+                aria-label={theme === "dark" ? "Cambiar a modo claro" : "Cambiar a modo oscuro"}
+                title={theme === "dark" ? "Cambiar a modo claro" : "Cambiar a modo oscuro"}
+                disabled={appearanceSaving}
+                onClick={() => void saveOwnTheme(theme === "dark" ? "light" : "dark")}
+                type="button"
+              >
+                {theme === "dark" ? <Moon aria-hidden="true" size={16} /> : <Sun aria-hidden="true" size={16} />}
+              </button>
               <button
                 aria-label="Cerrar sesion"
                 onClick={logout}
@@ -1765,6 +1835,7 @@ function App() {
                 <LogOut size={16} />
               </button>
             </div>
+            {appearanceError && <span aria-live="polite" className="session-theme-error">{appearanceError}</span>}
           </div>
         </header>
 
@@ -1831,7 +1902,7 @@ function App() {
           </>
         )}
 
-        {activeView === "dashboard" ? (
+        {activeView === "communications" ? <CommunicationsView model={communications} /> : activeView === "dashboard" ? (
           <><HomePage onOpen={openOperationalHomeMetric} /><IncidentsHome /></>
         ) : activeView === "dashboardV2" ? (
           <>
@@ -1929,6 +2000,7 @@ function App() {
         ) : activeView === "settings" ? (
           <SettingsView
             currentUser={authUser}
+            communications={communications}
             newUserName={newDashboardUserName}
             newUsername={newDashboardUsername}
             newUserPassword={newDashboardUserPassword}
@@ -2241,14 +2313,14 @@ function App() {
                   incidents={deliveryIncidents}
                   loading={deliveryIncidentsLoading}
                   onRefresh={refreshDeliveryIncidents}
+                  onConfirmed={(incident) => setDeliveryIncidents(rows => rows.map(row => row.id === incident.id ? incident : row))}
                 />
               {false && odooDelivery === "Incidencia entrega Odoo" && (
                 <DeliveryIncidentsPanel
                   incidents={deliveryIncidents}
                   loading={deliveryIncidentsLoading}
                   onRefresh={refreshDeliveryIncidents}
-                  onResolve={resolveDeliveryIncident}
-                  onRetry={retryDeliveryIncidents}
+                  onConfirmed={(incident) => setDeliveryIncidents(rows => rows.map(row => row.id === incident.id ? incident : row))}
                 />
               )}
 
@@ -3262,7 +3334,9 @@ function DeliveryIncidentsPanel({
   incidents,
   loading,
   onRefresh,
+  onConfirmed,
 }: {
+  onConfirmed: (incident: DeliveryIncident) => void;
   incidents: DeliveryIncident[];
   loading: boolean;
   onRefresh: () => void | Promise<void>;
@@ -3270,6 +3344,8 @@ function DeliveryIncidentsPanel({
   const activeIncidents = incidents.filter((incident) => !incident.resolvedAt);
   const visibleIncidents = activeIncidents.slice(0, 100);
   const [expanded, setExpanded] = useState(false);
+  const [confirming, setConfirming] = useState<DeliveryIncident | null>(null);
+  const [savedMessage, setSavedMessage] = useState('');
 
   // El panel debe llamar la atención cuando aparezca una incidencia, pero no
   // reservar espacio en Pedidos cuando no haya nada que revisar.
@@ -3284,6 +3360,13 @@ function DeliveryIncidentsPanel({
       : `${activeIncidents.length} pendiente(s) de revisar`;
 
   return (
+    <>
+    {savedMessage && <p role="status" className="odoo-action-message">{savedMessage}</p>}
+    {confirming && <ConfirmIncidentShipment key={confirming.id} incident={confirming}
+      onClose={() => setConfirming(null)} onSaved={incident => {
+        onConfirmed(incident); setConfirming(null);
+        setSavedMessage(`${incident.orderName || '#' + incident.orderId}: enviado confirmado manualmente. Incidencia resuelta.`);
+      }}/>}
     <section className={`incident-panel${activeIncidents.length === 0 ? " incident-panel-empty" : ""}`}>
       <div className="incident-panel-header">
         <div>
@@ -3345,6 +3428,9 @@ function DeliveryIncidentsPanel({
                 <td>{incident.reason}</td>
                 <td>
                   <div className="incident-row-actions">
+                    <button type="button" disabled={loading || !incident.tracking?.trim()}
+                      title={incident.tracking?.trim() ? 'Confirmar envío sin modificar Odoo' : 'Se necesita un seguimiento para confirmar el envío'}
+                      onClick={() => setConfirming(incident)}>Resolver · enviado confirmado</button>
                     <a
                       href={`/api/odoo/orders/open-order?orderId=${incident.orderId}`}
                       rel="noreferrer"
@@ -3385,6 +3471,7 @@ function DeliveryIncidentsPanel({
         </>
       )}
     </section>
+    </>
   );
 }
 
@@ -3524,6 +3611,7 @@ function OrderDetailPanel({ loading, order }: { loading?: boolean; order: Order 
 
 function SettingsView({
   currentUser,
+  communications,
   newUserName,
   newUsername,
   newUserPassword,
@@ -3538,6 +3626,7 @@ function SettingsView({
   users,
 }: {
   currentUser: AuthUser;
+  communications: ReturnType<typeof useCommunications>;
   newUserName: string;
   newUsername: string;
   newUserPassword: string;
@@ -3553,18 +3642,31 @@ function SettingsView({
 }) {
   const [passwordDrafts, setPasswordDrafts] = useState<Record<string, string>>({});
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [themeSaving, setThemeSaving] = useState(false);
+  const [themeMessage, setThemeMessage] = useState("");
+  const userLock = useRef(false);
+  const [userSaving, setUserSaving] = useState(false);
+  const [userError, setUserError] = useState("");
+  const [userMessage, setUserMessage] = useState("");
+  useEffect(() => { setUserError(""); setUserMessage(""); }, [selectedUserId]);
+  useEffect(() => { void communications.refresh(); }, [users]);
   const selectedUser = users.find((user) => user.id === selectedUserId);
   const updateUser = async (
     userId: string,
     patch: Partial<DashboardUser> & { password?: string },
   ) => {
-    const { password: _password, ...visiblePatch } = patch;
-    const updatedUsers = users.map((user) =>
-      user.id === userId ? { ...user, ...visiblePatch } : user,
-    );
-    onSaveUsers(updatedUsers);
-    await odooClient.updateDashboardUser(userId, patch);
-    await onRefreshUsers();
+    if (userLock.current) return false;
+    userLock.current = true;
+    setUserSaving(true); setUserError(""); setUserMessage("");
+    try {
+      const saved = await odooClient.updateDashboardUser(userId, patch);
+      onSaveUsers(users.map((user) => user.id === userId ? saved : user));
+      setUserMessage(patch.password ? "Contraseña guardada. Ya puede iniciar sesión." : "Permisos y perfil guardados.");
+      return true;
+    } catch (error) {
+      setUserError(error instanceof Error ? error.message : "No se pudo guardar el usuario.");
+      return false;
+    } finally { userLock.current = false; setUserSaving(false); }
   };
   const deleteUser = async (userId: string) => {
     const user = users.find((item) => item.id === userId);
@@ -3578,6 +3680,10 @@ function SettingsView({
 
   return (
     <section className="settings-grid">
+      {currentUser.role === "admin" && <article className="panel settings-panel theme-settings-panel">
+        <div className="section-heading"><span>Preferencias personales</span><h2>Apariencia</h2><p>El modo claro se aplica por defecto. Esta preferencia solo cambia tu cuenta.</p></div>
+        <label className="settings-field theme-choice">Modo de visualización<select aria-label="Modo de visualización" disabled={themeSaving} onChange={async (event) => { const next = event.target.value as "light" | "dark"; setThemeSaving(true); setThemeMessage(""); try { await odooClient.updateDashboardUser(currentUser.id, { theme: next }); window.dispatchEvent(new CustomEvent("dashboard-theme-updated", { detail: next })); setThemeMessage("Preferencia guardada."); } catch (error) { setThemeMessage(error instanceof Error ? error.message : "No se pudo guardar la preferencia."); } finally { setThemeSaving(false); } }} value={currentUser.theme === "dark" ? "dark" : "light"}><option value="light">Claro (predeterminado)</option><option value="dark">Oscuro</option></select><small aria-live="polite">{themeSaving ? "Guardando preferencia…" : themeMessage}</small></label>
+      </article>}
       <article className="panel settings-panel">
         <div className="section-heading">
           <span>Usuarios dashboard</span>
@@ -3642,8 +3748,25 @@ function SettingsView({
         </div>
       </article>
 
-      {selectedUser && <><button aria-label="Cerrar gestión de usuario" className="drawer-backdrop" onClick={() => setSelectedUserId(null)} type="button" /><aside aria-label={`Gestionar ${selectedUser.name}`} className="user-management-drawer"><div className="user-drawer-heading"><div><span>Gestionar usuario</span><h2>{selectedUser.name}</h2><p>{selectedUser.username}</p></div><button aria-label="Cerrar gestión de usuario" onClick={() => setSelectedUserId(null)} type="button"><XCircle size={21} /></button></div><label className="settings-field">Rol<select aria-label={`Rol de ${selectedUser.name}`} onChange={(event) => updateUser(selectedUser.id, { role: event.target.value as DashboardUserRole, permissions: permissionsForRole(event.target.value as DashboardUserRole) })} value={selectedUser.role}><option value="viewer">viewer</option><option value="printer">printer</option><option value="admin">admin</option></select><small>Al cambiar el rol se aplica su conjunto de permisos previsto.</small></label><fieldset className="settings-permissions"><legend>Permisos</legend>{editablePermissions.map((permission) => (<label key={permission}><input checked={selectedUser.permissions.includes(permission)} disabled={selectedUser.id === currentUser.id && permission === "settings"} onChange={() => { const permissions = selectedUser.permissions.includes(permission) ? selectedUser.permissions.filter((item) => item !== permission) : [...selectedUser.permissions, permission]; updateUser(selectedUser.id, { permissions }); }} type="checkbox" />{permissionLabels[permission]}</label>))}</fieldset><label className="settings-field">Nueva contraseña<input aria-label={`Nueva contraseña para ${selectedUser.name}`} onChange={(event) => setPasswordDrafts((current) => ({ ...current, [selectedUser.id]: event.target.value }))} placeholder="Mínimo 8 caracteres" type="password" value={passwordDrafts[selectedUser.id] ?? ""} /></label><button className="settings-save-button" disabled={(passwordDrafts[selectedUser.id] ?? "").length < 8} onClick={async () => { const password = passwordDrafts[selectedUser.id] ?? ""; await updateUser(selectedUser.id, { password }); setPasswordDrafts((current) => ({ ...current, [selectedUser.id]: "" })); }} type="button">Guardar contraseña</button><div className="settings-danger-zone"><strong>Acciones de cuenta</strong><button disabled={selectedUser.id === currentUser.id} onClick={() => updateUser(selectedUser.id, { active: !selectedUser.active })} type="button">{selectedUser.active ? "Desactivar usuario" : "Activar usuario"}</button><button disabled={selectedUser.id === currentUser.id} onClick={() => deleteUser(selectedUser.id)} type="button">Eliminar usuario</button></div></aside></>}
+      {selectedUser && <>
+        <button aria-label="Cerrar gestión de usuario" className="drawer-backdrop" disabled={userSaving} onClick={() => setSelectedUserId(null)} type="button" />
+        <aside aria-label={`Gestionar ${selectedUser.name}`} className="user-management-drawer">
+          <div className="user-drawer-heading"><div><span>Gestionar usuario</span><h2>{selectedUser.name}</h2><p>{selectedUser.username}</p></div><button aria-label="Cerrar gestión de usuario" disabled={userSaving} onClick={() => setSelectedUserId(null)} type="button"><XCircle size={21} /></button></div>
+          <div className="user-save-feedback" aria-live="polite">
+            {userSaving && <p role="status">Guardando usuario…</p>}
+            {userError && <p role="alert" className="comm-error">{userError}</p>}
+            {userMessage && <p role="status">{userMessage}</p>}
+          </div>
+          <label className="settings-field">Rol<select aria-label={`Rol de ${selectedUser.name}`} disabled={userSaving} onChange={(event) => void updateUser(selectedUser.id, { role: event.target.value as DashboardUserRole, permissions: permissionsForRole(event.target.value as DashboardUserRole) })} value={selectedUser.role}><option value="viewer">viewer</option><option value="printer">printer</option><option value="admin">admin</option></select><small>Al cambiar el rol se aplica su conjunto de permisos previsto.</small></label>
+          <fieldset className="settings-permissions" disabled={userSaving}><legend>Accesos a módulos del Dashboard</legend>{editablePermissions.map((permission) => (<label key={permission}><input checked={selectedUser.permissions.includes(permission)} disabled={selectedUser.id === currentUser.id && permission === "settings"} onChange={() => { const permissions = selectedUser.permissions.includes(permission) ? selectedUser.permissions.filter((item) => item !== permission) : [...selectedUser.permissions, permission]; void updateUser(selectedUser.id, { permissions }); }} type="checkbox" />{permissionLabels[permission]}</label>))}</fieldset>
+          <CommunicationsUserSettings model={communications} user={selectedUser}/>
+          <label className="settings-field">Nueva contraseña<input aria-label={`Nueva contraseña para ${selectedUser.name}`} disabled={userSaving} onChange={(event) => setPasswordDrafts((current) => ({ ...current, [selectedUser.id]: event.target.value }))} placeholder="Mínimo 8 caracteres" type="password" value={passwordDrafts[selectedUser.id] ?? ""} /><small>Cambia la contraseña de acceso de esta cuenta al Dashboard.</small></label>
+          <button className="settings-save-button" disabled={userSaving || (passwordDrafts[selectedUser.id] ?? "").length < 8} onClick={async () => { const password = passwordDrafts[selectedUser.id] ?? ""; if (await updateUser(selectedUser.id, { password })) setPasswordDrafts((current) => ({ ...current, [selectedUser.id]: "" })); }} type="button">Guardar contraseña</button>
+          <div className="settings-danger-zone"><strong>Acciones de cuenta</strong><button disabled={userSaving || selectedUser.id === currentUser.id} onClick={() => void updateUser(selectedUser.id, { active: !selectedUser.active })} type="button">{selectedUser.active ? "Desactivar usuario" : "Activar usuario"}</button><button disabled={userSaving || selectedUser.id === currentUser.id} onClick={() => deleteUser(selectedUser.id)} type="button">Eliminar usuario</button></div>
+        </aside>
+      </>}
       <WarehouseWorkersSettings />
+      <CommunicationsAdministration model={communications} />
     </section>
   );
 }

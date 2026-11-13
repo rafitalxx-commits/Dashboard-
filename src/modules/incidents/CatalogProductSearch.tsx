@@ -1,5 +1,5 @@
 import {useEffect,useState} from 'react';
-import type {CatalogMatch} from '../../../backend/incidents/types';
+import type {CatalogMatch} from '../../../frontend-shared/incidents/types';
 import {api} from './api';
 import {Field} from './components';
 export function CatalogProductSearch({value,onChange,purpose='recibido',requiredSelection=false}:{value?:CatalogMatch;onChange:(v?:CatalogMatch)=>void;purpose?:'recibido'|'alternativo';requiredSelection?:boolean}){

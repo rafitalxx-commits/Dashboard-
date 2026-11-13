@@ -1,3 +1,4 @@
+import type { ManualShipmentResolution, ShipmentConfirmation } from '../../backend/deliveryIncidentResolution';
 import {
   customerInvoices,
   orders,
@@ -50,10 +51,11 @@ type DashboardUser = {
   role: DashboardUserRole;
   active: boolean;
   permissions: DashboardPermission[];
+  theme?: "light" | "dark";
 };
 type AuthUser = Pick<
   DashboardUser,
-  "id" | "username" | "name" | "role" | "permissions"
+  "id" | "username" | "name" | "role" | "permissions" | "theme"
 >;
 type DashboardTaskCategory =
   | "Dashboard"
@@ -399,6 +401,22 @@ export const odooClient = {
       return { authenticated: false as const };
     }
   },
+  async updateOwnTheme(theme: "light" | "dark") {
+    const response = await fetch(receptionsApiPath("/api/auth/me"), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ theme }),
+    });
+    const payload = (await readJson(response)) as {
+      authenticated: boolean;
+      user?: AuthUser;
+      message?: string;
+    };
+    if (!response.ok || !payload.authenticated || !payload.user) {
+      throw new Error(payload.message ?? "No se pudo guardar la preferencia de tema");
+    }
+    return payload.user;
+  },
   async login(username: string, password: string) {
     try {
       const response = await fetch("/api/auth/login", {
@@ -445,7 +463,7 @@ export const odooClient = {
   },
   async updateDashboardUser(
     userId: string,
-    patch: Partial<Pick<DashboardUser, "active" | "role" | "permissions">> & {
+    patch: Partial<Pick<DashboardUser, "active" | "role" | "permissions" | "theme">> & {
       password?: string;
     },
   ) {
@@ -668,7 +686,17 @@ export const odooClient = {
       reason: string;
       lastAttemptAt: string;
       resolvedAt?: string;
+      resolvedBy?: string;
+      manualResolution?: ManualShipmentResolution;
     }>;
+  },
+  async confirmIncidentShipped(input: ShipmentConfirmation) {
+    const response = await fetch("/api/odoo/orders/delivery-incidents/confirm-shipped", {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(input),
+    });
+    const payload = await readJson(response);
+    if (!response.ok) throw new Error(payload.message ?? "No se pudo confirmar el envío");
+    return payload as {ok: true; incident: Awaited<ReturnType<typeof odooClient.getDeliveryIncidents>>[number]};
   },
   async retryDeliveryIncidents(incidentIds?: string[]) {
     const response = await fetch("/api/odoo/orders/delivery-incidents/retry", {

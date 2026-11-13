@@ -1,13 +1,13 @@
-import type {Submission} from '../../../backend/incidents/submissions';
+import type {Submission} from '../../../frontend-shared/incidents/submissions';
 import type {IncidentSubmissionResult} from './api';
 import { CatalogProductSearch } from './CatalogProductSearch';
 import { KitBreakdown } from './KitBreakdown';
-import { merchandiseContext, merchandiseProducts } from '../../../backend/incidents/merchandise';
+import { merchandiseContext, merchandiseProducts } from '../../../frontend-shared/incidents/merchandise';
 import { ChoiceIcon } from "./ChoiceIcon";
 import {CameraCapture} from "./CameraCapture";
 import { useState, useRef, useEffect } from 'react';
-import type { WizardDraft, OrderContext, IncidentProduct, IncidentOrigin, IncidentType } from '../../../backend/incidents/types';
-import { origins, originTypes, types, solutions, buildIncident } from '../../../backend/incidents/workflow';
+import type { WizardDraft, OrderContext, IncidentProduct, IncidentOrigin, IncidentType } from '../../../frontend-shared/incidents/types';
+import { origins, originTypes, types, solutions, buildIncident } from '../../../frontend-shared/incidents/workflow';
 import { api, demoContext, type IncidentCreationResult } from './api';
 import { IncidentDocuments } from './IncidentDocuments';
 import { Modal, Field, Message, OperationStatus, money } from './components';

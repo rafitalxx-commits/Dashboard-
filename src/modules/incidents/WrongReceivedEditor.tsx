@@ -1,7 +1,7 @@
-import {canIdentifyWrongReceived} from '../../../backend/incidents/workflow';
+import {canIdentifyWrongReceived} from '../../../frontend-shared/incidents/workflow';
 import { useEffect,useState } from 'react';
-import type { Incident,CatalogMatch } from '../../../backend/incidents/types';
-import type { Action } from '../../../backend/incidents/workflow';
+import type { Incident,CatalogMatch } from '../../../frontend-shared/incidents/types';
+import type { Action } from '../../../frontend-shared/incidents/workflow';
 import { CatalogProductSearch } from './CatalogProductSearch';
 import { Field,Message } from './components';
 export function WrongReceivedEditor({incident,onAction,disabled}:{incident:Incident;onAction:(a:Action)=>Promise<void>;disabled:boolean}){

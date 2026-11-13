@@ -1,6 +1,6 @@
 import {useEffect,useRef,useState} from 'react';
-import type {ClientStatus} from '../../../backend/incidents/types';
-import type {Action} from '../../../backend/incidents/workflow';
+import type {ClientStatus} from '../../../frontend-shared/incidents/types';
+import type {Action} from '../../../frontend-shared/incidents/workflow';
 import {Field,Message,OperationStatus} from './components';
 
 /** A selection is only a draft. Only an explicit submit records the action. */
