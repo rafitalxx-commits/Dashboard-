@@ -316,6 +316,24 @@ td small,
   font-weight: 700;
 }
 
+.session-avatar {
+  display: inline-flex;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  border: 1px solid #dbe3ec;
+  border-radius: 50%;
+  background: #f1f5f9;
+  object-fit: cover;
+  overflow: hidden;
+}
+
+.session-avatar-fallback {
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+}
+
 .session-theme-control {
   display: flex;
   align-items: center;

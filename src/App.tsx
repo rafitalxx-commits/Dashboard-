@@ -1,6 +1,8 @@
 import { useCommunications } from './modules/communications/useCommunications';
 import { CommunicationsGlobal, CommunicationsView, CommunicationsAdministration, CommunicationsUserSettings } from './modules/communications/Communications';
 import { ConfirmIncidentShipment } from './components/ConfirmIncidentShipment';
+import { commURL } from './modules/communications/api';
+import { getCurrentUserPhotoId } from './modules/communications/currentUserAvatar';
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import {
@@ -435,12 +437,29 @@ const editablePermissions: DashboardPermission[] = [
   "amazonMessagesSendFinal",
 ];
 
+function SessionAvatar({ photoId, name }: { photoId: string | null; name: string }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  useEffect(() => setImageFailed(false), [photoId]);
+  if (!photoId || imageFailed) {
+    return <span className="session-avatar session-avatar-fallback"><User aria-hidden="true" size={16} /></span>;
+  }
+  return (
+    <img
+      alt={`Foto de perfil de ${name}`}
+      className="session-avatar"
+      onError={() => setImageFailed(true)}
+      src={commURL(`/files/${encodeURIComponent(photoId)}`)}
+    />
+  );
+}
+
 function App() {
   const [authMode, setAuthMode] = useState<"loading" | "logged-out" | "logged-in">(
     "loading",
   );
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const communications = useCommunications(authUser);
+  const currentUserPhotoId = getCurrentUserPhotoId(communications.data?.people, authUser?.id);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [appearanceSaving, setAppearanceSaving] = useState(false);
   const [appearanceError, setAppearanceError] = useState("");
@@ -1814,7 +1833,7 @@ function App() {
             </div>
             <CommunicationsGlobal model={communications} onOpen={() => navigateToView("communications")} />
             <div className="session-pill">
-              <User size={16} />
+              <SessionAvatar name={authUser.name} photoId={currentUserPhotoId} />
               <span>{authUser.name}</span>
               <button
                 className="session-theme-toggle"
